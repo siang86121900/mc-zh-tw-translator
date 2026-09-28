@@ -220,7 +220,7 @@ def main():
     ap=argparse.ArgumentParser();ap.add_argument('root',type=Path);ap.add_argument('--output',type=Path,required=True);ap.add_argument('--decisions',type=Path);args=ap.parse_args()
     decisions=json.loads(args.decisions.read_text(encoding='utf-8')) if args.decisions else {}
     audit=Audit(args.output,decisions)
-    for folder in ('mods','resourcepacks','datapacks'):
+    for folder in ('mods','resourcepacks','datapacks','config/openloader'):
         for p in sorted((args.root/folder).rglob('*')):
             if p.suffix in ('.jar','.zip'):audit.archive(p,p.relative_to(args.root).as_posix())
     audit.loose(args.root)
