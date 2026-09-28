@@ -146,4 +146,15 @@ class DesktopUiTests(unittest.TestCase):
             window.set_filter('keep');self.assertEqual(window.table.rowCount(),4)
             window.close()
 
+    def test_confirmed_but_unapplied_report_offers_apply_without_retranslating(self):
+        with tempfile.TemporaryDirectory() as d:
+            home=Path(d);report=home/'output/demo/報告/old';report.mkdir(parents=True)
+            row=dict(source='instance!/kubejs/assets/demo/lang/en_us.json',key='k',en='Hi',proposed='嗨',origin='same_source_zh_cn',
+                     supported=True,reviewed=True,changed=True,review_method='auto_validated_one_click')
+            (report/'session.json').write_text(json.dumps(dict(instance=d,report=str(report),status='needs_review',errors=[],source_counts={},rows=[row])),encoding='utf-8')
+            window=MainWindow(home)
+            self.assertIn('套用這批譯文（1 筆',window.apply_btn.text())
+            self.assertIn('還沒寫入模組包',window.report_summary.text())
+            window.close()
+
 if __name__=='__main__':unittest.main()

@@ -652,7 +652,15 @@ class MainWindow(QMainWindow):
     def update_stats(self):
         rows=self.session['rows'];self.stats[0].setText(f"{self.session.get('preview_changed',sum(bool(r['changed'] and r['supported']) for r in rows)):,}")
         self.stats[1].setText(f"{self.session.get('preview_pending',sum(r['origin'] in ('untranslated','pending') for r in rows)):,}");self.stats[2].setText(f"{self.session.get('installed_count',0):,}")
-        self.apply_btn.setText('重試套用（不重新翻譯）' if self.session['status'] in ('awaiting_game','apply_failed','ready_to_apply') else '備份並套用已確認譯文')
+        pending=self.unapplied_count()
+        if self.session['status'] in ('awaiting_game','apply_failed','ready_to_apply') or (pending and self.session['status']=='needs_review'):
+            verb='重試套用' if self.session['status'] in ('awaiting_game','apply_failed') else '套用這批譯文'
+            self.apply_btn.setText(f'{verb}（{pending:,} 筆，不重新翻譯）' if pending else '重試套用（不重新翻譯）')
+        else:self.apply_btn.setText('備份並套用已確認譯文')
+
+    def unapplied_count(self):
+        if not self.session or self.session.get('is_preview'):return 0
+        return sum(bool(r.get('reviewed') and r.get('changed') and r.get('supported') and not r.get('installed')) for r in self.session['rows'])
 
     def refresh_history(self):
         current=self.session['report'] if self.session else None
@@ -727,6 +735,10 @@ class MainWindow(QMainWindow):
                 'cancelled':('已停止','todo'),'restored':('已還原','todo'),'scanning':('處理中','progress'),'references':('處理中','progress'),'matching':('處理中','progress')}
         set_pill(self.report_state,*badges.get(self.session['status'],('待套用','todo')))
         message=stages.get(self.session['status'],'本次已產生的譯文與待處理項目如下。')
+        pending=self.unapplied_count()
+        if pending and self.session['status'] in ('needs_review','ready_to_apply'):
+            # Reports from older versions could stop after confirming without writing anything.
+            message=f'這批有 {pending:,} 筆已通過檢查的譯文，但還沒寫入模組包。關閉遊戲後按右下「套用這批譯文」，會先備份再套用，不用重新翻譯。'
         if self.session.get('is_preview'):message+=f"\n已記錄 {self.session['preview_total']:,} 筆，處理中先預覽最近 200 筆；結束後載入完整報告。"
         if self.session.get('apply_error'):message+='\n'+self.session['apply_error']
         self.report_summary.setText(message)
