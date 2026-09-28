@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QSettings, QLockFile, QSize
-from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QColor, QPixmap
+from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QColor, QPixmap, QPalette
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QLineEdit, QFileDialog, QStackedWidget, QProgressBar,
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
@@ -77,7 +77,7 @@ QLineEdit:focus, QComboBox:focus { border-color: {primary}; }
 QComboBox { padding: 6px 30px 6px 10px; min-height: 22px; combobox-popup: 0; }
 QComboBox::drop-down { border: none; width: 26px; }
 QComboBox::down-arrow { image: url(__ARROW__); width: 12px; height: 12px; }
-QComboBox QAbstractItemView { background: {surface}; color: {text}; border: 1px solid {gray}; border-radius: 8px; padding: 4px; outline: 0px; }
+QComboBox QAbstractItemView { background: {surface}; color: {text}; border: 1px solid {gray}; padding: 4px; outline: 0px; }
 QComboBox QAbstractItemView::item { min-height: 32px; padding: 0px 10px; border-radius: 6px; }
 QComboBox QAbstractItemView::item:hover { background: {soft}; color: {text}; }
 QComboBox QAbstractItemView::item:selected { background: {primary_bg}; color: {primary}; }
@@ -322,19 +322,19 @@ class MainWindow(QMainWindow):
         self.navs=[]
         for i,text in enumerate(('開始翻譯','翻譯報告','備份與還原','程式更新','AI 帳號與模型')):
             b=button(text,lambda checked=False,n=i:self.navigate(n));b.setObjectName('nav');b.setCheckable(True);nav.addWidget(b);self.navs.append(b)
+        # Page 5 sits under 翻譯報告 in the sidebar; page indexes of the other pages stay unchanged.
+        b=button('譯名與用詞',lambda checked=False:self.navigate(5));b.setObjectName('nav');b.setCheckable(True)
+        nav.insertWidget(4,b);self.navs.append(b)
         nav.addStretch();self.side_ai=label('AI 補翻：未連接','sub');nav.addWidget(self.side_ai)
         nav.addWidget(label('繁體中文 / 台灣','sub'));body.addWidget(sidebar)
         self.pages=QStackedWidget();body.addWidget(self.pages,1)
-        self.make_start();self.make_report();self.make_backups();self.make_updates();self.make_ai();self.navigate(0)
+        self.make_start();self.make_report();self.make_backups();self.make_updates();self.make_ai();self.make_terms();self.navigate(0)
         self.refresh_history();self.refresh_backups()
         self.refresh_instances();self.path.setText(self.settings.value('instance',''))
         for combo in self.findChildren(QComboBox):
+            # A translucent popup renders black on real Windows desktops, so the popup stays opaque and
+            # takes its colours from the themed application palette (see apply_theme).
             view=QListView();view.setUniformItemSizes(True);combo.setView(view)
-            # Let the list's own rounded border show instead of the native popup frame's square corners.
-            popup=view.window();popup.setWindowFlags(popup.windowFlags()|Qt.FramelessWindowHint|Qt.NoDropShadowWindowHint)
-            # Only the outer container is transparent; the list itself keeps the themed background.
-            popup.setObjectName('comboPopup');popup.setAttribute(Qt.WA_TranslucentBackground)
-            popup.setStyleSheet('#comboPopup { background: transparent; border: none; }')
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(10);combo.setMaxVisibleItems(10)
         self.apply_theme();self.update_ai_controls()
@@ -367,6 +367,16 @@ class MainWindow(QMainWindow):
         self.ai_connect_link=button('連接 AI 帳號',lambda:self.navigate(4));self.ai_connect_link.setObjectName('link')
         ai_row.addWidget(self.use_ai);ai_row.addWidget(self.ai_connect_link);ai_row.addStretch();b.addLayout(ai_row)
         self.ai_hint=label('','sub');b.addWidget(self.ai_hint)
+        # Game language: most modpacks ship with lang:en_us, so applied translations would stay invisible.
+        self.set_language=QCheckBox('套用後把遊戲語言設為繁體中文（台灣）')
+        self.set_language.setToolTip('修改模組包的 options.txt（lang:zh_tw），修改前一樣會備份，可在「備份與還原」復原。')
+        self.set_language.setChecked(str(self.settings.value('set_language','true')).lower()=='true')
+        self.set_language.toggled.connect(lambda v:self.settings.setValue('set_language','true' if v else 'false'));b.addWidget(self.set_language)
+        self.pack_mode=QCheckBox('不修改模組檔，集中成翻譯包')
+        self.pack_mode.setToolTip('有 KubeJS 時寫到 kubejs/assets；否則產生 mods/mctranslator_zh_tw.jar 翻譯模組。\n'
+                                  '更新模組後翻譯不會消失，也能翻到內嵌在其他模組裡的函式庫。')
+        self.pack_mode.setChecked(str(self.settings.value('pack_mode','false')).lower()=='true')
+        self.pack_mode.toggled.connect(lambda v:self.settings.setValue('pack_mode','true' if v else 'false'));b.addWidget(self.pack_mode)
         actions=QHBoxLayout();self.full_start=button('一鍵完整翻譯並套用',self.full_translation_job,True);self.cancel=button('停止',self.cancel_job);self.cancel.setEnabled(False)
         actions.addWidget(self.full_start);actions.addWidget(self.cancel);actions.addStretch();b.addLayout(actions);box.addWidget(f)
         stats=QHBoxLayout();stats.setSpacing(12);self.stats=[]
@@ -478,8 +488,74 @@ class MainWindow(QMainWindow):
         for i,b in enumerate(self.navs):b.setChecked(i==index)
         if index==1:self.fill_table()
         if index==2:self.refresh_backups()
+        if index==5:self.refresh_terms()
+
+    def make_terms(self):
+        box=self.page('譯名與用詞','固定專有名詞的譯法，並統一不同模組間翻得不一樣的詞。')
+        f,b=card();b.addWidget(label('自訂譯名','section'))
+        b.addWidget(label('整句等於這個英文時直接使用你的譯名；AI 補翻時，句子裡出現的詞也會照用。排在模組自帶中文、參考庫與翻譯記憶之後。','sub'))
+        row=QHBoxLayout();self.term_en=QLineEdit();self.term_en.setPlaceholderText('英文，例如 Benimaru')
+        self.term_zh=QLineEdit();self.term_zh.setPlaceholderText('譯名，例如 紅丸')
+        row.addWidget(self.term_en,1);row.addWidget(self.term_zh,1);row.addWidget(button('新增或更新',self.save_term,True));b.addLayout(row)
+        self.term_table=QTableWidget(0,2);self.term_table.setHorizontalHeaderLabels(['英文','譯名'])
+        self.term_table.verticalHeader().hide();self.term_table.setShowGrid(False);self.term_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.term_table.setSelectionBehavior(QAbstractItemView.SelectRows);self.term_table.setMinimumHeight(180)
+        for c in (0,1):self.term_table.horizontalHeader().setSectionResizeMode(c,QHeaderView.Stretch)
+        self.term_table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+        self.term_table.cellClicked.connect(lambda r,_:(self.term_en.setText(self.term_table.item(r,0).text()),self.term_zh.setText(self.term_table.item(r,1).text())))
+        b.addWidget(self.term_table);b.addWidget(button('刪除選取的譯名',self.remove_term),alignment=Qt.AlignLeft);box.addWidget(f)
+        f,b=card();head=QHBoxLayout();title=label('用詞不一致（目前報告）','section');title.setWordWrap(False);head.addWidget(title);head.addStretch()
+        self.conflict_count=label('','pill');head.addWidget(self.conflict_count);b.addLayout(head)
+        b.addWidget(label('同一個英文在不同模組被翻成不同中文，依出現次數排序。常見詞（例如 Default）在不同情境可能本來就該不同，只統一你確定該一致的。'
+                          '按「統一」會套用到目前報告並記成自訂譯名；之後按報告頁的套用即可寫入。','sub'))
+        self.conflicts=QTableWidget(0,3);self.conflicts.setHorizontalHeaderLabels(['英文','目前的譯法（次數）','統一為'])
+        self.conflicts.verticalHeader().hide();self.conflicts.setShowGrid(False);self.conflicts.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.conflicts.setMinimumHeight(260)
+        for c in (0,1):self.conflicts.horizontalHeader().setSectionResizeMode(c,QHeaderView.Stretch)
+        self.conflicts.setColumnWidth(2,260);self.conflicts.horizontalHeader().setDefaultAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+        b.addWidget(self.conflicts,1);box.addWidget(f,1)
+
+    def refresh_terms(self):
+        entries=sorted(jobs.UserGlossary(self.home).entries.values(),key=lambda e:e['en'].casefold())
+        self.term_table.setRowCount(len(entries))
+        for i,e in enumerate(entries):
+            self.term_table.setItem(i,0,QTableWidgetItem(e['en']));self.term_table.setItem(i,1,QTableWidgetItem(e['zh']))
+        rows=jobs.conflicting_terms(self.session) if self.session and not self.session.get('is_preview') else []
+        set_pill(self.conflict_count,f'{len(rows):,}{"+" if len(rows)>=500 else ""} 組','progress' if rows else 'done')
+        self.conflicts.setRowCount(len(rows))
+        for i,item in enumerate(rows):
+            self.conflicts.setItem(i,0,QTableWidgetItem(item['en']))
+            self.conflicts.setItem(i,1,QTableWidgetItem('、'.join(f'{zh}（{n}）' for zh,n in item['variants'])))
+            cell=QWidget();line=QHBoxLayout(cell);line.setContentsMargins(4,2,4,2)
+            choice=QComboBox();choice.addItems([zh for zh,_ in item['variants']]);line.addWidget(choice,1)
+            line.addWidget(button('統一',lambda checked=False,en=item['en'],c=choice:self.unify_term(en,c.currentText())))
+            self.conflicts.setCellWidget(i,2,cell);self.conflicts.setRowHeight(i,48)
+
+    def save_term(self):
+        try:jobs.UserGlossary(self.home).set(self.term_en.text(),self.term_zh.text())
+        except ValueError as exc:QMessageBox.information(self,'請填寫完整',str(exc));return
+        self.term_en.clear();self.term_zh.clear();self.refresh_terms()
+
+    def remove_term(self):
+        row=self.term_table.currentRow()
+        if row>=0:jobs.UserGlossary(self.home).remove(self.term_table.item(row,0).text());self.refresh_terms()
+
+    def unify_term(self,en,zh):
+        if self.busy or not self.session:return
+        jobs.UserGlossary(self.home).set(en,zh);count=jobs.apply_term(self.session,en,zh)
+        jobs.write_json(Path(self.session['report'])/'session.json',self.session)
+        self.refresh_terms();self.fill_table()
+        QMessageBox.information(self,'已統一',f'「{en}」已統一為「{zh}」，共 {count:,} 筆，並記成自訂譯名。\n到報告頁按套用即可寫入遊戲。')
 
     def apply_theme(self):
+        tokens=THEMES['dark' if self.dark_theme else 'light'];palette=QPalette()
+        # Native pieces the style sheet does not reach (popup containers, scroll corners) follow the theme too.
+        for role,key in ((QPalette.Window,'surface'),(QPalette.Base,'surface'),(QPalette.AlternateBase,'soft'),
+                         (QPalette.Button,'surface'),(QPalette.Text,'text'),(QPalette.WindowText,'text'),
+                         (QPalette.ButtonText,'text'),(QPalette.Highlight,'primary_bg'),(QPalette.HighlightedText,'primary'),
+                         (QPalette.PlaceholderText,'text40'),(QPalette.Mid,'gray'),(QPalette.Dark,'gray'),(QPalette.Shadow,'gray')):
+            palette.setColor(role,QColor(tokens[key]))
+        QApplication.instance().setPalette(palette)
         QApplication.instance().setStyleSheet(stylesheet('dark' if self.dark_theme else 'light'))
         if hasattr(self,'table'):self.fill_table()  # state colours come from the theme tokens
         self.theme_btn.setText('☀' if self.dark_theme else '☾')
@@ -770,17 +846,23 @@ class MainWindow(QMainWindow):
         if jobs.is_instance(instance):self.remember_instance(instance)
         self.run_worker('full_translate',lambda w:self.full_translation_operation(instance,model,w),self.full_translation_done)
 
+    def apply_options(self):
+        return dict(apply_mode='pack' if self.pack_mode.isChecked() else 'jar',set_language=self.set_language.isChecked())
+
     def full_translation_operation(self,instance,model,w):
-        return jobs.full_translation(instance,self.home,model['model'] if model else None,w.progress.emit,lambda:w.cancelled,w.publish)
+        return jobs.full_translation(instance,self.home,model['model'] if model else None,w.progress.emit,lambda:w.cancelled,w.publish,
+                                     options=self.apply_options())
 
     def full_translation_done(self,result):
         self.job_done(result);self.navigate(1)
         applied=result.get('installed_count',0)
-        leftovers=sum(r.get('origin')=='untranslated' for r in result.get('rows',[]))
+        leftovers=sum(r.get('origin')=='untranslated' and bool(r.get('supported')) for r in result.get('rows',[]))
         self.notify_finished('翻譯完成' if result['status']=='installed' else '翻譯已停止，需要處理',
                              f'已套用 {applied:,} 筆，仍待處理 {leftovers:,} 筆。' if result['status']=='installed' else (result.get('apply_error') or '請查看翻譯報告。'))
         if result['status']=='installed':
-            QMessageBox.information(self,'本次處理完成',f'已套用 {applied:,} 筆。\n仍待處理 {leftovers:,} 筆，請查看報告。')
+            notes='\n'.join(self.applied_notes(result))
+            QMessageBox.information(self,'本次處理完成',f'已套用 {applied:,} 筆。\n仍待處理 {leftovers:,} 筆，請查看報告。'+('\n\n'+notes if notes else '')
+                                    +'\n\n重新啟動遊戲後生效。')
         elif result['status']=='awaiting_game':
             QMessageBox.information(self,'譯文已保存，等待套用',result['apply_error'])
 
@@ -860,10 +942,10 @@ class MainWindow(QMainWindow):
             if query and query not in (r['source']+' '+r['key']+' '+str(r.get('en') or r.get('current') or '')+' '+r['proposed']).casefold():return False
             if mode=='review':return r['supported'] and r['changed'] and not r['reviewed']
             if mode=='missing':return r['supported'] and r['origin']=='untranslated'
-            if mode=='context':return not r['supported']
+            if mode=='context':return not r['supported'] and r['origin']!='not_display'
             if mode=='done':return r['reviewed'] or r.get('installed')
             if mode=='ai':return r['origin']=='ai_translation' or r.get('previous_origin')=='ai_translation'
-            if mode=='keep':return r['origin']=='keep_original'
+            if mode=='keep':return r['origin'] in ('keep_original','not_display')
             return True
         filtered=[r for r in rows if match(r)];pages=max(1,(len(filtered)+size-1)//size)
         self.page_index=min(self.page_index,pages-1)
@@ -872,7 +954,7 @@ class MainWindow(QMainWindow):
         self.table.setUpdatesEnabled(False);self.table.setRowCount(len(self.visible_rows))
         for i,r in enumerate(self.visible_rows):
             state=('已套用' if r.get('installed') else '待套用' if r.get('review_method')=='auto_validated_one_click' else '已確認' if r['reviewed']
-                   else '無需翻譯' if r['origin']=='keep_original' else '比對中' if r['origin']=='pending' else '待校對' if r['supported'] and r['changed'] else '待查')
+                   else '無需翻譯' if r['origin'] in ('keep_original','not_display') else '比對中' if r['origin']=='pending' else '待校對' if r['supported'] and r['changed'] else '待查')
             original=r.get('en') or r.get('zh_cn') or r.get('current') or r['key']
             for j,text in enumerate((original,r['proposed'],jobs.SOURCE_NAMES.get(r['origin'],r['origin']),'● '+state)):
                 item=QTableWidgetItem(str(text).replace('\n',' ')[:130])
@@ -902,6 +984,7 @@ class MainWindow(QMainWindow):
             message=f'這批有 {pending:,} 筆已通過檢查的譯文，但還沒寫入模組包。關閉遊戲後按右下「套用這批譯文」，會先備份再套用，不用重新翻譯。'
         if self.session.get('is_preview'):message+=f"\n已記錄 {self.session['preview_total']:,} 筆，處理中先預覽最近 200 筆；結束後載入完整報告。"
         if self.session.get('apply_error'):message+='\n'+self.session['apply_error']
+        if self.session.get('status')=='installed':message+=''.join('\n'+n for n in self.applied_notes(self.session))
         self.report_summary.setText(message)
         missing=sum(r['origin']=='untranslated' and r['supported'] for r in rows)
         self.report_counts.setText(f"已套用 {self.session.get('installed_count',0):,} 筆 · AI 補譯 {self.session.get('ai_translation',0):,} 筆 · 缺少來源 {missing:,} 筆 · 外部翻譯 API 未使用（0 筆）")
@@ -926,11 +1009,25 @@ class MainWindow(QMainWindow):
         if not self.session:return
         count=sum(bool(r.get('reviewed') and r.get('changed') and r.get('supported') and not r.get('installed')) for r in self.session['rows'])
         if not count:QMessageBox.information(self,'先校對譯文','請在報告中雙擊譯文，核對後按「確認這筆」。');return
-        if QMessageBox.question(self,'備份並套用',f'將備份原檔，並套用 {count} 筆已確認譯文到：\n{self.session["instance"]}\n\n請先關閉此模組包的遊戲。是否繼續？')!=QMessageBox.Yes:return
+        options=self.apply_options()
+        where='集中成翻譯包（不修改模組檔）' if options['apply_mode']=='pack' else '寫入各模組檔'
+        language='，並把遊戲語言設為繁體中文' if options['set_language'] else ''
+        if QMessageBox.question(self,'備份並套用',f'將備份原檔，並以「{where}」方式套用 {count:,} 筆已確認譯文{language}：\n{self.session["instance"]}\n\n'
+                                '套用方式與語言選項依開始頁的設定。請先關閉此模組包的遊戲。是否繼續？')!=QMessageBox.Yes:return
+        self.session.update(options)
         self.navigate(0);self.run_worker('apply',lambda w:jobs.apply_session(self.session,self.home,w.progress.emit),self.apply_done)
 
     def apply_done(self,result):
         self.job_done(result);self.notify_finished('套用完成',f"已套用 {result.get('installed_count',0):,} 筆，原檔已備份。")
+
+    def applied_notes(self,result):
+        """Plain-language follow-ups after applying (language switch, pack location, skipped embedded mods)."""
+        notes=[]
+        if result.get('language_set'):notes.append('遊戲語言已設為繁體中文（台灣）。')
+        if result.get('pack_target')=='kubejs':notes.append('翻譯集中放在 kubejs/assets，模組檔沒有修改。')
+        elif result.get('pack_target')=='mod':notes.append('翻譯集中在 mods/mctranslator_zh_tw.jar（實驗功能，請進遊戲確認）。')
+        if result.get('nested_skipped'):notes.append(f"{result['nested_skipped']:,} 筆內嵌函式庫的文字需勾選「集中成翻譯包」才能套用。")
+        return notes
 
     def open_report(self):
         if self.session:open_path(self.session['report'])

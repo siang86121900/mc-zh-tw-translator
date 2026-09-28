@@ -102,23 +102,109 @@ def refresh(instance: Path, cache: Path, progress, cancelled) -> tuple[list[dict
         raise ValueError(f'最新 CFPA 發布找不到適用 Minecraft {version} 的 {asset_name}，已停止正式翻譯。')
     specs = [('tw', commit['sha'], f"https://codeload.github.com/TeamKugimiya/ModsTranslationPack/zip/{commit['sha']}", 'zh_tw'),
              ('cn', str(asset['id'])+'-'+asset['updated_at'], asset['browser_download_url'], 'zh_cn')]
-    dbs, hashes = [], {}
-    for kind, identity, url, locale in specs:
+    dbs, hashes, sources, notes = [], {}, [], []
+
+    def load(kind, identity, url, locale, name):
         key = hashlib.sha256(identity.encode()).hexdigest()[:24]
         rawpath = cache/f'{kind}-{key}.zip'
         if rawpath.exists():
             raw = rawpath.read_bytes()
         else:
-            progress('下載'+('繁中' if kind=='tw' else '簡中')+'參考庫…')
-            raw = fetch(url,'下載'+('繁中' if kind=='tw' else '簡中')+'參考庫',binary=True)
-        progress('解析'+('繁中' if kind=='tw' else '簡中')+'參考庫…')
+            progress('下載'+name+'…')
+            raw = fetch(url,'下載'+name,binary=True)
+        progress('解析'+name+'…')
         db = build_scoped(raw, locale, progress, cancelled)
         if not rawpath.exists():
             tmp = rawpath.with_suffix('.download')
             tmp.write_bytes(raw)
             tmp.replace(rawpath)
-        dbs.append(db)
+        dbs.append(db); sources.append(kind)
         hashes[kind] = hashlib.sha256(raw).hexdigest()
+
+    # Primary references must be confirmed latest; failures stop the translation (AGENTS.md).
+    for kind, identity, url, locale in specs:
+        load(kind, identity, url, locale, '繁中參考庫' if kind=='tw' else '簡中參考庫')
+    # Supplementary sources only add coverage; if one is unavailable it is skipped and noted.
+    para_commit = None
+    try:
+        para = fetch('https://api.github.com/repos/TeamKugimiya/ParaTranslationPack/commits/main','查詢 ParaTranslationPack 最新版')
+        para_commit = para['sha']
+        load('para', para_commit, f'https://codeload.github.com/TeamKugimiya/ParaTranslationPack/zip/{para_commit}', 'zh_tw', 'ParaTranslationPack')
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        notes.append('ParaTranslationPack 暫時無法取得：'+str(exc)[:120])
+    other = sorted((x for x in release['assets'] if re.fullmatch(r'Minecraft-Mod-Language-Modpack-(\d+-\d+)\.zip', x['name'])
+                    and x['name'] != asset_name), key=lambda x: [int(n) for n in re.findall(r'\d+', x['name'])], reverse=True)
+    older = [x for x in other if [int(n) for n in re.findall(r'\d+', x['name'])] < [int(n) for n in family.split('-')]][:3]
+    for x in older:
+        try:
+            load('cn-'+re.search(r'(\d+-\d+)', x['name'])[1], str(x['id'])+'-'+x['updated_at'], x['browser_download_url'], 'zh_cn',
+                 '跨版本簡中參考庫 '+x['name'])
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            notes.append(f"{x['name']} 暫時無法取得：{str(exc)[:120]}")
+    vanilla = official_vanilla(version, fetch, cache, progress)
+    if vanilla:
+        dbs.append(vanilla); sources.append('vanilla')
+    else:
+        notes.append('找不到官方 Minecraft 繁中語系檔，本次沒有使用官方譯名。')
     return dbs, dict(checked_at=datetime.now(timezone.utc).isoformat(), minecraft=version,
                      ref_commit=commit['sha'], cfpa_asset=asset_name, cfpa_updated=asset['updated_at'],
-                     sha256=hashes, entries=[sum(map(len,x.values())) for x in dbs])
+                     para_commit=para_commit, cross_version_assets=[x['name'] for x in older],
+                     vanilla=vanilla.get('__source__') if vanilla else None, sources=sources, notes=notes,
+                     sha256=hashes, entries=[sum(len(v) for k,v in x.items() if not k.startswith('__')) for x in dbs])
+
+
+def launcher_roots() -> list[Path]:
+    home = Path.home(); appdata = Path(__import__('os').environ.get('APPDATA', home/'AppData/Roaming'))
+    return [home/'curseforge/minecraft/Install', appdata/'.minecraft', appdata/'PrismLauncher', appdata/'ModrinthApp/meta']
+
+
+def official_vanilla(version: str, fetch, cache: Path, progress) -> dict:
+    """Mojang's own zh_tw (and en_us) for this Minecraft version, from a local launcher or Mojang's servers.
+
+    Returned as {'minecraft': {key: zh_tw}, '__terms__': {english text: zh_tw}, '__source__': where}.
+    """
+    cached = cache/f'vanilla-{version}.json'
+    if cached.exists():
+        try: return json.loads(cached.read_text(encoding='utf-8'))
+        except ValueError: pass
+    zh = en = None; source = ''
+    for root in launcher_roots():
+        try:
+            meta = json.loads((root/'versions'/version/f'{version}.json').read_text(encoding='utf-8'))
+            index = json.loads((root/'assets/indexes'/f"{meta['assetIndex']['id']}.json").read_text(encoding='utf-8'))
+            digest = index['objects']['minecraft/lang/zh_tw.json']['hash']
+            zh = json.loads((root/'assets/objects'/digest[:2]/digest).read_text(encoding='utf-8'))
+            with zipfile.ZipFile(root/'versions'/version/f'{version}.jar') as z:
+                en = json.loads(z.read('assets/minecraft/lang/en_us.json').decode('utf-8'))
+            source = str(root); break
+        except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+            continue
+    if zh is None:
+        try:
+            progress('下載官方 Minecraft 繁中語系檔…')
+            manifest = fetch('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json', '查詢 Minecraft 版本清單')
+            meta = fetch(next(v['url'] for v in manifest['versions'] if v['id'] == version), '查詢 Minecraft 版本資料')
+            index = fetch(meta['assetIndex']['url'], '查詢官方資源索引')
+            digest = index['objects']['minecraft/lang/zh_tw.json']['hash']
+            zh = json.loads(fetch(f'https://resources.download.minecraft.net/{digest[:2]}/{digest}', '下載官方繁中語系檔', binary=True))
+            jar = fetch(meta['downloads']['client']['url'], '下載官方英文語系（遊戲本體）', binary=True)
+            with zipfile.ZipFile(io.BytesIO(jar)) as z:
+                en = json.loads(z.read('assets/minecraft/lang/en_us.json').decode('utf-8'))
+            source = 'Mojang 官方伺服器'
+        except InterruptedError:
+            raise
+        except Exception:
+            return {}
+    terms = {}
+    for key, text in en.items():
+        # Whole-string names only (items, blocks, mobs, effects...), so short UI words keep their mod context.
+        if isinstance(text, str) and isinstance(zh.get(key), str) and re.match(r'(?:block|item|entity|effect|enchantment|biome)\.minecraft\.', key):
+            terms.setdefault(text.strip().casefold(), zh[key])
+    result = {'minecraft': {k: v for k, v in zh.items() if isinstance(v, str)}, '__terms__': terms, '__source__': source}
+    try: cached.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
+    except OSError: pass
+    return result

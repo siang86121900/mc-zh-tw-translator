@@ -160,6 +160,7 @@ class Audit:
                 for info in z.infolist():
                     self.files.append(dict(source=label+'!/'+info.filename,size=info.file_size,crc=info.CRC,kind='class' if info.filename.endswith('.class') else 'resource'))
                 self.collection(label,names,z.read)
+                self.nested(z,label,names)
                 for n in names:
                     if not n.endswith('.class'):continue
                     try:
@@ -168,6 +169,16 @@ class Audit:
                                 self.add(label+'!/'+n,i,None,s,kind='class_candidate')
                     except Exception as e:self.errors.append([label,n,'class extraction: '+str(e)])
         except Exception as e:self.errors.append([label,str(e)])
+    def nested(self,z,label,names):
+        # Jar-in-jar libraries (META-INF/jarjar etc.) ship their own language files; sources get a
+        # second '!/' so writers can tell they live inside an embedded jar.
+        for n in sorted(names):
+            if not n.lower().endswith('.jar'):continue
+            try:
+                with zipfile.ZipFile(io.BytesIO(z.read(n))) as inner:
+                    self.counts['nested_archives']+=1
+                    self.collection(label+'!/'+n,set(inner.namelist()),inner.read)
+            except Exception as e:self.errors.append([label,n,'nested jar: '+str(e)])
     def loose(self,root):
         paths=[]
         for folder in ('kubejs','config','defaultconfigs','patchouli_books','datapacks','resourcepacks','vaultpatcher','hotai','immersive_furniture'):

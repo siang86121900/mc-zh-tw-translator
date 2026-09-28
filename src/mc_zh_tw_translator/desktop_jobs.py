@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import collections
+import copy
+import gzip
 import hashlib
 import io
 import json
@@ -27,7 +29,8 @@ SOURCE_NAMES = {'same_source_zh_cn':'同檔簡中', 'instance_zh_cn':'模組包�
                 'translation_memory':'已確認記憶', 'existing_zh_tw':'既有繁中',
                 'ai_translation':'AI 補譯', 'manual':'使用者修訂', 'untranslated':'缺少來源',
                 'keep_original':'無需翻譯','instance_resourcepack':'已安裝資源包',
-                'not_installed':'未安裝模組（略過）'}
+                'not_installed':'未安裝模組（略過）','user_glossary':'自訂譯名','not_display':'程式內部字串',
+                'cross_version_reference':'跨版本參考','official_vanilla':'官方原版譯名'}
 HAN = re.compile('[\u3400-\u9fff]')
 FORMAT = re.compile(r'§[0-9a-fk-or]|\$\([^)]+\)|\{[\w.]+\}', re.I)
 TRANSLATION_PACK = re.compile(r'(?:instance!/)?(?:config/openloader/|resourcepacks/)')
@@ -38,7 +41,18 @@ KEY_NAMES = {'shift','ctrl','control','alt','tab','esc','escape','enter','return
              'lctrl','rctrl','lalt','ralt','cmd','command','option','meta','win','super'}
 # Technical abbreviations players read as-is; ordinary words stay translatable.
 ABBREVIATIONS = {'NBT','RGB','RGBA','ARGB','HEX','HSV','UUID','JSON','ID','FPS','TPS','MSPT','GUI','HUD','API','URL',
-                 'XP','HP','MP','CPU','GPU','RAM','FE','RF','EU','DPS','UI','JEI','REI','EMI','LOD','VBO','LAN','PVP','PVE'}
+                 'XP','HP','MP','CPU','GPU','RAM','FE','RF','EU','DPS','UI','JEI','REI','EMI','LOD','VBO','LAN','PVP','PVE',
+                 'CF','AE','ME','EMC','Beta','Alpha','AP','SHP','EP','SP','POI','AABB','SNBT','IPN','OpenGL','REM'}
+# Platform, brand and format names that stay as written (only reached when no source translated them).
+BRANDS = {'patreon','discord','wiki','github','github releases','curseforge','modrinth','ko-fi','kofi','bluesky','twitter',
+          'youtube','twitch','reddit','minecraft','markdown','opengl','bluemap','dynmap','journeymap','optifine'}
+# Upper-case script keywords shown in visual script editors (e.g. FancyMenu action blocks).
+SCRIPT_KEYWORDS = {'IF','ELSE','ELSE-IF','ELSEIF','WHILE','FOR','AND','OR','NOT','SWITCH','CASE','END'}
+# Keys that name another mod's biome/dimension/structure; they only show when that mod is installed.
+KEY_MOD_REFERENCE = re.compile(r'^(?:biome|dimension|structure)\.([a-z0-9_]+)[./]|^travelerstitles\.([a-z0-9_]+)\.')
+# Measurement units shown next to numbers (energy, fluid, pressure, temperature, time, power).
+UNITS = {'mb','b','kb','bar','psi','rpm','hz','khz','w','kw','mw','v','a','j','kj','t','s','ms','ns','μi','µi','°c','°f','k',
+         'fe','rf','eu','cf','mj','su','xp','ep','mp','hp'}
 
 
 def keep_original_reason(text, key='', namespace=''):
@@ -51,22 +65,37 @@ def keep_original_reason(text, key='', namespace=''):
     key=str(key or '')
     if re.match(r'_|.*(?:^|\.)__?comment',key,re.I):return '開發者註解，非顯示文字'
     if re.search(r'(?:^|\.)jukebox_song\.|music_disc[^.]*\.desc$|\.music\.',key) and re.fullmatch(r'[^-\n]+ - [^\n]+',text.strip()):return '歌曲作者與曲名'
-    if re.search(r'(?:^|\.)painting\..*\.author$',key) or key.startswith('metadata.authors.'):return '作者名稱或作者備註'
+    if re.search(r'painting\..*\.author$',key) or key.startswith('metadata.authors.'):return '作者名稱或作者備註'
     if re.search(r'(?:^|\.)font\..*\.preview$',key):return '字型預覽用的英文範例句'
     if key.endswith('.latin'):return '植物學名'
-    compact=lambda s:re.sub('[^a-z0-9]','',s.lower())
-    if namespace and len(compact(text))>=4 and compact(text) in (compact(namespace),compact(namespace).removesuffix('mod')):return '模組名稱'
+    stripped=text.strip()
+    if '�' in text:return '刻意製作的亂碼效果'
+    if stripped.casefold() in BRANDS:return '平台或品牌名稱'
+    if re.fullmatch(r'#?[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?',stripped) and re.search(r'\d',stripped):return '色碼'
+    if re.fullmatch(r'#[A-Za-z_]+',stripped):return '書本樣板變數'
+    if re.match(r'/[a-z]',stripped):return '指令用法'
+    if re.fullmatch(r'(?:config|assets|data|kubejs|mods|saves|defaultconfigs)(?:/[a-z0-9_.\-]+)+|[a-z0-9_.\-]+:[a-z0-9_./\-]+|\w+=\w+(?:,\w+=\w+)*',stripped):return '檔案路徑、ID 或語法範例'
+    compact=lambda s:re.sub('[^a-z0-9]','',s.lower().replace('&','and'))
+    name=compact(re.sub(r'\s+wiki$','',stripped,flags=re.I));mod=compact(re.sub(r'\d+$','',namespace or ''))
+    if mod and len(name)>=4 and name in (mod,mod.removesuffix('mod')):return '模組名稱'
     core=PARAMETER.sub(' ',text).strip()
     if not re.search('[A-Za-z]',core):return '只有參數、數字或符號'
     if re.fullmatch(r'[\d\s.,x×*+\-/:%()\[\]]+',core,re.I) and core!=text.strip():return '只有參數、數字或符號'  # e.g. %d (%dx)
     if core!=text.strip() and re.fullmatch(r'[A-Z]{1,4}|/[a-z]{1,2}',core):return '數值單位'  # e.g. %1$s HPS, %d FE, %s/t
+    units=[p for p in re.split(r'\s*/\s*',core.strip('/ ')) if p]
+    if units and all(p.casefold() in UNITS for p in units):return '數值單位'  # e.g. %dmB, bar, °C, FE/RF/μI/CF
     if re.match(r'(?i)https?://\S+$',core):return '網址'
     if re.fullmatch(r'[\d\s.,x×*+\-/:%()]+',core,re.I) and re.search(r'\d',core):return '尺寸或數值'
     if ROMAN.fullmatch(core) and core not in ('MIX','DIV','MID','DIM','MIL','LID'):return '羅馬數字'
     if re.fullmatch('[A-Za-z]',core):return '單一字母或按鍵'
-    parts=[p.strip() for p in re.split(r'\s*[+/]\s*',core) if p.strip()]
+    parts=[p.strip() for p in re.split(r'\s*[+/]\s*|\s+',core) if p.strip()]
     if parts and all(p.casefold() in KEY_NAMES or re.fullmatch(r'[A-Za-z]|F\d{1,2}',p) for p in parts):return '按鍵名稱'
-    if parts and all(p in ABBREVIATIONS for p in parts):return '技術縮寫'
+    # Labels made only of abbreviations, single letters or units around values: "§lFPS:§r %s", "X: %d / Y: %d".
+    if re.fullmatch(r'[A-Za-z0-9μµ°\s.,:：/()\[\]+\-|，]+',core):
+        tokens=re.findall(r'[A-Za-zμµ°][A-Za-z0-9μµ°\-]*',core)
+        if tokens and all(t in SCRIPT_KEYWORDS for t in tokens):return '程式關鍵字'
+        if tokens and all(t in ABBREVIATIONS or len(t)==1 or t.casefold() in UNITS or t.casefold() in KEY_NAMES for t in tokens):
+            return '技術縮寫、座標或按鍵'
     return ''
 
 
@@ -131,6 +160,73 @@ class TranslationMemory:
         write_json(self.path,dict(format=1,entries=self.entries))
 
 
+class UserGlossary:
+    """Names the user fixed on the 譯名與用詞 page (e.g. Benimaru → 紅丸).
+
+    Whole strings that equal a term use it directly; AI requests receive the terms they contain.
+    """
+    def __init__(self, home):
+        self.path=Path(home)/'user_glossary.json'
+        try:self.entries={e['en'].casefold():e for e in json.loads(self.path.read_text(encoding='utf-8')).get('entries',[])}
+        except (OSError,ValueError,KeyError,AttributeError):self.entries={}
+    def lookup(self, original):
+        entry=self.entries.get(original.strip().casefold()) if isinstance(original,str) else None
+        return entry['zh'] if entry else None
+    def terms_in(self, text):
+        return {e['en']:e['zh'] for e in self.entries.values()
+                if re.search(r'(?<![A-Za-z])'+re.escape(e['en'])+r'(?![A-Za-z])',text or '',re.I)}
+    def set(self, en, zh):
+        en=en.strip();zh=zh.strip()
+        if not en or not zh:raise ValueError('英文與譯名都需要填寫。')
+        self.entries[en.casefold()]=dict(en=en,zh=zh,updated_at=datetime.now().isoformat(timespec='seconds'));self.save()
+    def remove(self, en):
+        self.entries.pop(en.strip().casefold(),None);self.save()
+    def save(self):
+        write_json(self.path,dict(format=1,entries=sorted(self.entries.values(),key=lambda e:e['en'].casefold())))
+
+
+def slim(row):
+    """Report rows keep what review, apply and restore need; scan-only fields stay in the audit files."""
+    return {k:v for k,v in row.items() if k not in ('flags','status','reason')}
+
+
+def internal_reason(text):
+    """Why a class/script/config candidate is clearly not player-facing text, else ''."""
+    s=(text or '').strip()
+    if not s:return '空白'
+    if '{}' in s:return '記錄檔訊息（{} 參數）'
+    if re.search(r'[;{}]|==|->|&&|\|\||\w\(\)|\w\.\w+\(',s):return '程式碼片段'
+    if ' ' not in s and (re.search(r'[._/:$#<>]',s) or re.search(r'[a-z][A-Z]',s) or s.isupper()):return '程式識別字'
+    if re.fullmatch(r'[\W\d_]+',s):return '只有符號或數字'
+    return ''
+
+
+def conflicting_terms(session, limit=500):
+    """Same short English text translated differently across mods (candidates for one agreed name)."""
+    variants=collections.defaultdict(collections.Counter);display={}
+    for r in session.get('rows',[]):
+        original=r.get('en')
+        if not r.get('supported') or not isinstance(original,str) or len(original)>40 or not HAN.search(r.get('proposed') or ''):continue
+        if r.get('origin') in ('untranslated','keep_original'):continue
+        key=original.strip().casefold();display.setdefault(key,original.strip())
+        variants[key][r['proposed'].strip()]+=1
+    rows=[dict(en=display[key],variants=counter.most_common()) for key,counter in variants.items() if len(counter)>1]
+    rows.sort(key=lambda x:-sum(c for _,c in x['variants']))
+    return rows[:limit]
+
+
+def apply_term(session, en, zh):
+    """Use the agreed name for every row whose whole text is `en`; returns how many rows changed."""
+    changed=0
+    for r in session.get('rows',[]):
+        if isinstance(r.get('en'),str) and r['en'].strip().casefold()==en.strip().casefold() and r.get('supported') and not r.get('installed'):
+            if not validate_text(r['en'],zh):continue
+            if r.get('origin') not in ('user_glossary',):r['previous_origin']=r.get('origin')
+            r.update(proposed=zh,origin='user_glossary',evidence='user_glossary.json',issue='',changed=zh!=r.get('current'),
+                     reviewed=False,review_method=None);changed+=1
+    return changed
+
+
 def usable(original, value):
     return isinstance(value,str) and bool(HAN.search(value)) and validate_text(original,value)
 
@@ -138,7 +234,9 @@ def usable(original, value):
 def write_json(path, data):
     path.parent.mkdir(parents=True,exist_ok=True)
     temp = path.with_suffix(path.suffix+'.tmp')
-    temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+    # Reports hold ~100k rows; compact separators roughly halve the file and its load time.
+    compact=path.name=='session.json'
+    temp.write_text(json.dumps(data,ensure_ascii=False,indent=None if compact else 2,separators=(',',':') if compact else None),encoding='utf-8')
     for attempt in range(10):
         try:
             temp.replace(path);break
@@ -203,8 +301,11 @@ def discover_instances(extra=()):
 
 
 def asset_namespaces(z, depth=0):
-    """Asset namespaces of a mod jar, including jar-in-jar libraries (META-INF/jarjar etc.)."""
-    found={n.split('/')[1] for n in z.namelist() if n.startswith('assets/') and n.count('/')>=2}
+    """Asset and data namespaces of a mod jar or datapack, including jar-in-jar libraries.
+
+    Data namespaces count too: worldgen mods such as Terralith ship biomes without assets.
+    """
+    found={n.split('/')[1] for n in z.namelist() if n.startswith(('assets/','data/')) and n.count('/')>=2}
     if depth<2:
         for name in z.namelist():
             if not name.lower().endswith('.jar'):continue
@@ -214,8 +315,45 @@ def asset_namespaces(z, depth=0):
     return found
 
 
-def scan(instance, report, notify, cancelled):
-    audit = Audit(report/'audit',{})
+SCAN_CACHE_VERSION = 'scan-3'
+
+
+def scan_cache(home, instance):
+    # One folder per modpack, so pruning after a scan never touches another modpack's cache.
+    return Path(home)/'cache'/'scan'/hashlib.sha256(str(Path(instance).resolve()).casefold().encode()).hexdigest()[:16]
+
+
+def scan_archive(audit, p, label, digest, cache):
+    """Scan one archive, reusing the cached result when the same file (by hash) was scanned before."""
+    key=hashlib.sha256(f'{SCAN_CACHE_VERSION}|{label}|{digest}'.encode()).hexdigest()[:40]
+    path=cache/f'{key}.json.gz' if cache else None
+    if path and path.exists():
+        try:
+            data=json.loads(gzip.decompress(path.read_bytes()).decode('utf-8'))
+            audit.rows.extend(data['rows']);audit.files.extend(data['files']);audit.errors.extend(data['errors'])
+            audit.repairs.extend(data['repairs']);audit.counts.update(data['counts'])
+            audit.installed_namespaces|=set(data['namespaces']);audit.cache_hits+=1
+            return key
+        except (OSError,ValueError,KeyError):path.unlink(missing_ok=True)
+    marks=(len(audit.rows),len(audit.files),len(audit.errors),len(audit.repairs));before=collections.Counter(audit.counts)
+    audit.archive(p,label)
+    namespaces=set()
+    if Path(label).parts[0] in ('mods','datapacks'):
+        try:
+            with zipfile.ZipFile(p) as z:namespaces=asset_namespaces(z)
+        except (OSError,zipfile.BadZipFile):pass
+    audit.installed_namespaces|=namespaces
+    if path:
+        delta=collections.Counter(audit.counts);delta.subtract(before)
+        data=dict(rows=audit.rows[marks[0]:],files=audit.files[marks[1]:],errors=audit.errors[marks[2]:],
+                  repairs=audit.repairs[marks[3]:],counts={k:v for k,v in delta.items() if v},namespaces=sorted(namespaces))
+        try:path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(gzip.compress(json.dumps(data,ensure_ascii=False).encode('utf-8'),5))
+        except OSError:pass
+    return key
+
+
+def scan(instance, report, notify, cancelled, cache=None):
+    audit = Audit(report/'audit',{});audit.cache_hits=0;used=set()
     audit.source_hashes={}
     archives=[]
     for folder in ('mods','resourcepacks','datapacks','config/openloader'):
@@ -226,13 +364,13 @@ def scan(instance, report, notify, cancelled):
     audit.installed_namespaces={'minecraft','realms','c','forge','neoforge','fabric'}
     for i,p in enumerate(sorted(archives)):
         if cancelled(): raise InterruptedError('已停止，遊戲原檔未修改。')
-        notify(5+int(35*i/max(1,len(archives))), '掃描模組與資源', p.name)
-        audit.source_hashes[p.relative_to(instance).as_posix()]=file_hash(p)
-        audit.archive(p,p.relative_to(instance).as_posix())
-        if p.relative_to(instance).parts[0]=='mods':
-            try:
-                with zipfile.ZipFile(p) as z:audit.installed_namespaces|=asset_namespaces(z)
-            except (OSError,zipfile.BadZipFile):pass
+        label=p.relative_to(instance).as_posix();digest=file_hash(p);audit.source_hashes[label]=digest
+        notify(5+int(35*i/max(1,len(archives))),'掃描模組與資源',p.name+(f'（已沿用 {audit.cache_hits} 個未變動檔案的結果）' if audit.cache_hits else ''))
+        used.add(scan_archive(audit,p,label,digest,cache))
+    if cache and cache.is_dir():
+        # Keep the cache to what this modpack currently contains so it cannot grow without bound.
+        for stale in cache.glob('*.json.gz'):
+            if stale.name.removesuffix('.json.gz') not in used:stale.unlink(missing_ok=True)
     kubejs=instance/'kubejs/assets'
     if kubejs.is_dir():audit.installed_namespaces|={p.name for p in kubejs.iterdir() if p.is_dir()}
     notify(42,'掃描任務、設定與腳本','正在檢查外部文字和程式字串候選')
@@ -265,7 +403,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         checkpoint(result)
     publish()
     try:
-        audit=scan(instance,report,notify,cancelled)
+        audit=scan(instance,report,notify,cancelled,scan_cache(home,instance))
     except Exception as exc:
         result.update(status='cancelled' if isinstance(exc,InterruptedError) else 'blocked')
         result['errors'].append(['掃描',str(exc)])
@@ -309,7 +447,9 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             if isinstance(value,str) and HAN.search(value):
                 instance_rp.setdefault((m[1],r['key']),[]).append((r['source'],value));break
     counts=collections.Counter()
-    memory=TranslationMemory(home)
+    memory=TranslationMemory(home);user_terms=UserGlossary(home)
+    ref_kinds=(result.get('references') or {}).get('sources') or ['tw','cn']
+    vanilla=next((ref for n,ref in enumerate(refs) if n<len(ref_kinds) and ref_kinds[n]=='vanilla'),None)
     # Without any scanned mod jar there is nothing to compare against, so nothing is skipped.
     installed=getattr(audit,'installed_namespaces',None) if any(r['source'].startswith('mods/') for r in audit.rows) else None
     last_publish=time.monotonic()
@@ -326,14 +466,23 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         # Non-language candidates are retained explicitly rather than reclassifying IDs as text.
         if r['kind'] not in ('language','book'):
             if r['flags']:
-                result['rows'].append(dict(r,proposed=r['current'] or r['en'] or '',origin='untranslated',
-                                           issue='需確認顯示用途與上下文',supported=False,reviewed=False,changed=False))
+                value=r['current'] or r['en'] or '';hidden=internal_reason(value)
+                # Obvious identifiers, code and log lines are set aside so 待查 lists what may really be shown.
+                result['rows'].append(dict(slim(r),proposed=value,origin='not_display' if hidden else 'untranslated',
+                                           issue='程式內部字串：'+hidden if hidden else '需確認顯示用途與上下文',
+                                           supported=False,reviewed=False,changed=False))
+                counts['not_display' if hidden else 'context_candidate']+=1
             continue
         original=r['en'] if isinstance(r['en'],str) else r['zh_cn'] or r['current'] or ''
         m=re.search(r'assets/([^/]+)/lang/',r['source']); ns=m[1] if m else ''
         if installed is not None and ns and ns not in installed and TRANSLATION_PACK.match(r['source']):
             # Bundled translation packs (e.g. a whole CFPA pack via OpenLoader) cover mods this
             # modpack does not have; the game never shows those strings.
+            counts['not_installed']+=1;continue
+        ref=KEY_MOD_REFERENCE.match(r['key'])
+        ref=ref and (ref[1] or ref[2])
+        if installed is not None and ref and ref not in (ns,'minecraft') and ref not in installed:
+            # e.g. Traveler's Titles names for biomes of mods that are not installed.
             counts['not_installed']+=1;continue
         # Source order (AGENTS.md): correct zh_tw → same-file zh_cn → pack/CFPA references →
         # confirmed translation memory → glossary; AI only runs later for what is still missing.
@@ -342,8 +491,16 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         options += [('instance_zh_cn',v,p) for p,v in instance_cn.get((ns,r['key']),[]) if p!=r['source']]
         options += [('instance_resourcepack',v,p) for p,v in instance_rp.get((ns,r['key']),[]) if p!=r['source']]
         if ns:
-            options += [('reference_pack_or_cfpa',ref.get(ns,{}).get(r['key']),f'reference:{n}') for n,ref in enumerate(refs)]
+            for n,ref in enumerate(refs):
+                kind=ref_kinds[n] if n<len(ref_kinds) else 'reference'
+                if kind=='vanilla':continue  # official names are used at the glossary step below
+                origin='cross_version_reference' if kind.startswith('cn-') else 'reference_pack_or_cfpa'
+                options.append((origin,ref.get(ns,{}).get(r['key']),'reference:'+kind))
         options.append(('translation_memory',memory.lookup(ns,r['key'],original),'translation_memory.json'))
+        options.append(('user_glossary',user_terms.lookup(original),'user_glossary.json'))
+        if vanilla:
+            options.append(('official_vanilla',vanilla['minecraft'].get(r['key']) if ns=='minecraft' else None,'Minecraft 官方 zh_tw'))
+            options.append(('official_vanilla',vanilla['__terms__'].get(original.strip().casefold()),'Minecraft 官方 zh_tw 譯名'))
         options.append(('glossary',MINECRAFT_GLOSSARY.get(original.lower()),'MINECRAFT_GLOSSARY'))
         if existing is None and isinstance(r['current'],str):
             # A zh_tw that still contains simplified characters is only a last-resort candidate.
@@ -354,7 +511,9 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 value=cc.convert(candidate) if name in ('same_source_zh_cn','instance_zh_cn') else candidate
                 if not validate_text(original,value):continue
                 origin=name;evidence=source
-                issue='' if name in ('existing_zh_tw','translation_memory') else '需校對台灣用語、版本語意與名稱'
+                issue=('' if name in ('existing_zh_tw','translation_memory','user_glossary','official_vanilla')
+                       else '跨版本參考：來自其他 Minecraft 版本的 CFPA，需核對版本差異' if name=='cross_version_reference'
+                       else '需校對台灣用語、版本語意與名稱')
                 break
         if origin=='existing_zh_tw' and existing is None:
             issue='既有繁中含簡體字，已轉為台灣繁體，請核對'
@@ -369,7 +528,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         changed=value!=r['current'] and origin!='untranslated' and (origin!='keep_original' or bool(issue))
         counts[origin]+=1
         if changed or issue or origin=='keep_original':  # keep rows stay visible under the report's 無需翻譯 filter
-            result['rows'].append(dict(r,proposed=value,origin=origin,evidence=evidence,issue=issue,
+            result['rows'].append(dict(slim(r),proposed=value,origin=origin,evidence=evidence,issue=issue,
                                        supported=supported,reviewed=False,changed=changed))
     result.update(source_counts=dict(counts),status='needs_review',api=0,ai_translation=0)
     for name,expected in result['source_hashes'].items():
@@ -381,9 +540,14 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     return result
 
 
-def full_translation(instance, home, model, notify, cancelled=lambda:False, checkpoint=lambda _:None):
-    """Publish durable reports even when application is blocked after planning."""
+def full_translation(instance, home, model, notify, cancelled=lambda:False, checkpoint=lambda _:None, options=None):
+    """Publish durable reports even when application is blocked after planning.
+
+    options: apply_mode ('jar' rewrites mod files, 'pack' writes KubeJS assets or a translation mod)
+    and set_language (switch options.txt to zh_tw, backed up like every other file).
+    """
     result=plan(instance,home,notify,cancelled,checkpoint=checkpoint)
+    result.update(options or {})
     if result['status'] in ('blocked','cancelled'):return result
     try:
         if model:
@@ -507,26 +671,142 @@ def ensure_game_closed(instance):
     if message:raise GameRunningError(message)
 
 
+PACK_MOD_FILE = 'mods/mctranslator_zh_tw.jar'
+PACK_MOD_ID = 'mctranslator_zh_tw'
+
+
+def is_nested(row):
+    return row['source'].count('!/')>=2
+
+
+def read_archive_entry(instance, outer, entry):
+    """Read an entry of a mod jar; 'inner.jar!/path' reaches into jar-in-jar libraries."""
+    with zipfile.ZipFile(contained(instance,outer)) as z:
+        if '!/' not in entry:return z.read(entry) if entry in z.namelist() else None
+        inner,rest=entry.split('!/',1)
+        with zipfile.ZipFile(io.BytesIO(z.read(inner))) as nested:
+            return nested.read(rest) if rest in nested.namelist() else None
+
+
+def pack_target(instance):
+    """Where pack mode writes: KubeJS assets (loaded above mod resources) or a small resource mod."""
+    kubejs=any(p.name.lower().startswith('kubejs') for p in (instance/'mods').glob('*.jar')) and (instance/'kubejs').is_dir()
+    return 'kubejs' if kubejs else 'mod'
+
+
+def pack_mod_metadata(mod_ids):
+    """Resource-only mod metadata for NeoForge, Forge and Fabric; loads after every translated mod."""
+    after=''.join(f'\n[[dependencies.{PACK_MOD_ID}]]\nmodId="{m}"\ntype="optional"\nmandatory=false\nversionRange="*"\nordering="AFTER"\nside="CLIENT"\n'
+                  for m in sorted(mod_ids))
+    toml=(f'modLoader="lowcodefml"\nloaderVersion="[1,)"\nlicense="All rights reserved"\n\n[[mods]]\nmodId="{PACK_MOD_ID}"\n'
+          f'version="1.0.0"\ndisplayName="MC Translator 繁體中文翻譯"\ndescription="由 MC Translator 產生的繁體中文翻譯包，不含程式碼。"\n'+after)
+    fabric=json.dumps(dict(schemaVersion=1,id=PACK_MOD_ID,version='1.0.0',name='MC Translator 繁體中文翻譯',
+                           environment='client',suggests={m:'*' for m in sorted(mod_ids)}),ensure_ascii=False,indent=2)
+    return {'META-INF/neoforge.mods.toml':toml,'META-INF/mods.toml':toml,'fabric.mod.json':fabric,
+            'pack.mcmeta':json.dumps(dict(pack=dict(pack_format=34,description='MC Translator 繁體中文翻譯')),ensure_ascii=False)}
+
+
+def jar_mod_ids(instance, outer):
+    try:
+        with zipfile.ZipFile(contained(instance,outer)) as z:
+            for name in ('META-INF/neoforge.mods.toml','META-INF/mods.toml'):
+                if name in z.namelist():
+                    return set(re.findall(r'(?m)^\s*modId\s*=\s*"([^"]+)"',z.read(name).decode('utf-8','replace')))
+            if 'fabric.mod.json' in z.namelist():return {json.loads(z.read('fabric.mod.json').decode('utf-8-sig'))['id']}
+    except (OSError,ValueError,KeyError,zipfile.BadZipFile):pass
+    return set()
+
+
+def build_pack(instance, staged, pack_rows, session, notify):
+    """Stage translations as KubeJS assets or a resource-only mod instead of rewriting mod jars.
+
+    Each file carries the mod's own zh_tw, any earlier pack content and this batch, so it is
+    complete whichever way the loader orders same-named resources.
+    """
+    target=pack_target(instance);resources=collections.defaultdict(list);mod_ids=set()
+    for outer,entry,row in pack_rows:
+        resources[entry.split('!/')[-1]].append((outer,entry,row));mod_ids|=jar_mod_ids(instance,outer)
+    existing={}
+    if target=='mod' and (instance/PACK_MOD_FILE).exists():
+        with zipfile.ZipFile(instance/PACK_MOD_FILE) as z:
+            existing={n:z.read(n) for n in z.namelist() if n.startswith('assets/')}
+            meta=z.read('META-INF/neoforge.mods.toml').decode('utf-8') if 'META-INF/neoforge.mods.toml' in z.namelist() else ''
+            mod_ids|=set(re.findall(r'(?m)^modId="([^"]+)"',meta))-{PACK_MOD_ID}
+    repaired={n for _,n,*_ in session.get('repairs',[])}
+    built={}
+    for i,(resource,items) in enumerate(sorted(resources.items())):
+        if i%50==0:notify(int(40*i/max(1,len(resources))),'整理翻譯包',resource)
+        outer,entry,first=items[0];rows=[row for *_,row in items]
+        previous=(contained(instance,'kubejs/'+resource).read_bytes() if target=='kubejs' and (instance/'kubejs'/resource).exists()
+                  else existing.get(resource))
+        if first['kind']=='book' and first['key']=='text':
+            built[resource]=first['proposed'].encode('utf-8');continue
+        own=read_archive_entry(instance,outer,entry)
+        try:data=parse(own) if own and resource.endswith('.json') else dict(l.split('=',1) for l in own.decode('utf-8-sig').splitlines() if '=' in l and not l.startswith('#')) if own else {}
+        except ValueError:
+            if entry.split('!/')[-1] not in repaired:raise
+            data={}
+        if first['kind']=='book' and not own:
+            data=parse(read_archive_entry(instance,outer,first['source'].split('!/',1)[1]))  # English structure
+        if previous:
+            before=parse(previous) if resource.endswith('.json') else dict(l.split('=',1) for l in previous.decode('utf-8-sig').splitlines() if '=' in l)
+            data=before if first['kind']=='book' else {**data,**before}
+        for r in rows:
+            if r['kind']=='language':data[r['key']]=r['proposed'];continue
+            keys=json.loads(r['key']);node=data
+            for key in keys[:-1]:node=node[key]
+            node[keys[-1]]=r['proposed']
+        built[resource]=(json.dumps(data,ensure_ascii=False,indent=2) if resource.endswith('.json')
+                         else '\n'.join(f'{k}={v}' for k,v in data.items())+'\n').encode('utf-8')
+    records=[]
+    if target=='kubejs':
+        for resource,content in built.items():
+            path='kubejs/'+resource;dst=contained(staged,path);dst.parent.mkdir(parents=True,exist_ok=True);dst.write_bytes(content)
+            src=instance/path
+            records.append(dict(file=path,before=file_hash(src) if src.exists() else None,after=file_hash(dst),reviewed=True,verified=True))
+    else:
+        dst=contained(staged,PACK_MOD_FILE);dst.parent.mkdir(parents=True,exist_ok=True)
+        with zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED) as w:
+            for name,text in pack_mod_metadata(mod_ids).items():w.writestr(name,text)
+            for name,content in {**existing,**built}.items():w.writestr(name,content)
+        src=instance/PACK_MOD_FILE
+        records.append(dict(file=PACK_MOD_FILE,before=file_hash(src) if src.exists() else None,after=file_hash(dst),reviewed=True,verified=True))
+    session['pack_target']=target
+    return records
+
+
+def set_language_record(instance, staged):
+    """Stage options.txt with lang:zh_tw so the game opens in Traditional Chinese after applying."""
+    src=instance/'options.txt';text=src.read_text(encoding='utf-8') if src.exists() else ''
+    if re.search(r'(?m)^lang:zh_tw\s*$',text):return None
+    text=re.sub(r'(?m)^lang:.*$','lang:zh_tw',text) if re.search(r'(?m)^lang:',text) else text+('' if not text or text.endswith('\n') else '\n')+'lang:zh_tw\n'
+    dst=staged/'options.txt';dst.write_text(text,encoding='utf-8')
+    return dict(file='options.txt',before=file_hash(src) if src.exists() else None,after=file_hash(dst),reviewed=True,verified=True)
+
+
 def apply_session(session, home, notify):
     instance=Path(session['instance']); report=Path(session['report'])
-    selected=[r for r in session['rows'] if r.get('reviewed') and r.get('supported') and r.get('changed')]
+    pack=session.get('apply_mode')=='pack'
+    selected=[r for r in session['rows'] if r.get('reviewed') and r.get('supported') and r.get('changed') and (pack or not is_nested(r))]
+    skipped_nested=sum(1 for r in session['rows'] if r.get('reviewed') and r.get('changed') and is_nested(r) and not pack)
     if not selected:raise ValueError('尚未有確認可套用的譯文。請先在報告選擇文字並按「確認這筆」。')
     if session.get('status')=='blocked':raise ValueError('此批次預檢未通過，不能套用。')
     if session.get('status')=='installed':raise ValueError('這一批已套用，請重新掃描後建立下一批。')
     ensure_game_closed(instance)
     for name,expected in session.get('source_hashes',{}).items():
         if file_hash(contained(instance,name))!=expected:raise ValueError('來源在掃描後有變更，請重新掃描：'+name)
-    changes=collections.defaultdict(list)
+    changes=collections.defaultdict(list);pack_rows=[]
     for row in selected:
         original=row.get('en') or row.get('zh_cn') or row.get('current') or ''
         if not validate_text(original,row['proposed']):raise ValueError('譯文格式或參數不一致：'+row['key'])
         path,entry=target_for(row); contained(instance,path)
+        if pack and entry is not None and path.startswith('mods/'):pack_rows.append((path,entry,row));continue
         changes[path].append((entry,row))
     staged=report/'staged'
     if staged.exists():
         staged=report/('staged-'+uuid.uuid4().hex[:8])
     staged.mkdir()
-    records=[]
+    records=build_pack(instance,staged,pack_rows,session,notify) if pack_rows else []
     for i,(path,edits) in enumerate(changes.items()):
         notify(int(70*i/len(changes)),'驗證並準備套用',path)
         src=contained(instance,path); dst=contained(staged,path)
@@ -570,7 +850,10 @@ def apply_session(session, home, notify):
                 if len(z.namelist())!=len(set(z.namelist())):raise ValueError('原始壓縮檔有重複項目，需先修復：'+path)
                 with zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED) as w:
                     for info in z.infolist():
-                        if info.filename not in modified and not is_jar_signature_file(info.filename):w.writestr(info,z.read(info))
+                        if info.filename not in modified and not is_jar_signature_file(info.filename):
+                            # writestr() rewrites the ZipInfo's offsets; passing the source archive's own
+                            # object would make later reads from that archive land in the wrong place.
+                            w.writestr(copy.copy(info),z.read(info.filename))
                     for n,b in modified.items():w.writestr(n,b)
                 with zipfile.ZipFile(dst) as check:
                     if check.testzip():raise ValueError('ZIP 完整性驗證失敗：'+path)
@@ -581,6 +864,9 @@ def apply_session(session, home, notify):
         finally:
             if z:z.close()
         records.append(dict(file=path,before=before,after=file_hash(dst),reviewed=True,verified=True))
+    if session.get('set_language'):
+        record=set_language_record(instance,staged)
+        if record:records.append(record)
     jars=[staged/r['file'] for r in records if r['file'].endswith('.jar')]
     if jars:
         vr=VerifyResult();check_java_zipfs(jars,vr)
@@ -589,11 +875,12 @@ def apply_session(session, home, notify):
     ensure_game_closed(instance)
     backup=apply_reviewed(instance,staged,records,home/'output')
     for row in selected:row['installed']=True
-    session.update(status='installed',backup=str(backup),installed_count=len(selected))
+    session.update(status='installed',backup=str(backup),installed_count=len(selected),nested_skipped=skipped_nested,
+                   language_set=any(r['file']=='options.txt' for r in records))
     write_json(report/'session.json',session)
     notify(92,'重新掃描實際遊戲資料','檢查套用後的語系與待查項目')
     try:
-        after=scan(instance,report/'after',lambda *_:None,lambda:False)
+        after=scan(instance,report/'after',lambda *_:None,lambda:False,scan_cache(home,instance))
         session['after_counts']=dict(after.counts)
     except Exception as exc:
         session['errors'].append(['套用後稽核',str(exc)])

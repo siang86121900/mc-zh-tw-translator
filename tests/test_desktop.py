@@ -51,6 +51,87 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(any(r['key']=='lib.a' for r in result['rows']))
         self.assertEqual(result['source_counts']['not_installed'],1)
 
+    def make_mod(self, nested=True):
+        import io, zipfile
+        (self.instance/'mods').mkdir(exist_ok=True)
+        inner=io.BytesIO()
+        with zipfile.ZipFile(inner,'w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="lib"\n')
+            z.writestr('assets/lib/lang/en_us.json',json.dumps({'lib.a':'Library'}))
+            z.writestr('assets/lib/lang/zh_cn.json',json.dumps({'lib.a':'函数库'}))
+        with zipfile.ZipFile(self.instance/'mods/real.jar','w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="real"\n')
+            z.writestr('assets/real/lang/en_us.json',json.dumps({'real.a':'Real','real.b':'Keep me'}))
+            z.writestr('assets/real/lang/zh_cn.json',json.dumps({'real.a':'真实'}))
+            z.writestr('assets/real/lang/zh_tw.json',json.dumps({'real.b':'保留我'}))
+            if nested:z.writestr('META-INF/jarjar/lib.jar',inner.getvalue())
+        return self.instance/'mods/real.jar'
+
+    def confirm_all(self, result):
+        for r in result['rows']:
+            if r['supported'] and r['changed']:r['reviewed']=True
+        return result
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_pack_mode_writes_kubejs_without_touching_mods_and_restores(self,_):
+        import zipfile
+        jar=self.make_mod();before=jar.read_bytes()
+        (self.instance/'mods/kubejs-neoforge.jar').write_bytes(b'')  # KubeJS present -> KubeJS assets
+        (self.instance/'options.txt').write_text('fov:0.0\nlang:en_us\n',encoding='utf-8')
+        result=self.confirm_all(self.make_plan());result.update(apply_mode='pack',set_language=True)
+        done=apply_session(result,self.home,lambda *_:None)
+        self.assertEqual(jar.read_bytes(),before)  # mod jar untouched
+        lang=json.loads((self.instance/'kubejs/assets/real/lang/zh_tw.json').read_text(encoding='utf-8'))
+        self.assertEqual(lang,{'real.a':'真實','real.b':'保留我'})  # mod's own zh_tw kept, new key added
+        self.assertEqual(json.loads((self.instance/'kubejs/assets/lib/lang/zh_tw.json').read_text(encoding='utf-8')),{'lib.a':'函式庫'})
+        self.assertIn('lang:zh_tw',(self.instance/'options.txt').read_text(encoding='utf-8'))
+        self.assertTrue(done['language_set'])
+        restore_backup(Path(done['backup']),self.instance)
+        self.assertFalse((self.instance/'kubejs/assets/real/lang/zh_tw.json').exists())
+        self.assertIn('lang:en_us',(self.instance/'options.txt').read_text(encoding='utf-8'))
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_pack_mode_without_kubejs_builds_translation_mod(self,_):
+        import zipfile, shutil
+        shutil.rmtree(self.instance/'kubejs')
+        self.make_mod();result=self.confirm_all(self.make_plan());result['apply_mode']='pack'
+        apply_session(result,self.home,lambda *_:None)
+        with zipfile.ZipFile(self.instance/'mods/mctranslator_zh_tw.jar') as z:
+            toml=z.read('META-INF/neoforge.mods.toml').decode('utf-8')
+            self.assertIn('modLoader="lowcodefml"',toml);self.assertIn('modId="real"',toml);self.assertIn('ordering="AFTER"',toml)
+            self.assertEqual(json.loads(z.read('assets/real/lang/zh_tw.json'))['real.a'],'真實')
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_jar_mode_skips_nested_rows_and_leaves_inner_jar(self,_):
+        import zipfile
+        self.make_mod();result=self.confirm_all(self.make_plan())
+        done=apply_session(result,self.home,lambda *_:None)
+        self.assertEqual(done['nested_skipped'],1)
+        with zipfile.ZipFile(self.instance/'mods/real.jar') as z:
+            self.assertIn('assets/real/lang/zh_tw.json',z.namelist())
+            self.assertNotIn('META-INF/jarjar/lib.jar!/assets/lib/lang/zh_tw.json',z.namelist())
+
+    def test_scan_cache_reuses_unchanged_archives(self):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        self.make_mod();first=self.make_plan()
+        with patch.object(jobs.Audit,'archive',side_effect=AssertionError('should use cache')):
+            second=self.make_plan()
+        self.assertEqual(len(first['rows']),len(second['rows']))
+
+    def test_internal_strings_and_user_terms(self):
+        from mc_zh_tw_translator.desktop_jobs import internal_reason, UserGlossary, conflicting_terms, apply_term
+        for text in ('Loading config for {}','getValue()','com.example.Foo','CONFIG_KEY','x->y'):
+            self.assertTrue(internal_reason(text),text)
+        self.assertEqual(internal_reason('Right-click to open the menu'),'')
+        terms=UserGlossary(self.home);terms.set('Benimaru','紅丸')
+        self.assertEqual(UserGlossary(self.home).lookup('benimaru'),'紅丸')
+        self.assertEqual(UserGlossary(self.home).terms_in('Benimaru Boss'),{'Benimaru':'紅丸'})
+        row=lambda zh:dict(en='Direwolf',proposed=zh,origin='same_source_zh_cn',supported=True,current=None,key='k',source='s')
+        session=dict(rows=[row('恐狼'),row('恐狼'),row('牙狼族')])
+        self.assertEqual(conflicting_terms(session)[0]['variants'],[('恐狼',2),('牙狼族',1)])
+        self.assertEqual(apply_term(session,'Direwolf','恐狼'),3)
+        self.assertEqual({r['proposed'] for r in session['rows']},{'恐狼'})
+
     def test_source_order_uses_memory_and_rejects_simplified_zh_tw(self):
         from mc_zh_tw_translator.desktop_jobs import TranslationMemory
         (self.lang/'zh_tw.json').write_text(json.dumps({'demo.hello':'你好 %s','demo.missing':'未知设置'}),encoding='utf-8')
@@ -75,6 +156,16 @@ class WorkflowTests(unittest.TestCase):
         for text in ('Roomopolis','WIP Chicken','Time and Essence','%s Mana','MIX','OK','Click'):
             self.assertEqual(keep(text),'',text)
         self.assertEqual(keep('%s%s/t'),'數值單位')
+        for text in ('FE/RF/μI/CF','bar','°C','%dmB','Beta'):self.assertTrue(keep(text),text)
+        self.assertEqual(keep('Bar Stool'),'')
+        for text in ('Patreon','§lFPS:§r %s','§lGPU:§r %1$s (OpenGL: %2$s)','EP: %s/%s','X: %d / Y: %d / Z: %d','Ctrl Shift %s',
+                     'IF (%s)','#name','/jech [profile]','config/inventoryprofilesnext','minecraft:entity.pig','facing=north,half=upper',
+                     'dde9f4','En�d'):
+            self.assertTrue(keep(text),text)
+        self.assertTrue(keep('Friends&Foes','','friendsandfoes'));self.assertTrue(keep('Cloth Config Wiki','','cloth-config2'))
+        self.assertTrue(keep('HexaBlu','magic_painting.twilightforest.x.author'))
+        for text in ('Not','Mod ID','on/off','Minecraft Logo','Default','Enable BlueMap Support','Inv','Search...'):
+            self.assertEqual(keep(text),'',text)
         # Key context: credits, songs, comments and mod names are kept; ordinary player text is not.
         self.assertTrue(keep('Binke - Moonlight','jukebox_song.eternal_starlight.moonlight'))
         self.assertTrue(keep('TohokuAlpha','painting.eternal_starlight.power.author'))

@@ -19,6 +19,10 @@
 
 桌面版的翻譯記憶存在程式資料夾的 `translation_memory.json`，只收使用者在報告中按「確認這筆」的譯文，以「模組 namespace＋語系鍵＋原文雜湊」對應；自動來源、參考庫與 AI 候選不會寫入。模組包附帶的翻譯包（OpenLoader、resourcepacks）中，namespace 不在已安裝模組（含 jar-in-jar）裡的語系會略過並計入 `not_installed`。
 
+補充來源（`desktop_references.refresh`）：ParaTranslationPack 最新 main、CFPA 較舊版本資產（最多 3 個，來源標為 `cross_version_reference` 並列為待核對）、Minecraft 官方 zh_tw（優先讀本機啟動器 `Install`／`.minecraft`，否則從 Mojang 下載）。這些來源失敗只記錄在 `references.notes`，不阻擋翻譯；ModsTranslationPack 與同版本 CFPA 仍須確認最新。自訂譯名存在 `user_glossary.json`。
+
+套用模式：`apply_mode='jar'` 直接改模組 jar（內嵌 jar-in-jar 的文字會略過並計入 `nested_skipped`）；`'pack'` 寫到 `kubejs/assets` 或 `mods/mctranslator_zh_tw.jar`（lowcodefml／fabric 資源模組，對翻譯到的模組宣告 `ordering="AFTER"`）。`set_language=True` 會把 `options.txt` 的 `lang` 改為 `zh_tw`，與其他檔案一起備份與還原。
+
 ## 打包與發布
 
 ```powershell

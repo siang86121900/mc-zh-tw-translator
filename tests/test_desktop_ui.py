@@ -106,7 +106,7 @@ class DesktopUiTests(unittest.TestCase):
             window.session=dict(rows=[dict(origin='untranslated',supported=True)],report=d)
             with patch.object(QMessageBox,'question',return_value=QMessageBox.No),patch.object(window,'run_worker') as run:
                 window.ai_supplement();run.assert_not_called()
-            self.assertEqual(window.pages.count(),5);window.close()
+            self.assertEqual(window.pages.count(),6);window.close()
 
     def test_ai_guard_warning_stops_before_confirmation(self):
         with tempfile.TemporaryDirectory() as d:
@@ -168,6 +168,22 @@ class DesktopUiTests(unittest.TestCase):
             window=MainWindow(Path(d))
             self.assertTrue(window.activity.isHidden());self.assertTrue(window.progress.isHidden())
             window.set_start_expanded(True);self.assertFalse(window.activity.isHidden())
+            window.close()
+
+    def test_terms_page_unifies_conflicts_and_apply_options_follow_checkboxes(self):
+        with tempfile.TemporaryDirectory() as d:
+            home=Path(d);report=home/'output/demo/報告/b';report.mkdir(parents=True)
+            row=lambda zh:dict(source='mods/a.jar!/assets/a/lang/en_us.json',key='k',en='Direwolf',proposed=zh,origin='same_source_zh_cn',
+                               supported=True,reviewed=False,changed=True,current=None,kind='language')
+            (report/'session.json').write_text(json.dumps(dict(instance=d,report=str(report),status='needs_review',errors=[],source_counts={},
+                                                              rows=[row('恐狼'),row('牙狼族')])),encoding='utf-8')
+            window=MainWindow(home);window.navigate(5)
+            self.assertEqual(window.conflicts.rowCount(),1)
+            with patch.object(QMessageBox,'information'):window.unify_term('Direwolf','恐狼')
+            self.assertEqual({r['proposed'] for r in window.session['rows']},{'恐狼'})
+            self.assertEqual(window.term_table.rowCount(),1);self.assertEqual(window.conflicts.rowCount(),0)
+            window.pack_mode.setChecked(True);window.set_language.setChecked(False)
+            self.assertEqual(window.apply_options(),dict(apply_mode='pack',set_language=False))
             window.close()
 
 if __name__=='__main__':unittest.main()
