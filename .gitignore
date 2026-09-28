@@ -3,6 +3,11 @@ tmp/
 *.pyc
 __pycache__/
 .venv/
+.venv-desktop/
+build/
+dist/
+MCTranslatorData/
+*.exe
 venv/
 .DS_Store
 

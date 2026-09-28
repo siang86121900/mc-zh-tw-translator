@@ -100,7 +100,8 @@ public class ZipFsCheck {
         paths_file = Path(tmp) / "paths.txt"
         paths_file.write_text("\n".join(str(jar.resolve()) for jar in jars), encoding="utf-8")
         cmd = [java, "-Dfile.encoding=UTF-8", str(src), str(paths_file)]
-        proc = subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True)
+        proc = subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=120)
         if proc.returncode != 0:
             output = (proc.stdout + proc.stderr).strip()
             result.fail("Java ZipFS validation failed:\n" + output)

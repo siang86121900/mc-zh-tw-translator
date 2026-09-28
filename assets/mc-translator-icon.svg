@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" shape-rendering="crispEdges">
+  <!-- Minecraft-inspired grass block, with a translation mark on the front. -->
+  <rect width="256" height="256" fill="#18212A"/>
+  <path d="M24 24h208v208H24z" fill="#6B3F24"/>
+  <path d="M24 24h208v56H24z" fill="#4C9A2A"/>
+  <path d="M24 24h208v16H24z" fill="#86C440"/>
+  <path d="M24 80h208v16H24z" fill="#3B7825"/>
+  <path d="M40 112h24v24H40zM88 96h24v24H88zM152 128h24v24h-24zM192 104h24v24h-24zM56 184h24v24H56zM128 176h24v24h-24zM184 200h24v16h-24z" fill="#85502B"/>
+  <path d="M24 24h16v208H24zM216 24h16v208h-16zM24 216h208v16H24z" fill="#10202A"/>
+  <path d="M80 104h160v128h-24v16h-40v-16H80z" fill="#FFFFFF"/>
+  <text x="160" y="204" text-anchor="middle" font-family="Microsoft JhengHei" font-size="108" font-weight="700" fill="#235125">譯</text>
+</svg>

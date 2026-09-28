@@ -1,0 +1,6 @@
+PySide6-Essentials==6.8.3
+PyInstaller==6.16.0
+requests>=2.32,<3
+opencc-python-reimplemented==0.1.7
+Pillow>=10,<12
+psutil==7.2.2

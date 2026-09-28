@@ -1,0 +1,120 @@
+import os
+os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
+import json
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtTest import QTest
+from mc_zh_tw_translator.desktop import MainWindow
+
+
+class DesktopUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):cls.app=QApplication.instance() or QApplication([])
+
+    def test_background_plan_reports_real_rows_and_reenables_controls(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);home=root/'app';home.mkdir();instance=root/'sample'
+            lang=instance/'kubejs/assets/demo/lang';lang.mkdir(parents=True)
+            (lang/'en_us.json').write_text('{"demo.test":"Hello"}',encoding='utf-8')
+            (lang/'zh_cn.json').write_text('{"demo.test":"你好"}',encoding='utf-8')
+            window=MainWindow(home);window.path.setText(str(instance))
+            with patch('mc_zh_tw_translator.desktop_jobs.refresh',return_value=([{},{}],{})):
+                window.start_job()
+                self.assertFalse(window.choose.isEnabled())
+                for _ in range(500):
+                    self.app.processEvents();time.sleep(.02)
+                    if not window.busy:break
+                if window.busy:
+                    window.worker.cancelled=True;window.worker.wait(10000);self.app.processEvents()
+            self.assertFalse(window.busy)
+            self.assertIsNotNone(window.session)
+            self.assertEqual(window.session['rows'][0]['proposed'],'你好')
+            self.assertEqual(window.stats[0].text(),'1')
+            self.assertTrue(window.choose.isEnabled())
+            window.navigate(1);self.assertEqual(window.table.rowCount(),1)
+            self.assertFalse((lang/'zh_tw.json').exists())
+            window.close()
+
+    def test_update_check_shows_unavailable_and_never_enables_install(self):
+        with tempfile.TemporaryDirectory() as d:
+            window=MainWindow(Path(d))
+            with patch('mc_zh_tw_translator.updater.check_update',return_value=dict(status='unavailable',message='尚未發布版本')):
+                window.check_updates()
+                for _ in range(500):
+                    self.app.processEvents();time.sleep(.02)
+                    if not window.busy:break
+            self.assertEqual(window.update_status.text(),'尚未發布版本')
+            self.assertFalse(window.install_btn.isEnabled());window.close()
+
+    def test_path_can_be_pasted_and_theme_can_be_switched(self):
+        with tempfile.TemporaryDirectory() as d:
+            window=MainWindow(Path(d))
+            pasted='"'+str(Path(d)/'instance')+'"'
+            window.path.setText(pasted)
+            self.assertFalse(window.path.isReadOnly())
+            self.assertEqual(str(window.instance_path()),str(Path(d)/'instance'))
+            self.assertIn('#F8F8F8', QApplication.instance().styleSheet())
+            window.toggle_theme()
+            self.assertEqual(window.settings.value('theme'),'dark')
+            self.assertIn('#171A1F', QApplication.instance().styleSheet())
+            window.toggle_theme()
+            self.assertEqual(window.settings.value('theme'),'light')
+            window.close()
+
+    def test_checkpoint_visible_before_finished_and_recovers_on_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            home=Path(d);report=home/'output/demo/報告/batch';report.mkdir(parents=True)
+            data=dict(instance=d,report=str(report),status='awaiting_game',source_counts={},errors=[],rows=[
+                dict(source='instance!/kubejs/assets/demo/lang/en_us.json',key='hello',en='Hello',
+                     proposed='你好',origin='same_source_zh_cn',supported=True,reviewed=True,changed=True)])
+            (report/'session.json').write_text(json.dumps(data),encoding='utf-8')
+            window=MainWindow(home)
+            self.assertEqual(window.table.rowCount(),1)
+            self.assertIn('重試套用',window.apply_btn.text())
+            window.receive_checkpoint(json.dumps(data))
+            self.assertIn('Hello',window.activity.toPlainText())
+            self.assertIn('譯文已保存',window.report_summary.text())
+            window.close()
+
+    def test_startup_update_prompts_without_download_or_blocking_translation(self):
+        with tempfile.TemporaryDirectory() as d:
+            window=MainWindow(Path(d))
+            with patch('mc_zh_tw_translator.updater.check_update',return_value=dict(status='available',version='v9.0.0')),patch('mc_zh_tw_translator.updater.download_update') as download:
+                window.check_updates_on_start()
+                for _ in range(100):
+                    self.app.processEvents();time.sleep(.01)
+                    if not window.update_worker:break
+                self.assertIn('有新版',window.navs[3].text())
+                self.assertFalse(window.update_badge.isHidden())
+                self.assertTrue(window.full_start.isEnabled());download.assert_not_called()
+            window.close()
+
+    def test_ai_model_choice_and_declined_consent_never_start_job(self):
+        with tempfile.TemporaryDirectory() as d:
+            window=MainWindow(Path(d))
+            info=dict(account=dict(type='chatgpt',planType='plus'),warning='',quota=[],models=[
+                dict(model='available-a',displayName='模型 A',isDefault=True),dict(model='available-b',displayName='模型 B')])
+            window.ai_connected(info)
+            self.assertEqual(window.ai_models.count(),2);window.ai_models.setCurrentIndex(1)
+            self.assertEqual(window.settings.value('ai_model'),'available-b')
+            window.ai_connected(info);self.assertEqual(window.ai_models.currentData()['model'],'available-b')
+            window.session=dict(rows=[dict(origin='untranslated',supported=True)],report=d)
+            with patch.object(QMessageBox,'question',return_value=QMessageBox.No),patch.object(window,'run_worker') as run:
+                window.ai_supplement();run.assert_not_called()
+            self.assertEqual(window.pages.count(),5);window.close()
+
+    def test_ai_guard_warning_stops_before_confirmation(self):
+        with tempfile.TemporaryDirectory() as d:
+            window=MainWindow(Path(d))
+            window.ai_connected(dict(account=dict(type='chatgpt'),models=[dict(model='x')],quota=[],warning='未知額度'))
+            window.session=dict(rows=[],report=d)
+            with patch.object(QMessageBox,'warning') as warning,patch.object(window,'run_worker') as run:
+                window.ai_supplement();warning.assert_called_once();run.assert_not_called()
+            window.close()
+
+if __name__=='__main__':unittest.main()
