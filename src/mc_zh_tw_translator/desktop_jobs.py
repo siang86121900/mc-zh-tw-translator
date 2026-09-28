@@ -37,16 +37,25 @@ ABBREVIATIONS = {'NBT','RGB','RGBA','ARGB','HEX','HSV','UUID','JSON','ID','FPS',
                  'XP','HP','MP','CPU','GPU','RAM','FE','RF','EU','DPS','UI','JEI','REI','EMI','LOD','VBO','LAN','PVP','PVE'}
 
 
-def keep_original_reason(text):
+def keep_original_reason(text, key='', namespace=''):
     """Explain why a missing-source string needs no translation, else ''.
 
     Only unambiguous cases qualify, so nothing a player would expect in Chinese is hidden.
+    The language key gives context the text alone lacks (comments, credits, song titles).
     """
     if not isinstance(text,str) or not text.strip():return ''
+    key=str(key or '')
+    if re.match(r'_|.*(?:^|\.)__?comment',key,re.I):return '開發者註解，非顯示文字'
+    if re.search(r'(?:^|\.)jukebox_song\.|music_disc[^.]*\.desc$|\.music\.',key) and re.fullmatch(r'[^-\n]+ - [^\n]+',text.strip()):return '歌曲作者與曲名'
+    if re.search(r'(?:^|\.)painting\..*\.author$',key) or key.startswith('metadata.authors.'):return '作者名稱或作者備註'
+    if re.search(r'(?:^|\.)font\..*\.preview$',key):return '字型預覽用的英文範例句'
+    if key.endswith('.latin'):return '植物學名'
+    compact=lambda s:re.sub('[^a-z0-9]','',s.lower())
+    if namespace and len(compact(text))>=4 and compact(text) in (compact(namespace),compact(namespace).removesuffix('mod')):return '模組名稱'
     core=PARAMETER.sub(' ',text).strip()
     if not re.search('[A-Za-z]',core):return '只有參數、數字或符號'
     if re.fullmatch(r'[\d\s.,x×*+\-/:%()\[\]]+',core,re.I) and core!=text.strip():return '只有參數、數字或符號'  # e.g. %d (%dx)
-    if core!=text.strip() and re.fullmatch('[A-Z]{1,4}',core):return '數值單位'  # e.g. %1$s HPS, %d FE
+    if core!=text.strip() and re.fullmatch(r'[A-Z]{1,4}|/[a-z]{1,2}',core):return '數值單位'  # e.g. %1$s HPS, %d FE, %s/t
     if re.match(r'(?i)https?://\S+$',core):return '網址'
     if re.fullmatch(r'[\d\s.,x×*+\-/:%()]+',core,re.I) and re.search(r'\d',core):return '尺寸或數值'
     if ROMAN.fullmatch(core) and core not in ('MIX','DIV','MID','DIM','MIL','LID'):return '羅馬數字'
@@ -62,7 +71,8 @@ def reclassify_keep_original(session):
     moved=0
     for row in session.get('rows',[]):
         if row.get('origin')!='untranslated' or not row.get('supported') or row.get('ai_attempted'):continue
-        reason=keep_original_reason(row.get('en') or row.get('zh_cn') or row.get('current') or '')
+        m=re.search(r'assets/([^/]+)/',row.get('source',''))
+        reason=keep_original_reason(row.get('en') or row.get('zh_cn') or row.get('current') or '',row.get('key',''),m[1] if m else '')
         if reason:row.update(origin='keep_original',issue='無需翻譯：'+reason);moved+=1
     if moved:
         counts=session.setdefault('source_counts',{})
@@ -217,9 +227,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 break
         if origin=='existing_zh_tw' and cc.convert(value)!=value:
             issue='既有繁中可能含簡體或不同用語，請核對'
-        if origin=='untranslated' and keep_original_reason(original):
+        reason=keep_original_reason(original,r['key'],ns) if origin=='untranslated' else ''
+        if reason:
             # Parameters, key names and similar strings stay as-is; they are neither gaps nor AI work.
-            origin='keep_original';evidence=keep_original_reason(original);issue=''
+            origin='keep_original';evidence=reason;issue=''
             if r['en'] is None and r['current'] is None:issue='無需翻譯：'+evidence  # no en_us fallback in game
         supported=r['kind']=='language' or ('/en_us/' in r['source'] or '/zh_tw/' in r['source'])
         changed=value!=r['current'] and origin!='untranslated' and (origin!='keep_original' or bool(issue))

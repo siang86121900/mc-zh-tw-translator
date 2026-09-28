@@ -28,6 +28,15 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(keep(text),text)
         for text in ('Roomopolis','WIP Chicken','Time and Essence','%s Mana','MIX','OK','Click'):
             self.assertEqual(keep(text),'',text)
+        self.assertEqual(keep('%s%s/t'),'數值單位')
+        # Key context: credits, songs, comments and mod names are kept; ordinary player text is not.
+        self.assertTrue(keep('Binke - Moonlight','jukebox_song.eternal_starlight.moonlight'))
+        self.assertTrue(keep('TohokuAlpha','painting.eternal_starlight.power.author'))
+        self.assertTrue(keep('Machinery texts.','_comment.data_tablet'))
+        self.assertTrue(keep('Allium cepa','tooltip.productivefarming.onion.latin'))
+        self.assertTrue(keep('Abundant Atmosphere','itemGroup.abundant_atmosphere','abundant_atmosphere'))
+        self.assertEqual(keep('Bygone Nether','itemGroup.eternalnethertab','eternalnether'),'')
+        self.assertEqual(keep('Absolute Zero','painting.eternal_starlight.absolute_zero.title'),'')
 
     def test_detect_version_and_preserve_parameters(self):
         self.assertEqual(minecraft_version(self.instance),'1.21.1')
