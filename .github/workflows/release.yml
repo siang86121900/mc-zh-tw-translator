@@ -30,6 +30,12 @@ jobs:
           $expected = "v" + (python -c "from mc_zh_tw_translator.updater import VERSION; print(VERSION)")
           if ($env:GITHUB_REF_NAME -ne $expected) { throw "Tag $env:GITHUB_REF_NAME does not match $expected" }
 
+      - name: Require written release notes
+        shell: pwsh
+        run: |
+          $notes = "docs/release-notes/$env:GITHUB_REF_NAME.md"
+          if (-not (Test-Path $notes) -or (Get-Item $notes).Length -lt 200) { throw "Missing user-facing release notes: $notes" }
+
       - name: Run tests
         shell: pwsh
         run: |
@@ -45,7 +51,9 @@ jobs:
       - name: Publish public GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          # The in-app updater shows this body to players; auto-generated notes are only a commit link.
+          body_path: docs/release-notes/${{ github.ref_name }}.md
+          generate_release_notes: false
           fail_on_unmatched_files: true
           files: |
             dist/MCTranslator.exe

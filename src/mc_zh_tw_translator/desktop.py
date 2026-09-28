@@ -337,7 +337,8 @@ class MainWindow(QMainWindow):
         self.auto_update.setChecked(str(self.settings.value('check_updates_on_start','true')).lower()=='true')
         self.auto_update.toggled.connect(lambda value:self.settings.setValue('check_updates_on_start','true' if value else 'false'))
         box.addWidget(self.auto_update)
-        self.update_progress=QProgressBar();self.update_progress.setValue(0);box.addWidget(self.update_progress)
+        self.update_progress=QProgressBar();self.update_progress.setValue(0);self.update_progress.setFixedHeight(6);self.update_progress.setTextVisible(False)
+        self.update_progress.hide();box.addWidget(self.update_progress)  # shown only while downloading
         box.addWidget(label('更新只替換程式本身，翻譯資料、備份與設定都會保留。公開版本會由 GitHub 自動提供給所有使用者。','sub'))
 
     def navigate(self,index):
@@ -799,7 +800,7 @@ class MainWindow(QMainWindow):
     def update_checked(self,info):
         self.update_info=info
         self.update_status.setText('有新版本 '+info['version'] if info['status']=='available' else info['message'])
-        self.release_notes.setPlainText(info.get('notes',''))
+        self.release_notes.setMarkdown(info.get('notes',''))
         available=info['status']=='available'
         self.navs[3].setText('程式更新 · 有新版' if available else '程式更新')
         self.update_badge.setText('新版本 '+info.get('version',''));self.update_badge.setVisible(available)
@@ -809,7 +810,7 @@ class MainWindow(QMainWindow):
         if not getattr(sys,'frozen',False):QMessageBox.information(self,'原始碼模式','請在打包後的 EXE 使用程式更新。');return
         if QMessageBox.question(self,'下載並安裝更新',f"更新到 {self.update_info['version']}？\n下載後會校驗、關閉程式並重新啟動。備份、報告和設定都會保留。")!=QMessageBox.Yes:return
         self.run_worker('download_update',lambda w:updater.download_update(self.update_info,self.home,lambda p:w.progress.emit(p,'下載更新','')),self.update_downloaded)
-        self.worker.progress.connect(lambda p,*_:self.update_progress.setValue(p))
+        self.update_progress.show();self.worker.progress.connect(lambda p,*_:(self.update_progress.setValue(p),self.update_status.setText(f'下載中 {p}%')))
     def update_downloaded(self,result):
         try:
             updater.launch_update(result[0],result[1],self.home)
