@@ -45,6 +45,8 @@ def keep_original_reason(text):
     if not isinstance(text,str) or not text.strip():return ''
     core=PARAMETER.sub(' ',text).strip()
     if not re.search('[A-Za-z]',core):return '只有參數、數字或符號'
+    if re.fullmatch(r'[\d\s.,x×*+\-/:%()\[\]]+',core,re.I) and core!=text.strip():return '只有參數、數字或符號'  # e.g. %d (%dx)
+    if core!=text.strip() and re.fullmatch('[A-Z]{1,4}',core):return '數值單位'  # e.g. %1$s HPS, %d FE
     if re.match(r'(?i)https?://\S+$',core):return '網址'
     if re.fullmatch(r'[\d\s.,x×*+\-/:%()]+',core,re.I) and re.search(r'\d',core):return '尺寸或數值'
     if ROMAN.fullmatch(core) and core not in ('MIX','DIV','MID','DIM','MIL','LID'):return '羅馬數字'
@@ -75,7 +77,9 @@ def describe_error(error):
     parts=[p for p in error if isinstance(p,str)] if isinstance(error,(list,tuple)) else [str(error)]
     where=Path(parts[0]).name if parts else ''
     detail=parts[-1] if len(parts)>1 else ''
-    if 'Expecting' in detail:detail='檔案本身 JSON 格式錯誤（'+detail+'）'
+    if 'Expecting' in detail:
+        detail='檔案本身 JSON 格式錯誤（'+detail+'）'
+        if any(isinstance(p,dict) and 'zh_tw' in p for p in error):detail+='。重新執行一鍵翻譯時會自動重建這個繁中檔。'
     return (where+'：'+detail) if detail else where
 
 

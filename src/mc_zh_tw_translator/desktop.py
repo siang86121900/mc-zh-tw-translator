@@ -72,11 +72,13 @@ QPushButton#chip:hover { border-color: {primary}; color: {primary}; }
 QPushButton#chip:checked { border-color: {primary}; background: {primary}; color: #FFFFFF; }
 QLineEdit, QComboBox { background: {surface}; color: {text}; border: 1px solid {gray}; border-radius: 8px; padding: 8px 10px; }
 QLineEdit:focus, QComboBox:focus { border-color: {primary}; }
-QComboBox { padding: 6px 30px 6px 10px; min-height: 22px; }
+QComboBox { padding: 6px 30px 6px 10px; min-height: 22px; combobox-popup: 0; }
 QComboBox::drop-down { border: none; width: 26px; }
 QComboBox::down-arrow { image: url(__ARROW__); width: 12px; height: 12px; }
-QComboBox QAbstractItemView { background: {surface}; color: {text}; selection-background-color: {primary_bg}; selection-color: {primary}; border: 1px solid {gray}; }
-QComboBox QAbstractItemView::item { min-height: 30px; padding: 2px 8px; }
+QComboBox QAbstractItemView { background: {surface}; color: {text}; border: 1px solid {gray}; border-radius: 8px; padding: 4px; outline: 0px; }
+QComboBox QAbstractItemView::item { min-height: 32px; padding: 0px 10px; border-radius: 6px; }
+QComboBox QAbstractItemView::item:hover { background: {soft}; color: {text}; }
+QComboBox QAbstractItemView::item:selected { background: {primary_bg}; color: {primary}; }
 QProgressBar { border: none; border-radius: 3px; background: {line}; text-align: center; }
 QProgressBar::chunk { background: {primary}; border-radius: 3px; }
 QTableWidget { background: {surface}; color: {text}; border: 1px solid {gray}; border-radius: 6px; gridline-color: {line}; selection-background-color: {primary_bg}; selection-color: {text}; alternate-background-color: {soft}; }
@@ -205,7 +207,7 @@ class MainWindow(QMainWindow):
         super().__init__();self.home=home;self.session=None;self.worker=None;self.busy=False;self.mode='';self.page_index=0;self.update_info=None;self.ai_info=None
         self.settings=QSettings(str(home/'settings.ini'),QSettings.IniFormat)
         self.preview_seen=set();self.started_at=0;self.last_activity=0;self.update_worker=None
-        self.background=[];self.quit_after_worker=False;self.filter_mode='all'
+        self.background=[];self.quit_after_worker=False;self.filter_mode='all';self.live_session=False
         self.dark_theme=str(self.settings.value('theme','light')).lower()=='dark'
         self.setWindowTitle('模組包中文化 · MC Translator');self.resize(1120,800);self.setMinimumSize(880,600)
         icon_file=bundled_path('assets/mc-translator.ico')
@@ -216,7 +218,7 @@ class MainWindow(QMainWindow):
         root=QWidget();self.setCentralWidget(root);shell=QVBoxLayout(root);shell.setContentsMargins(0,0,0,0);shell.setSpacing(0)
         header=QFrame();header.setObjectName('header');header.setFixedHeight(52)
         top=QHBoxLayout(header);top.setContentsMargins(24,0,24,0)
-        brand=label('MC  /  模組包中文化','brand');brand.setSizePolicy(QSizePolicy.Preferred,QSizePolicy.Preferred)
+        brand=label('MC  /  模組包中文化','brand');brand.setWordWrap(False);brand.setSizePolicy(QSizePolicy.Minimum,QSizePolicy.Preferred)
         top.addWidget(brand);top.addStretch()
         self.update_badge=button('有新版本',lambda:self.navigate(3));self.update_badge.hide();top.addWidget(self.update_badge)
         self.theme_btn=button('亮色模式' if self.dark_theme else '深色模式',self.toggle_theme)
@@ -237,6 +239,9 @@ class MainWindow(QMainWindow):
         self.path.setText(self.settings.value('instance',''))
         for combo in self.findChildren(QComboBox):
             view=QListView();view.setUniformItemSizes(True);combo.setView(view)
+            # Let the list's own rounded border show instead of the native popup frame's square corners.
+            popup=view.window();popup.setWindowFlags(popup.windowFlags()|Qt.FramelessWindowHint|Qt.NoDropShadowWindowHint)
+            popup.setAttribute(Qt.WA_TranslucentBackground);popup.setStyleSheet('background: transparent; border: none;')
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(10);combo.setMaxVisibleItems(10)
         self.apply_theme();self.update_ai_controls()
@@ -298,7 +303,10 @@ class MainWindow(QMainWindow):
             chip=button(text,lambda checked=False,m=mode:self.set_filter(m));chip.setObjectName('chip');chip.setCheckable(True)
             chip.setChecked(mode==self.filter_mode);self.chips[mode]=chip;chips.addWidget(chip)
         chips.addStretch();box.addLayout(chips)
-        self.search=QLineEdit();self.search.setPlaceholderText('搜尋模組、文字或語系鍵');self.search.textChanged.connect(self.reset_table)
+        self.search=QLineEdit();self.search.setPlaceholderText('搜尋模組、文字或語系鍵')
+        # Reports hold ~180k rows; wait for a typing pause instead of refiltering per keystroke.
+        self.search_timer=QTimer(self);self.search_timer.setSingleShot(True);self.search_timer.setInterval(300);self.search_timer.timeout.connect(self.reset_table)
+        self.search.textChanged.connect(self.search_timer.start)
         box.addWidget(self.search)
         self.table=QTableWidget(0,4);self.table.setHorizontalHeaderLabels(['原文 / 語系鍵','建議譯文','來源','狀態'])
         self.table.setMinimumHeight(260);self.table.setShowGrid(False);self.table.setWordWrap(False)
@@ -509,6 +517,7 @@ class MainWindow(QMainWindow):
             # The startup account check owns the Codex process; never run two against one login store.
             QMessageBox.information(self,'正在確認帳號','程式正在背景確認 AI 帳號狀態，請幾秒後再試。');return
         self.busy=True;self.mode=mode
+        if mode in ('plan','full_translate','apply','ai_translate'):self.live_session=True
         self.started_at=self.last_activity=time.monotonic()
         for b in (self.path,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai):b.setEnabled(False)
         if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
@@ -650,8 +659,11 @@ class MainWindow(QMainWindow):
         self.step.setText(self.status.text());self.append_activity(self.status.text())
 
     def update_stats(self):
-        rows=self.session['rows'];self.stats[0].setText(f"{self.session.get('preview_changed',sum(bool(r['changed'] and r['supported']) for r in rows)):,}")
-        self.stats[1].setText(f"{self.session.get('preview_pending',sum(r['origin'] in ('untranslated','pending') for r in rows)):,}");self.stats[2].setText(f"{self.session.get('installed_count',0):,}")
+        rows=self.session['rows']
+        # The start page only reports work done in this session; saved reports live on the report page.
+        if self.live_session:
+            self.stats[0].setText(f"{self.session.get('preview_changed',sum(bool(r['changed'] and r['supported']) for r in rows)):,}")
+            self.stats[1].setText(f"{self.session.get('preview_pending',sum(r['origin'] in ('untranslated','pending') for r in rows)):,}");self.stats[2].setText(f"{self.session.get('installed_count',0):,}")
         pending=self.unapplied_count()
         if self.session['status'] in ('awaiting_game','apply_failed','ready_to_apply') or (pending and self.session['status']=='needs_review'):
             verb='重試套用' if self.session['status'] in ('awaiting_game','apply_failed') else '套用這批譯文'
@@ -727,7 +739,8 @@ class MainWindow(QMainWindow):
         self.page_label.setText(f'共 {len(filtered):,} 筆 · 第 {self.page_index+1} / {pages} 頁')
         self.prev.setEnabled(self.page_index>0);self.next.setEnabled(self.page_index+1<pages)
         counts=self.session.get('source_counts',{})
-        self.report_sources.setText('來源：'+'　'.join(f'{jobs.SOURCE_NAMES.get(k,k)} {v:,}' for k,v in sorted(counts.items(),key=lambda kv:-kv[1])))
+        # Gaps are counted once, in the line above; the source line lists where translations came from.
+        self.report_sources.setText('譯文來源：'+'　'.join(f'{jobs.SOURCE_NAMES.get(k,k)} {v:,}' for k,v in sorted(counts.items(),key=lambda kv:-kv[1]) if k!='untranslated'))
         stages={'scanning':'掃描中，找到的文字稍後會列在這裡。','references':'掃描已完成，正在更新參考庫；下方暫列原文。','matching':'正在比對中文來源，譯文陸續加入。',
                 'awaiting_game':'譯文已保存。關閉相關遊戲後，按右下方「重試套用」。','cancelled':'已停止；已保存的內容仍可查看。','apply_failed':'套用未完成；譯文已保存。',
                 'blocked':'此批次無法繼續，請查看下方原因。','installed':'已直接套用到模組包，原檔已備份。','restored':'這一批已還原。'}

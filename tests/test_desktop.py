@@ -22,6 +22,13 @@ class WorkflowTests(unittest.TestCase):
 
     def make_plan(self):return plan(self.instance,self.home,lambda *_:None,references=([{},{}],{'tested':True}))
 
+    def test_keep_original_only_for_unambiguous_strings(self):
+        from mc_zh_tw_translator.desktop_jobs import keep_original_reason as keep
+        for text in ('%s','%d (%dx)','%1$s HPS','%d FE','VI','64 x 64','Shift','Ctrl + Shift','NBT','https://example.com/a'):
+            self.assertTrue(keep(text),text)
+        for text in ('Roomopolis','WIP Chicken','Time and Essence','%s Mana','MIX','OK','Click'):
+            self.assertEqual(keep(text),'',text)
+
     def test_detect_version_and_preserve_parameters(self):
         self.assertEqual(minecraft_version(self.instance),'1.21.1')
         self.assertTrue(validate_text('§aHello %s','§a你好 %s'))
