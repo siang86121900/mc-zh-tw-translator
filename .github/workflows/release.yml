@@ -35,6 +35,8 @@ jobs:
         run: |
           $notes = "docs/release-notes/$env:GITHUB_REF_NAME.md"
           if (-not (Test-Path $notes) -or (Get-Item $notes).Length -lt 200) { throw "Missing user-facing release notes: $notes" }
+          # Updaters up to v0.4.1 show notes as plain text, so markdown symbols would appear literally.
+          if (Select-String -Path $notes -Pattern '^\s*#|\*\*|`' -Quiet) { throw "Release notes must stay readable as plain text (no #, ** or backticks): $notes" }
 
       - name: Run tests
         shell: pwsh

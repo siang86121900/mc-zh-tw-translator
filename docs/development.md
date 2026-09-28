@@ -28,6 +28,7 @@ python scripts/package_desktop.py
 
 1. 更新 `src/mc_zh_tw_translator/updater.py` 的 `VERSION`。
 2. 新增 `docs/release-notes/vX.Y.Z.md`，用玩家看得懂的話寫這一版的修正與新功能。程式的「程式更新」頁會直接顯示這份內容；缺少時發布流程會失敗。
+   **不要使用 `#` 標題、`**` 粗體或反引號**：v0.4.1 以前的程式以純文字顯示說明，這些符號會原樣出現。分類用單獨一行文字，條列用 `- `，段落之間空一行；這樣舊版純文字與新版排版都好讀。
 3. 建立 `vX.Y.Z` 標籤並推送。GitHub Actions 會執行測試、打包 EXE、產生 `SHA256SUMS.txt` 並建立公開 Release。
 
 更新器會先驗證大小、格式與雜湊才替換程式。只推送原始碼不會產生可下載的更新。不把 private instance、cache、backup 或帳號資料打包進 EXE。
