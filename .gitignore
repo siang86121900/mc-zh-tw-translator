@@ -1,0 +1,33 @@
+# Local environments and temporary tooling
+tmp/
+*.pyc
+__pycache__/
+.venv/
+venv/
+.DS_Store
+
+# Instance inputs, generated translations, reports and backups
+input/
+output/
+
+# Local/generated translation state
+data/translation_cache.json
+data/*_scoped.json
+data/cfpa_cache.json
+
+# Local credentials and machine-specific settings
+*.env
+.env
+*.key
+
+# Large binary artifacts and archives
+*.jar
+*.zip
+*.7z
+*.rar
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.avif
