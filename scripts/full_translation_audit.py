@@ -90,7 +90,7 @@ def utf8_constants(b):
 class Audit:
     def __init__(self,out,decisions):
         self.out=out;out.mkdir(parents=True,exist_ok=True)
-        self.rows=[];self.files=[];self.errors=[];self.counts=Counter();self.decisions=decisions
+        self.rows=[];self.files=[];self.errors=[];self.repairs=[];self.counts=Counter();self.decisions=decisions
     def add(self,source,key,en,current,cn=None,kind='language'):
         if not any(isinstance(v,str) and v.strip() for v in (en,current,cn)):return
         row=dict(source=source,key=str(key),en=en,current=current,zh_cn=cn,kind=kind)
@@ -125,7 +125,13 @@ class Audit:
                         self.counts['empty_language_files']+=1
                         return {}
                     return parse(b) if ext=='json' else dict(s.split('=',1) for s in decode(b).splitlines() if '=' in s and not s.startswith('#'))
-                en,tw,cn=load('en_us'),load('zh_tw'),load('zh_cn')
+                en,cn=load('en_us'),load('zh_cn')
+                try:tw=load('zh_tw')
+                except ValueError as e:
+                    # The game cannot read a malformed zh_tw either; rebuild it from en_us/zh_cn.
+                    if not (en or cn):raise
+                    tw={};self.counts['broken_zh_tw_rebuilt']+=1
+                    self.repairs.append([label,langs['zh_tw'],str(e)])
                 source=label+'!/'+langs.get('en_us',langs.get('zh_tw',langs.get('zh_cn')))
                 for k in sorted(set(en)|set(tw)|set(cn)):
                     self.add(source,k,en.get(k),tw.get(k),cn.get(k))
@@ -211,7 +217,7 @@ class Audit:
         for name,items in [('files.jsonl',self.files),('strings.jsonl',self.rows),('pending.jsonl',[r for r in self.rows if r['status']=='needs_review'])]:
             with (self.out/name).open('w',encoding='utf-8') as f:
                 for row in items:f.write(json.dumps(row,ensure_ascii=False)+'\n')
-        summary=dict(counts=dict(self.counts),file_entries=len(self.files),text_records=len(self.rows),errors=self.errors,complete=self.counts['needs_review']==0 and not self.errors,limits=['靜態程式字串為待查候選，無法證明所有動態組句與遊戲畫面均已實測。','其他語言資源保留原文，檢查 zh_tw 的實際內容與缺漏。'])
+        summary=dict(counts=dict(self.counts),file_entries=len(self.files),text_records=len(self.rows),errors=self.errors,repairs=self.repairs,complete=self.counts['needs_review']==0 and not self.errors,limits=['靜態程式字串為待查候選，無法證明所有動態組句與遊戲畫面均已實測。','其他語言資源保留原文，檢查 zh_tw 的實際內容與缺漏。'])
         (self.out/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
         print(json.dumps({k:v for k,v in summary.items() if k!='errors'},ensure_ascii=False));print('Errors:',len(self.errors))
         return 0 if summary['complete'] else 1

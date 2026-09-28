@@ -320,7 +320,8 @@ def pending_rows(session):
 
 def supplement(session, home, selected_model, notify, cancelled=lambda: False, client_factory=CodexClient, checkpoint=lambda _:None):
     from . import desktop_jobs as jobs
-    if session.get('status') in ('blocked', 'installed', 'restored') or session.get('errors'):
+    # Per-file scan errors stay listed in the report; they only exclude that file, not the whole batch.
+    if session.get('status') in ('blocked', 'installed', 'restored'):
         raise BridgeError('此批次不可補翻；請先排除掃描錯誤並重新掃描。')
     report = Path(session['report']) / 'session.json'
     remaining = pending_rows(session)

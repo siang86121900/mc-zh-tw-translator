@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -20,91 +21,87 @@ from . import desktop_jobs as jobs
 from . import updater
 from . import codex_bridge as ai
 
-LIGHT_STYLE='''
-QWidget { font-size: 14px; color: #363533; }
-QMainWindow, #page, QDialog { background: #F8F8F8; }
-#header, #sidebar, #card { background: #FFFFFF; }
-#header { border-bottom: 1px solid #E4E4E3; }
-#sidebar { border-right: 1px solid #E4E4E3; }
-#card { border: 1px solid #E1E3E6; border-radius: 8px; }
+# Tokens follow ai-agent-team DESIGN.md: one primary blue, neutrals derived from #363533,
+# four status colours, 6px cards, 8px buttons, pill badges and filter chips.
+THEMES={
+    'light':dict(bg='#F8F8F8',surface='#FFFFFF',text='#363533',text80='#5E5D5C',text60='#868583',text40='#AFAEAD',
+                 gray='#D7D7D6',line='#EBEBEA',soft='#FAFAFA',primary='#278AFC',primary_hover='#167BEE',primary_bg='#EDF5FF',
+                 primary_fade='#A9CFFD',disabled_bg='#F3F3F3',green='#00C37B',orange='#F5A623',red='#E83232',tooltip_bg='#363533',tooltip='#FFFFFF'),
+    'dark':dict(bg='#16181C',surface='#1F2228',text='#ECEDEE',text80='#C5C7CB',text60='#9A9EA5',text40='#6C7078',
+                gray='#3A3F48',line='#2C3037',soft='#252930',primary='#4A9DFD',primary_hover='#6BB0FF',primary_bg='#1C3350',
+                primary_fade='#2F5E93',disabled_bg='#23262C',green='#1DD48F',orange='#F5A623',red='#FF5A5A',tooltip_bg='#ECEDEE',tooltip='#16181C'),
+}
+
+STYLE_TEMPLATE='''
+QWidget { font-size: 14px; color: {text}; }
+QMainWindow, #page, QDialog { background: {bg}; }
+#header, #sidebar, #card { background: {surface}; }
+#header { border-bottom: 1px solid {gray}; }
+#sidebar { border-right: 1px solid {gray}; }
+#card { border: 1px solid {gray}; border-radius: 6px; }
+#card:hover { border-color: {primary_fade}; }
 QLabel { background: transparent; }
 QLabel#title { font-size: 18px; font-weight: 700; }
-QLabel#brand { color: #278AFC; font-size: 16px; font-weight: 700; }
-QLabel#sub { color: #5F6670; font-size: 13px; }
+QLabel#brand { color: {primary}; font-size: 15px; font-weight: 700; }
+QLabel#sub { color: {text60}; font-size: 12px; }
+QLabel#muted { color: {text80}; font-size: 13px; }
+QLabel#warn { color: {red}; font-size: 12px; font-weight: 600; }
 QLabel#section { font-size: 13px; font-weight: 700; }
-QLabel#number { font-size: 24px; font-weight: 700; }
-QLabel#pill { color: #176FCC; background: #EBF4FF; border-radius: 10px; padding: 3px 8px; font-size: 12px; }
-QPushButton { background: #FFFFFF; color: #2B2B2B; border: 1px solid #D9DDE2; border-radius: 7px; padding: 9px 16px; font-weight: 600; }
-QPushButton:hover { border-color: #278AFC; color: #278AFC; }
-QPushButton:disabled { color: #A7ACB4; background: #F3F4F5; border-color: #E4E7EB; }
-QPushButton#primary { color: #FFFFFF; background: #278AFC; border: 1px solid #278AFC; }
-QPushButton#primary:hover { background: #167BEE; }
-QPushButton#primary:disabled { background: #B5D6FB; border-color: #B5D6FB; color: white; }
-QPushButton#nav { text-align: left; border: none; border-radius: 7px; background: transparent; padding: 12px 16px; color: #6E737C; }
-QPushButton#nav:checked { color: #278AFC; background: #EAF3FE; }
-QLineEdit, QComboBox { background: #FFFFFF; color: #2B2B2B; border: 1px solid #DADEE4; border-radius: 6px; padding: 10px; }
-QLineEdit:focus, QComboBox:focus { border-color: #278AFC; }
-QComboBox QAbstractItemView { background: #FFFFFF; color: #2B2B2B; selection-background-color: #EAF3FE; selection-color: #167BEE; border: 1px solid #DADEE4; }
-QProgressBar { border: none; border-radius: 4px; background: #EAF0F6; height: 8px; text-align: center; }
-QProgressBar::chunk { background: #278AFC; border-radius: 4px; }
-QTableWidget { background: #FFFFFF; color: #2B2B2B; border: 1px solid #E1E3E6; border-radius: 7px; gridline-color: #F0F1F3; selection-background-color: #EAF3FE; selection-color: #2B2B2B; }
-QHeaderView::section { background: #F4F6F8; color: #2B2B2B; padding: 10px; border: none; border-bottom: 1px solid #E1E3E6; font-weight: 600; font-size: 12px; }
-QTextEdit, QPlainTextEdit, QListWidget { background: #FFFFFF; color: #2B2B2B; border: 1px solid #E1E3E6; border-radius: 7px; padding: 8px; }
-QListWidget::item { padding: 12px; border-bottom: 1px solid #F0F1F3; }
-QListWidget::item:selected { color: #278AFC; background: #EAF3FE; }
-QCheckBox { color: #363533; }
-QToolTip { background: #363533; color: #FFFFFF; border: 1px solid #777C84; }
-'''
-
-DARK_STYLE='''
-QWidget { font-size: 14px; color: #F0F3F6; }
-QMainWindow, #page, QDialog { background: #171A1F; }
-#header, #sidebar, #card { background: #20252D; }
-#header { border-bottom: 1px solid #343B46; }
-#sidebar { border-right: 1px solid #343B46; }
-#card { border: 1px solid #343B46; border-radius: 8px; }
-QLabel { background: transparent; }
-QLabel#title { font-size: 18px; font-weight: 700; color: #F5F7FA; }
-QLabel#brand { color: #65B5FF; font-size: 16px; font-weight: 700; }
-QLabel#sub { color: #AAB4C1; font-size: 13px; }
-QLabel#section { font-size: 13px; font-weight: 700; color: #F0F4F8; }
-QLabel#number { font-size: 24px; font-weight: 700; color: #F5F7FA; }
-QLabel#pill { color: #8BCBFF; background: #173A5F; border-radius: 10px; padding: 3px 8px; font-size: 12px; }
-QPushButton { background: #252B34; color: #E8EDF3; border: 1px solid #46505E; border-radius: 7px; padding: 9px 16px; font-weight: 600; }
-QPushButton:hover { border-color: #65B5FF; color: #A9D9FF; }
-QPushButton:disabled { color: #687383; background: #20252D; border-color: #343B46; }
-QPushButton#primary { color: #FFFFFF; background: #278AFC; border: 1px solid #278AFC; }
-QPushButton#primary:hover { background: #4BA3FF; }
-QPushButton#primary:disabled { background: #315B83; border-color: #315B83; color: #B8C7D6; }
-QPushButton#nav { text-align: left; border: none; border-radius: 7px; background: transparent; padding: 12px 16px; color: #AAB4C1; }
-QPushButton#nav:checked { color: #8BCBFF; background: #173A5F; }
-QLineEdit, QComboBox { background: #252B34; color: #E8EDF3; border: 1px solid #46505E; border-radius: 6px; padding: 10px; }
-QLineEdit:focus, QComboBox:focus { border-color: #65B5FF; }
-QComboBox QAbstractItemView { background: #20252D; color: #E8EDF3; selection-background-color: #285781; selection-color: #FFFFFF; border: 1px solid #46505E; }
-QProgressBar { border: none; border-radius: 4px; background: #303946; height: 8px; text-align: center; }
-QProgressBar::chunk { background: #278AFC; border-radius: 4px; }
-QTableWidget { background: #20252D; color: #E8EDF3; border: 1px solid #343B46; border-radius: 7px; gridline-color: #303743; selection-background-color: #285781; selection-color: #FFFFFF; }
-QHeaderView::section { background: #2A313B; color: #E8EDF3; padding: 10px; border: none; border-bottom: 1px solid #46505E; font-weight: 600; font-size: 12px; }
-QTextEdit, QPlainTextEdit, QListWidget { background: #20252D; color: #E8EDF3; border: 1px solid #343B46; border-radius: 7px; padding: 8px; }
-QListWidget::item { padding: 12px; border-bottom: 1px solid #303743; }
-QListWidget::item:selected { color: #A9D9FF; background: #285781; }
-QCheckBox { color: #E8EDF3; }
-QToolTip { background: #F5F7FA; color: #171A1F; border: 1px solid #65B5FF; }
-'''
-
-
-COMMON_STYLE='''
-QScrollArea { border: none; background: transparent; }
-QComboBox { padding: 7px 30px 7px 10px; min-height: 22px; }
+QLabel#number { font-size: 26px; font-weight: 700; }
+QLabel#pill { border-radius: 10px; padding: 0px 10px; min-height: 22px; max-height: 22px; font-size: 11px; font-weight: 700; color: {primary}; background: {primary_bg}; }
+QLabel#pill[state="todo"] { color: {text80}; background: {gray}; }
+QLabel#pill[state="progress"] { color: #FFFFFF; background: {orange}; }
+QLabel#pill[state="done"] { color: #FFFFFF; background: {green}; }
+QLabel#pill[state="blocked"] { color: #FFFFFF; background: {red}; }
+QFrame#accent_todo { background: {gray}; border: none; }
+QFrame#accent_progress { background: {orange}; border: none; }
+QFrame#accent_done { background: {green}; border: none; }
+QPushButton { background: {surface}; color: {text}; border: 1px solid {gray}; border-radius: 8px; padding: 8px 16px; font-weight: 600; }
+QPushButton:hover { border-color: {primary}; color: {primary}; }
+QPushButton:disabled { color: {text40}; background: {disabled_bg}; border-color: {line}; }
+QPushButton#primary { color: #FFFFFF; background: {primary}; border: 1px solid {primary}; }
+QPushButton#primary:hover { background: {primary_hover}; border-color: {primary_hover}; color: #FFFFFF; }
+QPushButton#primary:disabled { background: {primary_fade}; border-color: {primary_fade}; color: #FFFFFF; }
+QPushButton#link { border: none; background: transparent; color: {primary}; padding: 2px 0px; text-align: left; }
+QPushButton#link:hover { text-decoration: underline; }
+QPushButton#nav { text-align: left; border: none; border-radius: 8px; background: transparent; padding: 10px 12px; color: {text80}; font-weight: 600; }
+QPushButton#nav:hover { color: {primary}; }
+QPushButton#nav:checked { color: {primary}; background: {primary_bg}; }
+QPushButton#chip { border: 1.5px solid {gray}; border-radius: 14px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: {text80}; background: {surface}; }
+QPushButton#chip:hover { border-color: {primary}; color: {primary}; }
+QPushButton#chip:checked { border-color: {primary}; background: {primary}; color: #FFFFFF; }
+QLineEdit, QComboBox { background: {surface}; color: {text}; border: 1px solid {gray}; border-radius: 8px; padding: 8px 10px; }
+QLineEdit:focus, QComboBox:focus { border-color: {primary}; }
+QComboBox { padding: 6px 30px 6px 10px; min-height: 22px; }
 QComboBox::drop-down { border: none; width: 26px; }
 QComboBox::down-arrow { image: url(__ARROW__); width: 12px; height: 12px; }
-QComboBox QAbstractItemView::item { min-height: 32px; padding: 2px 8px; }
-QPushButton { padding: 7px 12px; }
-QPushButton#nav { padding: 10px 12px; }
+QComboBox QAbstractItemView { background: {surface}; color: {text}; selection-background-color: {primary_bg}; selection-color: {primary}; border: 1px solid {gray}; }
+QComboBox QAbstractItemView::item { min-height: 30px; padding: 2px 8px; }
+QProgressBar { border: none; border-radius: 3px; background: {line}; text-align: center; }
+QProgressBar::chunk { background: {primary}; border-radius: 3px; }
+QTableWidget { background: {surface}; color: {text}; border: 1px solid {gray}; border-radius: 6px; gridline-color: {line}; selection-background-color: {primary_bg}; selection-color: {text}; alternate-background-color: {soft}; }
+QTableWidget::item { padding: 4px 8px; border-bottom: 1px solid {line}; }
+QHeaderView::section { background: {soft}; color: {text80}; padding: 9px 8px; border: none; border-bottom: 1px solid {gray}; font-weight: 700; font-size: 12px; }
+QTextEdit, QPlainTextEdit, QListWidget { background: {surface}; color: {text}; border: 1px solid {gray}; border-radius: 6px; padding: 8px; }
+QPlainTextEdit#log { font-family: Consolas, "Microsoft JhengHei UI"; font-size: 12px; color: {text80}; }
+QListWidget::item { padding: 12px; border-bottom: 1px solid {line}; }
+QListWidget::item:selected { color: {primary}; background: {primary_bg}; }
+QCheckBox { color: {text}; spacing: 8px; }
+QCheckBox:disabled { color: {text40}; }
+QToolTip { background: {tooltip_bg}; color: {tooltip}; border: none; padding: 4px 6px; }
+QScrollArea { border: none; background: transparent; }
 QScrollBar:vertical { width: 10px; background: transparent; }
-QScrollBar::handle:vertical { background: #8995A5; min-height: 28px; border-radius: 4px; }
+QScrollBar::handle:vertical { background: {text40}; min-height: 28px; border-radius: 4px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 '''
+
+# Table state colours reuse the four DESIGN.md status roles.
+STATE_ROLE={'已套用':'green','待套用':'primary','已確認':'primary','待校對':'orange','比對中':'text60','待查':'text60','無需翻譯':'text40'}
+
+
+def stylesheet(theme):
+    tokens=THEMES[theme]
+    return re.sub(r'\{(\w+)\}',lambda m:tokens.get(m[1],m[0]),STYLE_TEMPLATE).replace('__ARROW__',bundled_path('assets/chevron.svg').as_posix())
 
 
 def label(text='',kind=None):
@@ -128,6 +125,12 @@ def card():
     frame=QFrame();frame.setObjectName('card')
     layout=QVBoxLayout(frame);layout.setContentsMargins(16,14,16,14);layout.setSpacing(10)
     return frame,layout
+
+
+def set_pill(widget,text,state=''):
+    """Status badge: todo / progress / done / blocked, or '' for the neutral info pill."""
+    widget.setText(text);widget.setProperty('state',state)
+    widget.style().unpolish(widget);widget.style().polish(widget)
 
 
 def open_path(path):
@@ -202,6 +205,7 @@ class MainWindow(QMainWindow):
         super().__init__();self.home=home;self.session=None;self.worker=None;self.busy=False;self.mode='';self.page_index=0;self.update_info=None;self.ai_info=None
         self.settings=QSettings(str(home/'settings.ini'),QSettings.IniFormat)
         self.preview_seen=set();self.started_at=0;self.last_activity=0;self.update_worker=None
+        self.background=[];self.quit_after_worker=False;self.filter_mode='all'
         self.dark_theme=str(self.settings.value('theme','light')).lower()=='dark'
         self.setWindowTitle('模組包中文化 · MC Translator');self.resize(1120,800);self.setMinimumSize(880,600)
         icon_file=bundled_path('assets/mc-translator.ico')
@@ -219,13 +223,14 @@ class MainWindow(QMainWindow):
         self.theme_btn.setToolTip('切換介面顏色；設定會自動記住')
         top.addWidget(self.theme_btn);top.addSpacing(10);top.addWidget(label('v'+updater.VERSION,'pill'));shell.addWidget(header)
         body=QHBoxLayout();body.setSpacing(0);shell.addLayout(body,1)
-        sidebar=QFrame();sidebar.setObjectName('sidebar');sidebar.setFixedWidth(176)
+        sidebar=QFrame();sidebar.setObjectName('sidebar');sidebar.setFixedWidth(200)
         nav=QVBoxLayout(sidebar);nav.setContentsMargins(12,18,12,16);nav.setSpacing(6)
         nav.addWidget(label('工作空間','sub'));nav.addSpacing(10)
         self.navs=[]
         for i,text in enumerate(('開始翻譯','翻譯報告','備份與還原','程式更新','AI 帳號與模型')):
             b=button(text,lambda checked=False,n=i:self.navigate(n));b.setObjectName('nav');b.setCheckable(True);nav.addWidget(b);self.navs.append(b)
-        nav.addStretch();nav.addWidget(label('繁體中文 / 台灣\nAI 補翻需同意傳送文字','sub'));body.addWidget(sidebar)
+        nav.addStretch();self.side_ai=label('AI 補翻：未連接','sub');nav.addWidget(self.side_ai)
+        nav.addWidget(label('繁體中文 / 台灣','sub'));body.addWidget(sidebar)
         self.pages=QStackedWidget();body.addWidget(self.pages,1)
         self.make_start();self.make_report();self.make_backups();self.make_updates();self.make_ai();self.navigate(0)
         self.refresh_history();self.refresh_backups()
@@ -234,7 +239,7 @@ class MainWindow(QMainWindow):
             view=QListView();view.setUniformItemSizes(True);combo.setView(view)
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(10);combo.setMaxVisibleItems(10)
-        self.apply_theme()
+        self.apply_theme();self.update_ai_controls()
         self.clock=QTimer(self);self.clock.timeout.connect(self.tick_progress);self.clock.start(1000)
         self.restore_latest_report()
 
@@ -254,46 +259,64 @@ class MainWindow(QMainWindow):
         self.path.setToolTip('可從檔案總管複製路徑後直接貼上；貼上後按一鍵翻譯即可。')
         self.path.textChanged.connect(lambda value:self.settings.setValue('instance',value.strip().strip('"')))
         self.choose=button('選擇資料夾',self.choose_folder);row.addWidget(self.path,1);row.addWidget(self.choose);b.addLayout(row)
+        # Reference sources translate first; AI only fills what is still missing, and only when opted in.
+        ai_row=QHBoxLayout();self.use_ai=QCheckBox('參考來源缺漏時，用 AI 補翻')
+        self.use_ai.setChecked(str(self.settings.value('use_ai','true')).lower()=='true')
+        self.use_ai.toggled.connect(lambda value:(self.settings.setValue('use_ai','true' if value else 'false'),self.update_ai_controls()))
+        self.ai_connect_link=button('連接 AI 帳號',lambda:self.navigate(4));self.ai_connect_link.setObjectName('link')
+        ai_row.addWidget(self.use_ai);ai_row.addWidget(self.ai_connect_link);ai_row.addStretch();b.addLayout(ai_row)
+        self.ai_hint=label('','sub');b.addWidget(self.ai_hint)
         actions=QHBoxLayout();self.full_start=button('一鍵完整翻譯並套用',self.full_translation_job,True);self.cancel=button('停止',self.cancel_job);self.cancel.setEnabled(False)
         actions.addWidget(self.full_start);actions.addWidget(self.cancel);actions.addStretch();b.addLayout(actions);box.addWidget(f)
-        stats=QHBoxLayout();self.stats=[]
-        for title,sub in (('已產生譯文','可在報告查看來源'),('仍待處理','缺少來源或需查用途'),('已套用','已備份並寫回資料夾')):
-            f,b=card();b.addWidget(label(title,'sub'));n=label('—','number');self.stats.append(n);b.addWidget(n);b.addWidget(label(sub,'sub'));stats.addWidget(f)
+        stats=QHBoxLayout();stats.setSpacing(12);self.stats=[]
+        for title,sub,accent in (('已產生譯文','可在報告查看來源','progress'),('仍待處理','缺少來源或需查用途','todo'),('已套用','已備份並寫回資料夾','done')):
+            f,b=card();strip=QFrame();strip.setObjectName('accent_'+accent);strip.setFixedHeight(3);b.insertWidget(0,strip)
+            b.addWidget(label(title,'sub'));n=label('—','number');self.stats.append(n);b.addWidget(n);b.addWidget(label(sub,'sub'));stats.addWidget(f)
         box.addLayout(stats)
-        f,b=card();head=QHBoxLayout();head.addWidget(label('處理進度','section'));head.addStretch();self.status=label('等待開始','pill');head.addWidget(self.status);b.addLayout(head)
+        f,b=card();head=QHBoxLayout();head.addWidget(label('處理進度','section'));head.addStretch();self.status=label('等待開始','pill');set_pill(self.status,'等待開始','todo');head.addWidget(self.status);b.addLayout(head)
         self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0);self.progress.setTextVisible(False);b.addWidget(self.progress)
         self.progress.setFixedHeight(6)
         self.step=label('準備好了，先選擇你的模組包。');self.detail=label('原始檔會在套用前備份，翻譯報告直接顯示在程式裡。','sub');b.addWidget(self.step);b.addWidget(self.detail)
         self.elapsed=label('掃描會自動執行，不需要另外操作。','sub');b.addWidget(self.elapsed)
         self.report_link=button('查看翻譯報告',lambda:self.navigate(1));b.addWidget(self.report_link,alignment=Qt.AlignLeft);box.addWidget(f)
         head=QHBoxLayout();head.addWidget(label('即時處理紀錄','section'));head.addStretch();box.addLayout(head)
-        self.activity=QPlainTextEdit();self.activity.setReadOnly(True);self.activity.setMinimumHeight(130)
+        self.activity=QPlainTextEdit();self.activity.setObjectName('log');self.activity.setReadOnly(True);self.activity.setMinimumHeight(130)
         self.activity.setMaximumBlockCount(300);self.activity.setPlaceholderText('開始後會列出目前處理的檔案、下載進度，以及最新產生的原文 → 譯文。')
         box.addWidget(self.activity,1)
-        box.addWidget(label('優先使用模組包中文與參考庫；選用 AI 補翻會消耗你原本的 Codex 額度。','sub'))
 
     def make_report(self):
         box=self.page('翻譯報告','隨處理進度保存；即使停止或尚未套用，也能查看已產生的內容。')
         row=QHBoxLayout();self.history=QComboBox();self.history.setMinimumWidth(280);self.history.activated.connect(self.load_history)
         row.addWidget(self.history,1);row.addWidget(button('重新整理',self.refresh_history));self.folder_btn=button('開啟報告資料夾',self.open_report);row.addWidget(self.folder_btn);box.addLayout(row)
-        self.report_summary=label('尚未有翻譯紀錄。完成掃描後，這裡會顯示實際結果。');box.addWidget(self.report_summary)
-        self.filter=QComboBox();self.filter.addItems(['需要校對','缺少中文來源','待查程式與設定','已確認／已套用','全部','AI 補譯'])
-        self.filter.setCurrentIndex(4)
-        self.filter.currentIndexChanged.connect(self.reset_table)
+        f,b=card();head=QHBoxLayout();head.addWidget(label('本次結果','section'));head.addStretch();self.report_state=label('','pill');head.addWidget(self.report_state);b.addLayout(head)
+        self.report_summary=label('尚未有翻譯紀錄。完成掃描後，這裡會顯示實際結果。');b.addWidget(self.report_summary)
+        self.report_counts=label('','muted');b.addWidget(self.report_counts)
+        self.report_sources=label('','sub');b.addWidget(self.report_sources)
+        self.report_errors=label('','warn');self.report_errors.hide();b.addWidget(self.report_errors);box.addWidget(f)
+        chips=QHBoxLayout();chips.setSpacing(6);self.chips={}
+        for mode,text in (('all','全部'),('missing','缺少中文來源'),('review','需要校對'),('ai','AI 補譯'),('context','待查程式與設定'),('done','已確認／已套用'),('keep','無需翻譯')):
+            chip=button(text,lambda checked=False,m=mode:self.set_filter(m));chip.setObjectName('chip');chip.setCheckable(True)
+            chip.setChecked(mode==self.filter_mode);self.chips[mode]=chip;chips.addWidget(chip)
+        chips.addStretch();box.addLayout(chips)
         self.search=QLineEdit();self.search.setPlaceholderText('搜尋模組、文字或語系鍵');self.search.textChanged.connect(self.reset_table)
-        r=QHBoxLayout();r.addWidget(self.filter);r.addWidget(self.search,1);box.addLayout(r)
+        box.addWidget(self.search)
         self.table=QTableWidget(0,4);self.table.setHorizontalHeaderLabels(['原文 / 語系鍵','建議譯文','來源','狀態'])
-        self.table.setMinimumHeight(210);self.table.setShowGrid(False)
+        self.table.setMinimumHeight(260);self.table.setShowGrid(False);self.table.setWordWrap(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows);self.table.setSelectionMode(QAbstractItemView.ExtendedSelection);self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().hide();self.table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch);self.table.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch)
-        self.table.setColumnWidth(2,120);self.table.setColumnWidth(3,110);self.table.cellDoubleClicked.connect(self.review_row);box.addWidget(self.table,1)
-        nav=QHBoxLayout();self.prev=button('上一頁',lambda:self.turn_page(-1));self.next=button('下一頁',lambda:self.turn_page(1));self.page_label=label('0 筆','sub')
-        nav.addWidget(self.prev);nav.addWidget(self.next);nav.addWidget(self.page_label);nav.addStretch();box.addLayout(nav)
+        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft|Qt.AlignVCenter);self.table.horizontalHeader().setHighlightSections(False)
+        self.table.setColumnWidth(2,110);self.table.setColumnWidth(3,96);self.table.cellDoubleClicked.connect(self.review_row);box.addWidget(self.table,1)
+        nav=QHBoxLayout();self.prev=button('上一頁',lambda:self.turn_page(-1));self.next=button('下一頁',lambda:self.turn_page(1));self.page_label=label('0 筆','sub');self.page_label.setWordWrap(False)
+        self.page_size=QComboBox();self.page_size.setToolTip('每頁顯示筆數')
+        for size in (50,100,200,500):self.page_size.addItem(f'每頁 {size} 筆',size)
+        saved=int(self.settings.value('page_size',100) or 100)
+        self.page_size.setCurrentIndex(max(0,self.page_size.findData(saved)))
+        self.page_size.currentIndexChanged.connect(lambda *_:(self.settings.setValue('page_size',self.page_size.currentData()),self.reset_table()))
+        nav.addWidget(self.prev);nav.addWidget(self.next);nav.addWidget(self.page_label);nav.addStretch();nav.addWidget(self.page_size);box.addLayout(nav)
         actions=QHBoxLayout();self.review_btn=button('查看並校對',self.review_current);self.apply_btn=button('備份並套用已確認譯文',self.apply_job,True)
         self.ai_run_btn=button('AI 補翻缺漏',self.ai_supplement)
-        actions.addWidget(self.review_btn);actions.addWidget(self.ai_run_btn);actions.addStretch();box.addLayout(actions)
-        box.addWidget(self.apply_btn,alignment=Qt.AlignRight)
-        box.addWidget(label('一般使用者可直接使用「一鍵完整翻譯並套用」；這裡保留逐筆查看、來源和例外報告，方便進階修訂。','sub'))
+        actions.addWidget(self.review_btn);actions.addWidget(self.ai_run_btn);actions.addStretch();actions.addWidget(self.apply_btn);box.addLayout(actions)
+        box.addWidget(label('雙擊任一列可逐筆校對。參數（如 %s）、按鍵名稱、羅馬數字和尺寸等無需翻譯的文字不列為缺漏，也不會送給 AI。','sub'))
 
     def make_backups(self):
         box=self.page('備份與還原','每次套用都保留原檔。還原前會檢查後續修改，避免蓋掉你的檔案。')
@@ -324,8 +347,8 @@ class MainWindow(QMainWindow):
         if index==2:self.refresh_backups()
 
     def apply_theme(self):
-        style=(DARK_STYLE if self.dark_theme else LIGHT_STYLE)+COMMON_STYLE.replace('__ARROW__',bundled_path('assets/chevron.svg').as_posix())
-        QApplication.instance().setStyleSheet(style)
+        QApplication.instance().setStyleSheet(stylesheet('dark' if self.dark_theme else 'light'))
+        if hasattr(self,'table'):self.fill_table()  # state colours come from the theme tokens
         self.theme_btn.setText('亮色模式' if self.dark_theme else '深色模式')
         self.settings.setValue('theme','dark' if self.dark_theme else 'light')
         QApplication.processEvents()
@@ -337,28 +360,76 @@ class MainWindow(QMainWindow):
 
     def make_ai(self):
         box=self.page('AI 帳號與模型','選用功能。不登入也能使用參考庫翻譯。')
-        f,b=card();b.addWidget(label('使用你原本的 Codex 額度','section'))
-        b.addWidget(label(ai.NOTICE));b.addWidget(label(ai.PRIVACY,'sub'));box.addWidget(f)
-        f,b=card();self.ai_status=label('尚未連接 ChatGPT。登入只在官方網頁完成。');b.addWidget(self.ai_status)
-        row=QHBoxLayout();self.ai_install_btn=button('安裝官方元件',self.install_ai_runtime)
-        self.ai_login_btn=button('連接 ChatGPT',self.login_ai,True);self.ai_refresh_btn=button('重新整理',self.refresh_ai)
+        f,b=card();head=QHBoxLayout();head.addWidget(label('ChatGPT 帳號','section'));head.addStretch()
+        self.ai_badge=label('','pill');set_pill(self.ai_badge,'未連接','todo');head.addWidget(self.ai_badge);b.addLayout(head)
+        self.ai_status=label('尚未連接 ChatGPT。登入只在官方網頁完成。');b.addWidget(self.ai_status)
+        self.ai_quota=label('額度尚未確認。不會使用 API key 或自動購買點數。','sub');b.addWidget(self.ai_quota)
+        self.ai_progress=QProgressBar();self.ai_progress.setFixedHeight(6);self.ai_progress.setTextVisible(False);self.ai_progress.hide();b.addWidget(self.ai_progress)
+        row=QHBoxLayout();self.ai_install_btn=button('安裝官方元件',self.install_ai_runtime,True)
+        self.ai_login_btn=button('連接 ChatGPT',self.login_ai,True);self.ai_refresh_btn=button('重新整理額度',self.refresh_ai)
         self.ai_logout_btn=button('登出',self.logout_ai)
         for widget in (self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn):row.addWidget(widget)
-        b.addLayout(row);self.ai_quota=label('額度尚未確認。不會使用 API key 或自動購買點數。','sub');b.addWidget(self.ai_quota);box.addWidget(f)
+        row.addStretch();b.addLayout(row);box.addWidget(f)
+        # The full cost/privacy notice matters before connecting; once connected it collapses to one line.
+        self.ai_notice_card,b=card();b.addWidget(label('使用你原本的 Codex 額度','section'))
+        b.addWidget(label(ai.NOTICE));b.addWidget(label(ai.PRIVACY,'sub'));box.addWidget(self.ai_notice_card)
+        self.ai_notice_short=label('補翻消耗原本方案的 Codex 額度（與其他 Codex 工作共用）；只傳送缺漏的原文、語系鍵與相對路徑。','sub')
+        box.addWidget(self.ai_notice_short)
         f,b=card();b.addWidget(label('補翻模型','section'))
         self.ai_models=QComboBox();self.ai_models.setPlaceholderText('登入後載入帳號可用模型');b.addWidget(self.ai_models)
         self.ai_model_detail=label('模型會影響上下文與術語判斷，較強不代表保證正確；目前沒有本專案的模型品質排行榜。','sub');b.addWidget(self.ai_model_detail)
         self.ai_models.currentIndexChanged.connect(self.select_ai_model)
         b.addWidget(label('只列官方回傳的可用模型，使用該模型建議的推理設定。若模型不可用會停止，不偷偷換模型。','sub'))
-        b.addWidget(button('前往翻譯報告補翻缺漏',lambda:self.navigate(1)),alignment=Qt.AlignLeft);box.addWidget(f)
+        self.ai_model_card=f;box.addWidget(f)
         self.ai_stop_btn=button('停止登入／補翻',self.cancel_job);self.ai_stop_btn.setEnabled(False);box.addWidget(self.ai_stop_btn,alignment=Qt.AlignLeft)
         box.addStretch()
+
+    def ai_connected_now(self):
+        return bool(self.ai_info and self.ai_info.get('account'))
+
+    def update_ai_controls(self):
+        """Show only the next useful AI action; mirror the state on the start page."""
+        if not hasattr(self,'ai_install_btn'):return
+        installed=ai.find_runtime(self.home) is not None;connected=self.ai_connected_now()
+        warning=(self.ai_info or {}).get('warning','') if connected else ''
+        self.ai_install_btn.setVisible(not installed)
+        self.ai_login_btn.setVisible(installed and not connected)
+        self.ai_refresh_btn.setVisible(connected);self.ai_logout_btn.setVisible(connected)
+        self.ai_notice_card.setVisible(not connected);self.ai_notice_short.setVisible(connected)
+        self.ai_model_card.setVisible(connected)
+        self.ai_quota.setObjectName('warn' if warning else 'sub');self.ai_quota.style().unpolish(self.ai_quota);self.ai_quota.style().polish(self.ai_quota)
+        if connected and warning:set_pill(self.ai_badge,'額度不足','blocked')
+        elif connected:set_pill(self.ai_badge,'已連接','done')
+        else:set_pill(self.ai_badge,'未安裝元件' if not installed else '未連接','todo')
+        model=self.ai_models.currentData() if connected else None
+        usable=bool(connected and model and not warning)
+        self.use_ai.setEnabled(usable);self.ai_connect_link.setVisible(not connected)
+        if usable and self.use_ai.isChecked():
+            hint=f'會先用模組包中文與參考庫翻譯，只把剩下的缺漏交給「{model.get("displayName") or model["model"]}」；消耗你原本的 Codex 額度。'
+        elif usable:hint='不使用 AI：參考來源缺漏的文字會留在報告，之後可在報告頁補翻。'
+        elif connected and warning:hint='AI 暫不可用：'+warning+' 參考來源仍會照常翻譯並套用。'
+        elif connected:hint='請到「AI 帳號與模型」選擇補翻模型。'
+        else:hint='未連接 AI：參考來源會照常翻譯並套用，缺漏留在報告。連接後可自動補翻。'
+        self.ai_hint.setText(hint)
+        self.side_ai.setText('AI 補翻：'+('額度不足' if warning else '已連接' if connected else '未連接'))
+
+    def probe_ai(self):
+        """Read-only account/quota check at startup; consumes no model quota."""
+        if not ai.find_runtime(self.home) or self.busy:return
+        self.start_background(lambda w:self.ai_operation('refresh',w),self.ai_connected)
+
+    def start_background(self,operation,done):
+        worker=Worker(operation);worker.result.connect(done)
+        worker.failed.connect(lambda text:logging.info('Background check failed: %s',text))
+        worker.finished.connect(lambda w=worker:(self.background.remove(w),w.deleteLater()) if w in self.background else None)
+        self.background.append(worker);worker.start();return worker
 
     def select_ai_model(self,*_):
         model=self.ai_models.currentData()
         if model:
             self.settings.setValue('ai_model',model['model'])
             self.ai_model_detail.setText((model.get('description') or model['model'])+'\n不同模型可能消耗不同額度；譯文仍需校對。')
+        self.update_ai_controls()
 
     def ai_operation(self,action,w):
         with ai.CodexClient(self.home,lambda:w.cancelled) as client:
@@ -368,7 +439,10 @@ class MainWindow(QMainWindow):
 
     def install_ai_runtime(self):
         if QMessageBox.question(self,'安裝官方 Codex 元件','將從 OpenAI 官方 GitHub 下載並校驗 Windows 元件（約數百 MB）。\n只安裝到本程式資料夾，不會登入或消耗模型額度。是否繼續？')!=QMessageBox.Yes:return
-        self.run_worker('ai_install',lambda w:ai.install_runtime(self.home,w.progress.emit,lambda:w.cancelled),lambda _:self.ai_status.setText('官方元件已安裝，請按「連接 ChatGPT」。'))
+        self.run_worker('ai_install',lambda w:ai.install_runtime(self.home,w.progress.emit,lambda:w.cancelled),self.ai_installed)
+
+    def ai_installed(self,_):
+        self.ai_status.setText('官方元件已安裝，請按「連接 ChatGPT」。');self.update_ai_controls()
 
     def login_ai(self):
         if not ai.find_runtime(self.home):
@@ -398,6 +472,7 @@ class MainWindow(QMainWindow):
         self.ai_models.blockSignals(False);self.select_ai_model()
         self.ai_status.setText(('已連接 '+str(account.get('email') or 'ChatGPT')+' · '+str(account.get('planType') or '未知方案')) if account else '尚未連接 ChatGPT。')
         self.ai_quota.setText(result.get('warning') or '　'.join(f"{q['minutes'] or '?'} 分鐘視窗剩餘 {q['remaining']:g}%" for q in result.get('quota',[])))
+        self.update_ai_controls()
 
     def ai_supplement(self):
         if not self.session:
@@ -428,9 +503,13 @@ class MainWindow(QMainWindow):
 
     def run_worker(self,mode,operation,done):
         if self.busy:return
+        if (mode.startswith('ai_') or mode=='full_translate') and any(w.isRunning() for w in self.background):
+            # The startup account check owns the Codex process; never run two against one login store.
+            QMessageBox.information(self,'正在確認帳號','程式正在背景確認 AI 帳號狀態，請幾秒後再試。');return
         self.busy=True;self.mode=mode
         self.started_at=self.last_activity=time.monotonic()
-        for b in (self.path,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models):b.setEnabled(False)
+        for b in (self.path,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai):b.setEnabled(False)
+        if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
         self.history.setEnabled(False);self.cancel.setEnabled(mode in ('plan','full_translate','ai_translate','ai_login','ai_install'));self.ai_stop_btn.setEnabled(mode in ('ai_translate','ai_login','ai_install'))
         self.worker=Worker(operation)
         self.worker.progress.connect(self.on_progress)
@@ -440,13 +519,22 @@ class MainWindow(QMainWindow):
 
     def finish_worker(self):
         self.busy=False
+        if self.quit_after_worker:
+            # The update helper waits for this process to exit; exit() skips the busy close guard.
+            QApplication.exit(0);return
         self.progress.setRange(0,100)
         for b in (self.path,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models):b.setEnabled(True)
         self.history.setEnabled(True);self.cancel.setEnabled(False);self.ai_stop_btn.setEnabled(False)
         self.install_btn.setEnabled(bool(self.update_info and self.update_info.get('status')=='available'))
+        self.ai_progress.hide();self.update_ai_controls();self.update_ai_button()
 
     def on_progress(self,value,title,detail):
         self.last_activity=time.monotonic()
+        if self.mode in ('ai_install','ai_login','ai_refresh','ai_logout','check_update','download_update'):
+            # Account and update chores stay on their own page instead of hijacking the translation progress card.
+            if self.mode=='ai_install':self.ai_progress.setValue(value)
+            if self.mode.startswith('ai_'):self.ai_status.setText(title+('：'+detail if detail else ''))
+            return
         if self.mode=='full_translate':
             # Overall stages never show 100% at the end of source matching.
             if title=='來源整理完成':value=65
@@ -455,7 +543,7 @@ class MainWindow(QMainWindow):
             else:value=int(value*.65)
         if title in ('更新參考庫','AI 補翻中'):self.progress.setRange(0,0)
         else:self.progress.setRange(0,100)
-        self.progress.setValue(value);self.step.setText(title);self.detail.setText(detail);self.status.setText('處理中')
+        self.progress.setValue(value);self.step.setText(title);self.detail.setText(detail);set_pill(self.status,'處理中','progress')
         self.cancel.setEnabled(self.mode in ('plan','full_translate','ai_translate','ai_login','ai_install') and title not in ('驗證並準備套用','備份與套用','重新掃描實際遊戲資料','已套用已校對的文字'))
         self.append_activity(title+' · '+detail)
         if self.mode.startswith('ai_'):self.ai_status.setText(title+'：'+detail)
@@ -492,7 +580,7 @@ class MainWindow(QMainWindow):
         if not candidates:return
         path=max(candidates,key=lambda p:p.stat().st_mtime)
         try:
-            self.session=json.loads(path.read_text(encoding='utf-8'))
+            self.use_session(json.loads(path.read_text(encoding='utf-8')))
             self.update_stats();self.refresh_history();self.fill_table()
         except (ValueError,OSError,KeyError):logging.exception('Cannot restore last report')
 
@@ -500,7 +588,7 @@ class MainWindow(QMainWindow):
         if self.mode in ('check_update','download_update'):self.update_status.setText('更新未完成：'+text)
         elif self.mode.startswith('ai_'):self.ai_status.setText(text)
         else:
-            self.status.setText('需要處理');self.detail.setText(text)
+            set_pill(self.status,'需要處理','blocked');self.detail.setText(text)
             if self.session and self.mode=='apply':
                 self.session.update(status='apply_failed',apply_error=text)
                 jobs.write_json(Path(self.session['report'])/'session.json',self.session)
@@ -510,22 +598,24 @@ class MainWindow(QMainWindow):
     def start_job(self):
         if not self.path.text().strip():self.choose_folder()
         if not self.path.text().strip():return
-        instance=self.instance_path();self.progress.setValue(0);self.status.setText('處理中')
+        instance=self.instance_path();self.progress.setValue(0);set_pill(self.status,'處理中','progress')
         self.run_worker('plan',lambda w:jobs.plan(instance,self.home,w.progress.emit,lambda:w.cancelled,checkpoint=w.publish),self.job_done)
 
     def full_translation_job(self):
         if not self.path.text().strip(): self.choose_folder()
         if not self.path.text().strip(): return
-        model=self.ai_models.currentData() if self.ai_info and self.ai_info.get('account') else None
-        if self.ai_info and self.ai_info.get('warning'):
-            QMessageBox.warning(self,'AI 額度尚未確認',self.ai_info['warning']+'\n可先使用免費來源，或重新整理 AI 額度後再試。')
-            return
-        ai_line=('會使用模型「'+model['model']+'」補翻缺漏，消耗你原本 ChatGPT 的 Codex 額度。'
-                 if model else '目前沒有連接 AI，會先套用免費來源；缺少可靠來源的文字會留在報告。')
+        # AI runs only when the user ticked the option and the account can currently be used.
+        model=self.ai_models.currentData() if self.use_ai.isEnabled() and self.use_ai.isChecked() else None
+        if model:
+            ai_line=('參考來源缺漏的文字會交給模型「'+model['model']+'」補翻，消耗你原本 ChatGPT 的 Codex 額度。\n'+ai.PRIVACY)
+        elif self.use_ai.isChecked() and self.ai_connected_now():
+            ai_line='AI 目前無法使用（'+((self.ai_info or {}).get('warning') or '尚未選擇模型')+'），這次只使用參考來源；缺漏會留在報告。'
+        else:
+            ai_line='這次不使用 AI；參考來源缺漏的文字會留在報告，之後可在報告頁補翻。'
         prompt=('這會掃描整個模組包、翻譯可辨識的玩家文字、建立備份並直接套用。\n'
                 +ai_line+'\n\n遊戲必須先關閉；圖片文字、硬編碼程式和無法確認的特殊格式會列入報告。\n是否繼續？')
         if QMessageBox.question(self,'一鍵完整翻譯',prompt)!=QMessageBox.Yes:return
-        instance=self.instance_path();self.progress.setValue(0);self.status.setText('處理中')
+        instance=self.instance_path();self.progress.setValue(0);set_pill(self.status,'處理中','progress')
         self.run_worker('full_translate',lambda w:self.full_translation_operation(instance,model,w),self.full_translation_done)
 
     def full_translation_operation(self,instance,model,w):
@@ -546,8 +636,8 @@ class MainWindow(QMainWindow):
 
     def job_done(self,result):
         self.session=result
-        names={'installed':'已套用部分','blocked':'需要處理','awaiting_game':'等待關閉遊戲','apply_failed':'套用未完成','cancelled':'已停止'}
-        self.status.setText(names.get(result['status'],'可查看報告'))
+        names={'installed':('已套用','done'),'blocked':('需要處理','blocked'),'awaiting_game':('等待關閉遊戲','progress'),'apply_failed':('套用未完成','blocked'),'cancelled':('已停止','todo')}
+        set_pill(self.status,*names.get(result['status'],('可查看報告','todo')))
         self.progress.setRange(0,100)
         if result['status']=='installed':self.progress.setValue(100)
         self.update_stats()
@@ -571,41 +661,79 @@ class MainWindow(QMainWindow):
     def load_history(self,index):
         path=self.history.itemData(index)
         if path:
-            try:self.session=json.loads(Path(path).read_text(encoding='utf-8'));self.page_index=0;self.fill_table()
+            try:self.use_session(json.loads(Path(path).read_text(encoding='utf-8')));self.page_index=0;self.update_stats();self.fill_table()
             except Exception as exc:QMessageBox.warning(self,'無法讀取紀錄',str(exc))
+
+    def set_filter(self,mode):
+        self.filter_mode=mode
+        for name,chip in self.chips.items():chip.setChecked(name==mode)
+        self.reset_table()
 
     def reset_table(self,*_):self.page_index=0;self.fill_table()
     def turn_page(self,direction):self.page_index=max(0,self.page_index+direction);self.fill_table()
 
+    def use_session(self,session):
+        """Adopt a saved report; older reports get the current no-translation rules."""
+        self.session=session;jobs.reclassify_keep_original(session)
+
+    def update_ai_button(self):
+        count=len(ai.pending_rows(self.session)) if self.session and not self.session.get('is_preview') else 0
+        self.ai_run_btn.setText(f'AI 補翻缺漏（{count:,} 筆）' if count else 'AI 補翻缺漏')
+        self.ai_run_btn.setEnabled(bool(count) and not self.busy)
+
     def fill_table(self):
         if not self.session:
             self.table.setRowCount(0);return
-        rows=self.session['rows'];mode=self.filter.currentIndex();query=self.search.text().strip().casefold()
+        rows=self.session['rows'];mode=self.filter_mode;query=self.search.text().strip().casefold()
+        size=int(self.page_size.currentData() or 100)
         def match(r):
             if query and query not in (r['source']+' '+r['key']+' '+str(r.get('en') or r.get('current') or '')+' '+r['proposed']).casefold():return False
-            if mode==0:return r['supported'] and r['changed'] and not r['reviewed']
-            if mode==1:return r['supported'] and r['origin']=='untranslated'
-            if mode==2:return not r['supported']
-            if mode==3:return r['reviewed'] or r.get('installed')
-            if mode==5:return r['origin']=='ai_translation' or r.get('previous_origin')=='ai_translation'
+            if mode=='review':return r['supported'] and r['changed'] and not r['reviewed']
+            if mode=='missing':return r['supported'] and r['origin']=='untranslated'
+            if mode=='context':return not r['supported']
+            if mode=='done':return r['reviewed'] or r.get('installed')
+            if mode=='ai':return r['origin']=='ai_translation' or r.get('previous_origin')=='ai_translation'
+            if mode=='keep':return r['origin']=='keep_original'
             return True
-        filtered=[r for r in rows if match(r)];self.page_index=min(self.page_index,max(0,(len(filtered)-1)//100))
-        self.visible_rows=filtered[self.page_index*100:(self.page_index+1)*100]
-        self.table.setRowCount(len(self.visible_rows))
+        filtered=[r for r in rows if match(r)];pages=max(1,(len(filtered)+size-1)//size)
+        self.page_index=min(self.page_index,pages-1)
+        self.visible_rows=filtered[self.page_index*size:(self.page_index+1)*size]
+        tokens=THEMES['dark' if self.dark_theme else 'light']
+        self.table.setUpdatesEnabled(False);self.table.setRowCount(len(self.visible_rows))
         for i,r in enumerate(self.visible_rows):
-            state='已套用' if r.get('installed') else '待套用' if r.get('review_method')=='auto_validated_one_click' else '已確認' if r['reviewed'] else '比對中' if r['origin']=='pending' else '待校對' if r['supported'] and r['changed'] else '待查'
-            for j,text in enumerate((r.get('en') or r.get('zh_cn') or r.get('current') or r['key'],r['proposed'],jobs.SOURCE_NAMES.get(r['origin'],r['origin']),state)):
-                item=QTableWidgetItem(str(text).replace('\n',' ')[:130]);item.setToolTip(str(text));self.table.setItem(i,j,item)
-            self.table.setRowHeight(i,44)
-        self.page_label.setText(f'共 {len(filtered):,} 筆 · 第 {self.page_index+1} / {max(1,(len(filtered)+99)//100)} 頁')
-        self.prev.setEnabled(self.page_index>0);self.next.setEnabled((self.page_index+1)*100<len(filtered))
+            state=('已套用' if r.get('installed') else '待套用' if r.get('review_method')=='auto_validated_one_click' else '已確認' if r['reviewed']
+                   else '無需翻譯' if r['origin']=='keep_original' else '比對中' if r['origin']=='pending' else '待校對' if r['supported'] and r['changed'] else '待查')
+            original=r.get('en') or r.get('zh_cn') or r.get('current') or r['key']
+            for j,text in enumerate((original,r['proposed'],jobs.SOURCE_NAMES.get(r['origin'],r['origin']),'● '+state)):
+                item=QTableWidgetItem(str(text).replace('\n',' ')[:130])
+                item.setToolTip(f"{r['key']}\n{r['source']}\n{r.get('issue') or ''}" if j==0 else str(text))
+                if j==3:
+                    item.setForeground(QColor(tokens[STATE_ROLE.get(state,'text60')]))
+                    font=item.font();font.setBold(True);item.setFont(font)
+                self.table.setItem(i,j,item)
+            self.table.setRowHeight(i,40)
+        self.table.setUpdatesEnabled(True)
+        self.page_label.setText(f'共 {len(filtered):,} 筆 · 第 {self.page_index+1} / {pages} 頁')
+        self.prev.setEnabled(self.page_index>0);self.next.setEnabled(self.page_index+1<pages)
         counts=self.session.get('source_counts',{})
-        summary='　'.join(f'{jobs.SOURCE_NAMES.get(k,k)} {v:,}' for k,v in counts.items())
-        errors=self.session.get('errors',[])
-        stages={'scanning':'掃描中，找到的文字稍後會列在這裡。','references':'掃描已完成，正在更新參考庫；下方暫列原文。','matching':'正在比對中文來源，譯文陸續加入。','awaiting_game':'譯文已保存。關閉相關遊戲後，按右下方重試套用。','cancelled':'已停止；已保存的內容仍可查看。','apply_failed':'套用未完成；譯文已保存。','blocked':'此批次無法繼續，請查看下方原因。'}
+        self.report_sources.setText('來源：'+'　'.join(f'{jobs.SOURCE_NAMES.get(k,k)} {v:,}' for k,v in sorted(counts.items(),key=lambda kv:-kv[1])))
+        stages={'scanning':'掃描中，找到的文字稍後會列在這裡。','references':'掃描已完成，正在更新參考庫；下方暫列原文。','matching':'正在比對中文來源，譯文陸續加入。',
+                'awaiting_game':'譯文已保存。關閉相關遊戲後，按右下方「重試套用」。','cancelled':'已停止；已保存的內容仍可查看。','apply_failed':'套用未完成；譯文已保存。',
+                'blocked':'此批次無法繼續，請查看下方原因。','installed':'已直接套用到模組包，原檔已備份。','restored':'這一批已還原。'}
+        badges={'installed':('已套用','done'),'blocked':('需要處理','blocked'),'apply_failed':('套用未完成','blocked'),'awaiting_game':('等待關閉遊戲','progress'),
+                'cancelled':('已停止','todo'),'restored':('已還原','todo'),'scanning':('處理中','progress'),'references':('處理中','progress'),'matching':('處理中','progress')}
+        set_pill(self.report_state,*badges.get(self.session['status'],('待套用','todo')))
         message=stages.get(self.session['status'],'本次已產生的譯文與待處理項目如下。')
         if self.session.get('is_preview'):message+=f"\n已記錄 {self.session['preview_total']:,} 筆，處理中先預覽最近 200 筆；結束後載入完整報告。"
-        self.report_summary.setText(message+f"\n已套用 {self.session.get('installed_count',0):,} 筆 · AI {self.session.get('ai_translation',0):,} 筆 · 額外付費 API 0 筆\n"+summary+(('\n需要處理：'+str(errors[0])) if errors else '')+('\n'+self.session['apply_error'] if self.session.get('apply_error') else ''))
+        if self.session.get('apply_error'):message+='\n'+self.session['apply_error']
+        self.report_summary.setText(message)
+        missing=sum(r['origin']=='untranslated' and r['supported'] for r in rows)
+        self.report_counts.setText(f"已套用 {self.session.get('installed_count',0):,} 筆 · AI 補譯 {self.session.get('ai_translation',0):,} 筆 · 缺少來源 {missing:,} 筆 · 外部翻譯 API 未使用（0 筆）")
+        problems=[jobs.describe_error(e) for e in self.session.get('errors',[])]
+        problems+=[Path(str(r[0])).name+'：原本的 zh_tw.json 格式錯誤（遊戲也讀不到），已依英文與簡中重建' for r in self.session.get('repairs',[])]
+        self.report_errors.setVisible(bool(problems))
+        self.report_errors.setText('需要留意：\n'+'\n'.join('• '+p for p in problems[:5])+(f'\n另有 {len(problems)-5} 項，詳見報告資料夾。' if len(problems)>5 else ''))
+        self.update_ai_button()
 
     def review_current(self):self.review_row(self.table.currentRow(),0)
     def review_row(self,index,column=0):
@@ -650,7 +778,7 @@ class MainWindow(QMainWindow):
             for row in self.session['rows']:
                 if row.get('installed'):row['installed']=False;row['reviewed']=False
             jobs.write_json(Path(self.session['report'])/'session.json',self.session)
-            self.stats[2].setText('0');self.status.setText('已還原');self.fill_table()
+            self.stats[2].setText('0');set_pill(self.status,'已還原','todo');self.fill_table()
         self.refresh_backups();QMessageBox.information(self,'已還原','原檔已還原，本批新增翻譯檔已移除。備份仍保留。')
 
     def check_updates(self):
@@ -685,8 +813,11 @@ class MainWindow(QMainWindow):
     def update_downloaded(self,result):
         try:
             updater.launch_update(result[0],result[1],self.home)
-            self.worker.finished.connect(QApplication.instance().quit)
-            self.update_status.setText('校驗完成，準備重新啟動…')
+            # Connecting to finished here would race: the worker may already have finished,
+            # leaving the old window open while the helper waits for it to exit.
+            self.quit_after_worker=True
+            self.update_status.setText('校驗完成，程式即將關閉並自動開啟新版…')
+            if not self.worker.isRunning():QTimer.singleShot(0,lambda:QApplication.exit(0))
         except Exception as exc:self.on_error(str(exc))
 
     def closeEvent(self,event):
@@ -695,6 +826,9 @@ class MainWindow(QMainWindow):
         elif self.update_worker and self.update_worker.isRunning():
             # Defer destruction until the bounded HTTP request returns; never kill QThread.
             self.hide();self.update_worker.finished.connect(self.close);event.ignore()
+        elif any(w.isRunning() for w in self.background):
+            running=next(w for w in self.background if w.isRunning())
+            self.hide();running.finished.connect(self.close);event.ignore()
         else:event.accept()
 
 
@@ -740,7 +874,9 @@ def main():
             (dest/'smoke.json').write_text(json.dumps(dict(version=updater.VERSION,window=window.windowTitle(),tabs=window.pages.count(),frozen=bool(getattr(sys,'frozen',False)))),encoding='utf-8')
             app.quit()
         QTimer.singleShot(800,capture)
-    else:QTimer.singleShot(1800,window.check_updates_on_start)
+    else:
+        QTimer.singleShot(1800,window.check_updates_on_start)
+        QTimer.singleShot(900,window.probe_ai)
     app.exec();lock.unlock()
 
 

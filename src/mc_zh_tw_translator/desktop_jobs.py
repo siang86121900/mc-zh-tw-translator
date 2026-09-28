@@ -23,9 +23,60 @@ from .verifier import VerifyResult, check_java_zipfs
 SOURCE_NAMES = {'same_source_zh_cn':'同檔簡中', 'instance_zh_cn':'模組包中文',
                 'reference_pack_or_cfpa':'參考庫', 'glossary':'術語表',
                 'translation_memory':'已確認記憶', 'existing_zh_tw':'既有繁中',
-                'ai_translation':'AI 補譯', 'manual':'使用者修訂', 'untranslated':'缺少來源'}
+                'ai_translation':'AI 補譯', 'manual':'使用者修訂', 'untranslated':'缺少來源',
+                'keep_original':'無需翻譯'}
 HAN = re.compile('[\u3400-\u9fff]')
 FORMAT = re.compile(r'§[0-9a-fk-or]|\$\([^)]+\)|\{[\w.]+\}', re.I)
+PARAMETER = re.compile(r'%(?:\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?[sdfxXeEgGc%]|\{\d*\}|\$\([^)]+\)|§[0-9a-fk-or]|\\n', re.I)
+ROMAN = re.compile(r'(?=[MDCLXVI])M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})')
+KEY_NAMES = {'shift','ctrl','control','alt','tab','esc','escape','enter','return','space','backspace','delete','del',
+             'insert','home','end','page up','page down','caps lock','num lock','lmb','rmb','mmb','lshift','rshift',
+             'lctrl','rctrl','lalt','ralt','cmd','command','option','meta','win','super'}
+# Technical abbreviations players read as-is; ordinary words stay translatable.
+ABBREVIATIONS = {'NBT','RGB','RGBA','ARGB','HEX','HSV','UUID','JSON','ID','FPS','TPS','MSPT','GUI','HUD','API','URL',
+                 'XP','HP','MP','CPU','GPU','RAM','FE','RF','EU','DPS','UI','JEI','REI','EMI','LOD','VBO','LAN','PVP','PVE'}
+
+
+def keep_original_reason(text):
+    """Explain why a missing-source string needs no translation, else ''.
+
+    Only unambiguous cases qualify, so nothing a player would expect in Chinese is hidden.
+    """
+    if not isinstance(text,str) or not text.strip():return ''
+    core=PARAMETER.sub(' ',text).strip()
+    if not re.search('[A-Za-z]',core):return '只有參數、數字或符號'
+    if re.match(r'(?i)https?://\S+$',core):return '網址'
+    if re.fullmatch(r'[\d\s.,x×*+\-/:%()]+',core,re.I) and re.search(r'\d',core):return '尺寸或數值'
+    if ROMAN.fullmatch(core) and core not in ('MIX','DIV','MID','DIM','MIL','LID'):return '羅馬數字'
+    if re.fullmatch('[A-Za-z]',core):return '單一字母或按鍵'
+    parts=[p.strip() for p in re.split(r'\s*[+/]\s*',core) if p.strip()]
+    if parts and all(p.casefold() in KEY_NAMES or re.fullmatch(r'[A-Za-z]|F\d{1,2}',p) for p in parts):return '按鍵名稱'
+    if parts and all(p in ABBREVIATIONS for p in parts):return '技術縮寫'
+    return ''
+
+
+def reclassify_keep_original(session):
+    """Apply keep_original rules to reports saved by older versions (in memory only)."""
+    moved=0
+    for row in session.get('rows',[]):
+        if row.get('origin')!='untranslated' or not row.get('supported') or row.get('ai_attempted'):continue
+        reason=keep_original_reason(row.get('en') or row.get('zh_cn') or row.get('current') or '')
+        if reason:row.update(origin='keep_original',issue='無需翻譯：'+reason);moved+=1
+    if moved:
+        counts=session.setdefault('source_counts',{})
+        counts['untranslated']=max(0,counts.get('untranslated',0)-moved)
+        counts['keep_original']=counts.get('keep_original',0)+moved
+        if 'preview_pending' in session:session['preview_pending']=max(0,session['preview_pending']-moved)
+    return moved
+
+
+def describe_error(error):
+    """Turn a raw audit error list into one readable report line."""
+    parts=[p for p in error if isinstance(p,str)] if isinstance(error,(list,tuple)) else [str(error)]
+    where=Path(parts[0]).name if parts else ''
+    detail=parts[-1] if len(parts)>1 else ''
+    if 'Expecting' in detail:detail='檔案本身 JSON 格式錯誤（'+detail+'）'
+    return (where+'：'+detail) if detail else where
 
 
 def validate_text(original, value):
@@ -102,6 +153,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     result['audit_counts']=dict(audit.counts)
     result['source_hashes']=audit.source_hashes
     result['errors']=audit.errors
+    result['repairs']=audit.repairs
     result['rows']=[dict(r,proposed=r.get('current') or r.get('en') or r.get('zh_cn') or '',
                         origin='pending',issue='等待來源比對',supported=False,reviewed=False,changed=False)
                     for r in audit.rows if r['kind'] in ('language','book') or r['flags']]
@@ -161,8 +213,12 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 break
         if origin=='existing_zh_tw' and cc.convert(value)!=value:
             issue='既有繁中可能含簡體或不同用語，請核對'
+        if origin=='untranslated' and keep_original_reason(original):
+            # Parameters, key names and similar strings stay as-is; they are neither gaps nor AI work.
+            origin='keep_original';evidence=keep_original_reason(original);issue=''
+            if r['en'] is None and r['current'] is None:issue='無需翻譯：'+evidence  # no en_us fallback in game
         supported=r['kind']=='language' or ('/en_us/' in r['source'] or '/zh_tw/' in r['source'])
-        changed=value!=r['current'] and origin!='untranslated'
+        changed=value!=r['current'] and origin!='untranslated' and (origin!='keep_original' or bool(issue))
         counts[origin]+=1
         if changed or issue:
             result['rows'].append(dict(r,proposed=value,origin=origin,evidence=evidence,issue=issue,
@@ -339,7 +395,12 @@ def apply_session(session, home, notify):
                 if is_text:
                     content=rows[0]['proposed'].encode('utf-8')
                 else:
-                    data=parse(raw) if raw and name.endswith('.json') else dict(line.split('=',1) for line in raw.decode('utf-8-sig').splitlines() if '=' in line and not line.startswith('#')) if raw else {}
+                    try:
+                        data=parse(raw) if raw and name.endswith('.json') else dict(line.split('=',1) for line in raw.decode('utf-8-sig').splitlines() if '=' in line and not line.startswith('#')) if raw else {}
+                    except ValueError:
+                        # Only zh_tw files the scan already recorded as unreadable may be rebuilt.
+                        if not any(l==path and n==name or entry is None and path.endswith(n) for l,n,*_ in session.get('repairs',[])):raise
+                        data={}
                     # Missing book target needs the English structure, never an empty object.
                     if not raw and rows[0]['kind']=='book':
                         sourcepath=rows[0]['source'].split('!/',1)[1]

@@ -47,6 +47,25 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue((self.lang/'en_us.json').exists())
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_malformed_mod_zh_tw_is_rebuilt_and_parameters_are_not_gaps(self,_):
+        import zipfile
+        mods=self.instance/'mods';mods.mkdir()
+        with zipfile.ZipFile(mods/'lights.jar','w') as z:
+            z.writestr('assets/lights/lang/en_us.json',json.dumps({'a.mode':'Mode','a.fmt':'%s','a.key':'Shift'}))
+            z.writestr('assets/lights/lang/zh_cn.json',json.dumps({'a.mode':'模式'}))
+            z.writestr('assets/lights/lang/zh_tw.json','{\n "a.mode": "模式"\n "a.fmt": "%s"\n}')  # missing comma
+        result=self.make_plan()
+        self.assertEqual(result['errors'],[]);self.assertEqual(len(result['repairs']),1)
+        rows={r['key']:r for r in result['rows'] if r['source'].startswith('mods/')}
+        self.assertEqual(rows['a.mode']['proposed'],'模式')
+        self.assertNotIn('a.fmt',rows);self.assertNotIn('a.key',rows)  # kept as-is, not reported as missing
+        self.assertGreaterEqual(result['source_counts'].get('keep_original',0),2)
+        rows['a.mode']['reviewed']=True
+        apply_session(result,self.home,lambda *_:None)
+        with zipfile.ZipFile(mods/'lights.jar') as z:
+            self.assertEqual(json.loads(z.read('assets/lights/lang/zh_tw.json')),{'a.mode':'模式'})
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_changed_source_refuses_apply(self,_):
         result=self.make_plan()
         next(r for r in result['rows'] if r['key']=='demo.hello')['reviewed']=True

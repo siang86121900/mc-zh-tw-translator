@@ -61,7 +61,7 @@ class DesktopUiTests(unittest.TestCase):
             self.assertIn('#F8F8F8', QApplication.instance().styleSheet())
             window.toggle_theme()
             self.assertEqual(window.settings.value('theme'),'dark')
-            self.assertIn('#171A1F', QApplication.instance().styleSheet())
+            self.assertIn('#16181C', QApplication.instance().styleSheet())
             window.toggle_theme()
             self.assertEqual(window.settings.value('theme'),'light')
             window.close()
@@ -115,6 +115,29 @@ class DesktopUiTests(unittest.TestCase):
             window.session=dict(rows=[],report=d)
             with patch.object(QMessageBox,'warning') as warning,patch.object(window,'run_worker') as run:
                 window.ai_supplement();warning.assert_called_once();run.assert_not_called()
+            window.close()
+
+    def test_connected_account_hides_setup_buttons_and_enables_ai_option(self):
+        with tempfile.TemporaryDirectory() as d:
+            window=MainWindow(Path(d))
+            self.assertFalse(window.use_ai.isEnabled())
+            with patch('mc_zh_tw_translator.codex_bridge.find_runtime',return_value=Path(d)/'codex.exe'):
+                window.ai_connected(dict(account=dict(email='a@b.c',planType='plus'),warning='',quota=[],models=[dict(model='m',isDefault=True)]))
+                self.assertTrue(window.ai_install_btn.isHidden());self.assertTrue(window.ai_login_btn.isHidden())
+                self.assertFalse(window.ai_logout_btn.isHidden());self.assertTrue(window.use_ai.isEnabled())
+                window.ai_connected(dict(account=dict(email='a@b.c'),warning='帳號已達用量限制',quota=[],models=[dict(model='m')]))
+                self.assertFalse(window.use_ai.isEnabled());self.assertIn('用量限制',window.ai_hint.text())
+            window.close()
+
+    def test_no_translation_rows_leave_missing_filter_and_page_size_applies(self):
+        with tempfile.TemporaryDirectory() as d:
+            window=MainWindow(Path(d))
+            row=lambda text:dict(source='mods/a.jar!/assets/a/lang/en_us.json',key=text,en=text,proposed=text,origin='untranslated',supported=True,reviewed=False,changed=False)
+            session=dict(report=d,status='needs_review',errors=[],source_counts={'untranslated':63},rows=[row('%s'),row('VI'),row('Shift'),row('NBT')]+[row(f'Ghost Chicken {i}') for i in range(60)])
+            window.use_session(session);window.set_filter('missing')
+            window.page_size.setCurrentIndex(window.page_size.findData(50))
+            self.assertEqual(window.table.rowCount(),50);self.assertIn('共 60 筆',window.page_label.text())
+            window.set_filter('keep');self.assertEqual(window.table.rowCount(),4)
             window.close()
 
 if __name__=='__main__':unittest.main()
