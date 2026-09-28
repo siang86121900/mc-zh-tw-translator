@@ -111,6 +111,18 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn('assets/real/lang/zh_tw.json',z.namelist())
             self.assertNotIn('META-INF/jarjar/lib.jar!/assets/lib/lang/zh_tw.json',z.namelist())
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_default_mode_writes_mods_and_sends_nested_text_to_kubejs(self,_):
+        import zipfile
+        self.make_mod();(self.instance/'mods/kubejs-neoforge.jar').write_bytes(b'')
+        (self.instance/'options.txt').write_text('lang:en_us\n',encoding='utf-8')
+        done=apply_session(self.confirm_all(self.make_plan()),self.home,lambda *_:None)
+        with zipfile.ZipFile(self.instance/'mods/real.jar') as z:
+            self.assertEqual(json.loads(z.read('assets/real/lang/zh_tw.json'))['real.a'],'真實')  # ordinary text in the mod
+        self.assertEqual(json.loads((self.instance/'kubejs/assets/lib/lang/zh_tw.json').read_text(encoding='utf-8')),{'lib.a':'函式庫'})
+        self.assertEqual((done['nested_packed'],done['nested_skipped']),(1,0))
+        self.assertEqual((self.instance/'options.txt').read_text(encoding='utf-8'),'lang:en_us\n')  # language left to the player
+
     def test_scan_cache_reuses_unchanged_archives(self):
         from mc_zh_tw_translator import desktop_jobs as jobs
         self.make_mod();first=self.make_plan()
@@ -126,11 +138,14 @@ class WorkflowTests(unittest.TestCase):
         terms=UserGlossary(self.home);terms.set('Benimaru','紅丸')
         self.assertEqual(UserGlossary(self.home).lookup('benimaru'),'紅丸')
         self.assertEqual(UserGlossary(self.home).terms_in('Benimaru Boss'),{'Benimaru':'紅丸'})
-        row=lambda zh:dict(en='Direwolf',proposed=zh,origin='same_source_zh_cn',supported=True,current=None,key='k',source='s')
-        session=dict(rows=[row('恐狼'),row('恐狼'),row('牙狼族')])
-        self.assertEqual(conflicting_terms(session)[0]['variants'],[('恐狼',2),('牙狼族',1)])
+        row=lambda zh,origin='same_source_zh_cn',key='entity.a.direwolf':dict(en='Direwolf',proposed=zh,origin=origin,supported=True,
+                                                                              current=None,key=key,source='s')
+        session=dict(rows=[row('牙狼族'),row('牙狼族'),row('恐狼','reference_pack_or_cfpa'),row('无','same_source_zh_cn','gui.a.none')])
+        conflict=conflicting_terms(session)[0]
+        self.assertEqual(conflict['suggested'],'恐狼')  # a more trusted source beats a larger count
+        self.assertEqual(len(conflicting_terms(session)),1)  # UI words (gui.*) are never listed
         self.assertEqual(apply_term(session,'Direwolf','恐狼'),3)
-        self.assertEqual({r['proposed'] for r in session['rows']},{'恐狼'})
+        self.assertEqual([r['proposed'] for r in session['rows']],['恐狼','恐狼','恐狼','无'])
 
     def test_source_order_uses_memory_and_rejects_simplified_zh_tw(self):
         from mc_zh_tw_translator.desktop_jobs import TranslationMemory

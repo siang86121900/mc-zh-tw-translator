@@ -367,16 +367,11 @@ class MainWindow(QMainWindow):
         self.ai_connect_link=button('連接 AI 帳號',lambda:self.navigate(4));self.ai_connect_link.setObjectName('link')
         ai_row.addWidget(self.use_ai);ai_row.addWidget(self.ai_connect_link);ai_row.addStretch();b.addLayout(ai_row)
         self.ai_hint=label('','sub');b.addWidget(self.ai_hint)
-        # Game language: most modpacks ship with lang:en_us, so applied translations would stay invisible.
+        # Optional: many modpacks ship with lang:en_us; players may also switch the language themselves.
         self.set_language=QCheckBox('套用後把遊戲語言設為繁體中文（台灣）')
         self.set_language.setToolTip('修改模組包的 options.txt（lang:zh_tw），修改前一樣會備份，可在「備份與還原」復原。')
-        self.set_language.setChecked(str(self.settings.value('set_language','true')).lower()=='true')
+        self.set_language.setChecked(str(self.settings.value('set_language','false')).lower()=='true')
         self.set_language.toggled.connect(lambda v:self.settings.setValue('set_language','true' if v else 'false'));b.addWidget(self.set_language)
-        self.pack_mode=QCheckBox('不修改模組檔，集中成翻譯包')
-        self.pack_mode.setToolTip('有 KubeJS 時寫到 kubejs/assets；否則產生 mods/mctranslator_zh_tw.jar 翻譯模組。\n'
-                                  '更新模組後翻譯不會消失，也能翻到內嵌在其他模組裡的函式庫。')
-        self.pack_mode.setChecked(str(self.settings.value('pack_mode','false')).lower()=='true')
-        self.pack_mode.toggled.connect(lambda v:self.settings.setValue('pack_mode','true' if v else 'false'));b.addWidget(self.pack_mode)
         actions=QHBoxLayout();self.full_start=button('一鍵完整翻譯並套用',self.full_translation_job,True);self.cancel=button('停止',self.cancel_job);self.cancel.setEnabled(False)
         actions.addWidget(self.full_start);actions.addWidget(self.cancel);actions.addStretch();b.addLayout(actions);box.addWidget(f)
         stats=QHBoxLayout();stats.setSpacing(12);self.stats=[]
@@ -506,8 +501,9 @@ class MainWindow(QMainWindow):
         b.addWidget(self.term_table);b.addWidget(button('刪除選取的譯名',self.remove_term),alignment=Qt.AlignLeft);box.addWidget(f)
         f,b=card();head=QHBoxLayout();title=label('用詞不一致（目前報告）','section');title.setWordWrap(False);head.addWidget(title);head.addStretch()
         self.conflict_count=label('','pill');head.addWidget(self.conflict_count);b.addLayout(head)
-        b.addWidget(label('同一個英文在不同模組被翻成不同中文，依出現次數排序。常見詞（例如 Default）在不同情境可能本來就該不同，只統一你確定該一致的。'
-                          '按「統一」會套用到目前報告並記成自訂譯名；之後按報告頁的套用即可寫入。','sub'))
+        b.addWidget(label('只列物品、方塊、生物、效果等「名稱」在不同模組翻得不一樣的情況；按鍵、選單等通用詞在不同情境本來就可能不同，不會列出。'
+                          '已依來源可信度預先選好建議譯法（官方譯名 → 你的譯名 → 翻譯記憶 → 既有繁中 → 參考庫 → 模組簡中），可直接全部採用，或個別改選。','sub'))
+        self.adopt_all_btn=button('全部採用建議',self.adopt_all_terms,True);b.addWidget(self.adopt_all_btn,alignment=Qt.AlignLeft)
         self.conflicts=QTableWidget(0,3);self.conflicts.setHorizontalHeaderLabels(['英文','目前的譯法（次數）','統一為'])
         self.conflicts.verticalHeader().hide();self.conflicts.setShowGrid(False);self.conflicts.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.conflicts.setMinimumHeight(260)
@@ -522,13 +518,15 @@ class MainWindow(QMainWindow):
             self.term_table.setItem(i,0,QTableWidgetItem(e['en']));self.term_table.setItem(i,1,QTableWidgetItem(e['zh']))
         rows=jobs.conflicting_terms(self.session) if self.session and not self.session.get('is_preview') else []
         set_pill(self.conflict_count,f'{len(rows):,}{"+" if len(rows)>=500 else ""} 組','progress' if rows else 'done')
+        self.term_conflicts=rows;self.adopt_all_btn.setEnabled(bool(rows))
         self.conflicts.setRowCount(len(rows))
         for i,item in enumerate(rows):
             self.conflicts.setItem(i,0,QTableWidgetItem(item['en']))
             self.conflicts.setItem(i,1,QTableWidgetItem('、'.join(f'{zh}（{n}）' for zh,n in item['variants'])))
             cell=QWidget();line=QHBoxLayout(cell);line.setContentsMargins(4,2,4,2)
             choice=QComboBox();choice.addItems([zh for zh,_ in item['variants']]);line.addWidget(choice,1)
-            line.addWidget(button('統一',lambda checked=False,en=item['en'],c=choice:self.unify_term(en,c.currentText())))
+            choice.setItemText(0,item['suggested']+'（建議）');choice.setItemData(0,item['suggested'])
+            line.addWidget(button('統一',lambda checked=False,en=item['en'],tail=item['key_tail'],c=choice:self.unify_term(en,c.currentData() or c.currentText(),tail)))
             self.conflicts.setCellWidget(i,2,cell);self.conflicts.setRowHeight(i,48)
 
     def save_term(self):
@@ -540,9 +538,22 @@ class MainWindow(QMainWindow):
         row=self.term_table.currentRow()
         if row>=0:jobs.UserGlossary(self.home).remove(self.term_table.item(row,0).text());self.refresh_terms()
 
-    def unify_term(self,en,zh):
+    def adopt_all_terms(self):
+        rows=getattr(self,'term_conflicts',[])
+        if self.busy or not self.session or not rows:return
+        if QMessageBox.question(self,'全部採用建議',f'將 {len(rows):,} 個名稱統一為建議譯法，套用到目前報告並記成自訂譯名。\n'
+                                '之後到報告頁按套用即可寫入遊戲。是否繼續？')!=QMessageBox.Yes:return
+        terms=jobs.UserGlossary(self.home);count=0
+        for item in rows:
+            terms.entries[item['en'].casefold()]=dict(en=item['en'],zh=item['suggested'])
+            count+=jobs.apply_term(self.session,item['en'],item['suggested'],item['key_tail'])
+        terms.save();jobs.write_json(Path(self.session['report'])/'session.json',self.session)
+        self.refresh_terms();self.fill_table()
+        QMessageBox.information(self,'已統一',f'已統一 {len(rows):,} 個名稱，共 {count:,} 筆譯文。\n到報告頁按套用即可寫入遊戲。')
+
+    def unify_term(self,en,zh,key_tail=None):
         if self.busy or not self.session:return
-        jobs.UserGlossary(self.home).set(en,zh);count=jobs.apply_term(self.session,en,zh)
+        jobs.UserGlossary(self.home).set(en,zh);count=jobs.apply_term(self.session,en,zh,key_tail)
         jobs.write_json(Path(self.session['report'])/'session.json',self.session)
         self.refresh_terms();self.fill_table()
         QMessageBox.information(self,'已統一',f'「{en}」已統一為「{zh}」，共 {count:,} 筆，並記成自訂譯名。\n到報告頁按套用即可寫入遊戲。')
@@ -846,12 +857,9 @@ class MainWindow(QMainWindow):
         if jobs.is_instance(instance):self.remember_instance(instance)
         self.run_worker('full_translate',lambda w:self.full_translation_operation(instance,model,w),self.full_translation_done)
 
-    def apply_options(self):
-        return dict(apply_mode='pack' if self.pack_mode.isChecked() else 'jar',set_language=self.set_language.isChecked())
-
     def full_translation_operation(self,instance,model,w):
         return jobs.full_translation(instance,self.home,model['model'] if model else None,w.progress.emit,lambda:w.cancelled,w.publish,
-                                     options=self.apply_options())
+                                     options=dict(set_language=self.set_language.isChecked()))
 
     def full_translation_done(self,result):
         self.job_done(result);self.navigate(1)
@@ -1009,12 +1017,9 @@ class MainWindow(QMainWindow):
         if not self.session:return
         count=sum(bool(r.get('reviewed') and r.get('changed') and r.get('supported') and not r.get('installed')) for r in self.session['rows'])
         if not count:QMessageBox.information(self,'先校對譯文','請在報告中雙擊譯文，核對後按「確認這筆」。');return
-        options=self.apply_options()
-        where='集中成翻譯包（不修改模組檔）' if options['apply_mode']=='pack' else '寫入各模組檔'
-        language='，並把遊戲語言設為繁體中文' if options['set_language'] else ''
-        if QMessageBox.question(self,'備份並套用',f'將備份原檔，並以「{where}」方式套用 {count:,} 筆已確認譯文{language}：\n{self.session["instance"]}\n\n'
-                                '套用方式與語言選項依開始頁的設定。請先關閉此模組包的遊戲。是否繼續？')!=QMessageBox.Yes:return
-        self.session.update(options)
+        language='，並把遊戲語言設為繁體中文' if self.set_language.isChecked() else ''
+        if QMessageBox.question(self,'備份並套用',f'將備份原檔，並套用 {count:,} 筆已確認譯文{language}到：\n{self.session["instance"]}\n\n請先關閉此模組包的遊戲。是否繼續？')!=QMessageBox.Yes:return
+        self.session['set_language']=self.set_language.isChecked()
         self.navigate(0);self.run_worker('apply',lambda w:jobs.apply_session(self.session,self.home,w.progress.emit),self.apply_done)
 
     def apply_done(self,result):
@@ -1023,10 +1028,9 @@ class MainWindow(QMainWindow):
     def applied_notes(self,result):
         """Plain-language follow-ups after applying (language switch, pack location, skipped embedded mods)."""
         notes=[]
-        if result.get('language_set'):notes.append('遊戲語言已設為繁體中文（台灣）。')
-        if result.get('pack_target')=='kubejs':notes.append('翻譯集中放在 kubejs/assets，模組檔沒有修改。')
-        elif result.get('pack_target')=='mod':notes.append('翻譯集中在 mods/mctranslator_zh_tw.jar（實驗功能，請進遊戲確認）。')
-        if result.get('nested_skipped'):notes.append(f"{result['nested_skipped']:,} 筆內嵌函式庫的文字需勾選「集中成翻譯包」才能套用。")
+        if result.get('nested_packed'):notes.append(f"{result['nested_packed']:,} 筆內嵌函式庫（jar-in-jar）的文字放在 kubejs/assets。")
+        if result.get('nested_skipped'):notes.append(f"{result['nested_skipped']:,} 筆內嵌函式庫的文字需要 KubeJS 才能套用，已略過。")
+        notes.append('遊戲語言已設為繁體中文（台灣）。' if result.get('language_set') else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
         return notes
 
     def open_report(self):

@@ -21,7 +21,7 @@
 
 補充來源（`desktop_references.refresh`）：ParaTranslationPack 最新 main、CFPA 較舊版本資產（最多 3 個，來源標為 `cross_version_reference` 並列為待核對）、Minecraft 官方 zh_tw（優先讀本機啟動器 `Install`／`.minecraft`，否則從 Mojang 下載）。這些來源失敗只記錄在 `references.notes`，不阻擋翻譯；ModsTranslationPack 與同版本 CFPA 仍須確認最新。自訂譯名存在 `user_glossary.json`。
 
-套用模式：`apply_mode='jar'` 直接改模組 jar（內嵌 jar-in-jar 的文字會略過並計入 `nested_skipped`）；`'pack'` 寫到 `kubejs/assets` 或 `mods/mctranslator_zh_tw.jar`（lowcodefml／fabric 資源模組，對翻譯到的模組宣告 `ordering="AFTER"`）。`set_language=True` 會把 `options.txt` 的 `lang` 改為 `zh_tw`，與其他檔案一起備份與還原。
+套用：桌面程式一律直接改模組 jar；內嵌 jar-in-jar 的文字在有 KubeJS 時寫到 `kubejs/assets`（計入 `nested_packed`），否則略過（計入 `nested_skipped`）。後端仍保留 `apply_mode='pack'`（全部寫到 `kubejs/assets` 或 `mods/mctranslator_zh_tw.jar` 資源模組）與 `set_language=True`（改 `options.txt`），介面目前不提供，尚未進遊戲實測。
 
 ## 打包與發布
 

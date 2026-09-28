@@ -173,7 +173,7 @@ class DesktopUiTests(unittest.TestCase):
     def test_terms_page_unifies_conflicts_and_apply_options_follow_checkboxes(self):
         with tempfile.TemporaryDirectory() as d:
             home=Path(d);report=home/'output/demo/報告/b';report.mkdir(parents=True)
-            row=lambda zh:dict(source='mods/a.jar!/assets/a/lang/en_us.json',key='k',en='Direwolf',proposed=zh,origin='same_source_zh_cn',
+            row=lambda zh:dict(source='mods/a.jar!/assets/a/lang/en_us.json',key='entity.a.direwolf',en='Direwolf',proposed=zh,origin='same_source_zh_cn',
                                supported=True,reviewed=False,changed=True,current=None,kind='language')
             (report/'session.json').write_text(json.dumps(dict(instance=d,report=str(report),status='needs_review',errors=[],source_counts={},
                                                               rows=[row('恐狼'),row('牙狼族')])),encoding='utf-8')
@@ -182,8 +182,7 @@ class DesktopUiTests(unittest.TestCase):
             with patch.object(QMessageBox,'information'):window.unify_term('Direwolf','恐狼')
             self.assertEqual({r['proposed'] for r in window.session['rows']},{'恐狼'})
             self.assertEqual(window.term_table.rowCount(),1);self.assertEqual(window.conflicts.rowCount(),0)
-            window.pack_mode.setChecked(True);window.set_language.setChecked(False)
-            self.assertEqual(window.apply_options(),dict(apply_mode='pack',set_language=False))
+            self.assertFalse(window.set_language.isChecked())  # optional, off unless the user ticks it
             window.close()
 
 if __name__=='__main__':unittest.main()

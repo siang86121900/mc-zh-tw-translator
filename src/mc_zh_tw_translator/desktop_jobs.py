@@ -201,25 +201,46 @@ def internal_reason(text):
     return ''
 
 
+# Keys that name a thing (item, block, mob...); a name should read the same in every mod, while UI words
+# such as "None" or "Default" legitimately differ by context and are left alone.
+NAME_KEY = re.compile(r'^(?:item|block|entity|effect|enchantment|biome|fluid|mob_effect)\.')
+# Trust order when two sources name the same thing differently (most authoritative first).
+ORIGIN_TRUST = ['official_vanilla','user_glossary','translation_memory','manual','existing_zh_tw','reference_pack_or_cfpa',
+                'instance_resourcepack','instance_zh_cn','same_source_zh_cn','cross_version_reference','glossary','ai_translation']
+
+
 def conflicting_terms(session, limit=500):
-    """Same short English text translated differently across mods (candidates for one agreed name)."""
-    variants=collections.defaultdict(collections.Counter);display={}
+    """Names translated differently across mods, each with a suggested translation.
+
+    The suggestion is the variant backed by the most trusted source, then the most common one.
+    """
+    variants=collections.defaultdict(collections.Counter);trust=collections.defaultdict(dict);display={}
     for r in session.get('rows',[]):
         original=r.get('en')
-        if not r.get('supported') or not isinstance(original,str) or len(original)>40 or not HAN.search(r.get('proposed') or ''):continue
-        if r.get('origin') in ('untranslated','keep_original'):continue
-        key=original.strip().casefold();display.setdefault(key,original.strip())
-        variants[key][r['proposed'].strip()]+=1
-    rows=[dict(en=display[key],variants=counter.most_common()) for key,counter in variants.items() if len(counter)>1]
+        if not r.get('supported') or not NAME_KEY.match(r.get('key','')) or not isinstance(original,str) or len(original)>40:continue
+        if not HAN.search(r.get('proposed') or '') or r.get('origin') in ('untranslated','keep_original'):continue
+        # Same English and same key tail (e.g. palm_log) = the same thing in different mods. A different tail
+        # (wall_torch vs torch, umvuthana vs umvuthana_follower) is a different thing that may be named apart on purpose.
+        key=(original.strip().casefold(),r['key'].split('.',2)[-1]);zh=r['proposed'].strip();display.setdefault(key,original.strip())
+        variants[key][zh]+=1
+        rank=ORIGIN_TRUST.index(r['origin']) if r['origin'] in ORIGIN_TRUST else len(ORIGIN_TRUST)
+        trust[key][zh]=min(rank,trust[key].get(zh,rank))
+    rows=[]
+    for key,counter in variants.items():
+        if len(counter)<2:continue
+        ordered=sorted(counter.items(),key=lambda kv:(trust[key][kv[0]],-kv[1]))
+        rows.append(dict(en=display[key],key_tail=key[1],variants=ordered,suggested=ordered[0][0]))
     rows.sort(key=lambda x:-sum(c for _,c in x['variants']))
     return rows[:limit]
 
 
-def apply_term(session, en, zh):
-    """Use the agreed name for every row whose whole text is `en`; returns how many rows changed."""
+def apply_term(session, en, zh, key_tail=None):
+    """Use the agreed name for every name row whose whole text is `en` (and key tail, when given)."""
     changed=0
     for r in session.get('rows',[]):
-        if isinstance(r.get('en'),str) and r['en'].strip().casefold()==en.strip().casefold() and r.get('supported') and not r.get('installed'):
+        if (isinstance(r.get('en'),str) and r['en'].strip().casefold()==en.strip().casefold() and r.get('supported')
+                and not r.get('installed') and NAME_KEY.match(r.get('key',''))
+                and (key_tail is None or r['key'].split('.',2)[-1]==key_tail)):
             if not validate_text(r['en'],zh):continue
             if r.get('origin') not in ('user_glossary',):r['previous_origin']=r.get('origin')
             r.update(proposed=zh,origin='user_glossary',evidence='user_glossary.json',issue='',changed=zh!=r.get('current'),
@@ -787,8 +808,12 @@ def set_language_record(instance, staged):
 def apply_session(session, home, notify):
     instance=Path(session['instance']); report=Path(session['report'])
     pack=session.get('apply_mode')=='pack'
-    selected=[r for r in session['rows'] if r.get('reviewed') and r.get('supported') and r.get('changed') and (pack or not is_nested(r))]
-    skipped_nested=sum(1 for r in session['rows'] if r.get('reviewed') and r.get('changed') and is_nested(r) and not pack)
+    # Rewriting an embedded (jar-in-jar) library is too risky, so its text goes to KubeJS assets when
+    # KubeJS is installed and is otherwise skipped and reported; ordinary text is written into the mods.
+    nested_to_kubejs=not pack and pack_target(instance)=='kubejs'
+    selected=[r for r in session['rows'] if r.get('reviewed') and r.get('supported') and r.get('changed')
+              and (pack or nested_to_kubejs or not is_nested(r))]
+    skipped_nested=0 if pack or nested_to_kubejs else sum(1 for r in session['rows'] if r.get('reviewed') and r.get('changed') and is_nested(r))
     if not selected:raise ValueError('尚未有確認可套用的譯文。請先在報告選擇文字並按「確認這筆」。')
     if session.get('status')=='blocked':raise ValueError('此批次預檢未通過，不能套用。')
     if session.get('status')=='installed':raise ValueError('這一批已套用，請重新掃描後建立下一批。')
@@ -800,7 +825,7 @@ def apply_session(session, home, notify):
         original=row.get('en') or row.get('zh_cn') or row.get('current') or ''
         if not validate_text(original,row['proposed']):raise ValueError('譯文格式或參數不一致：'+row['key'])
         path,entry=target_for(row); contained(instance,path)
-        if pack and entry is not None and path.startswith('mods/'):pack_rows.append((path,entry,row));continue
+        if entry is not None and path.startswith('mods/') and (pack or is_nested(row)):pack_rows.append((path,entry,row));continue
         changes[path].append((entry,row))
     staged=report/'staged'
     if staged.exists():
@@ -876,7 +901,8 @@ def apply_session(session, home, notify):
     backup=apply_reviewed(instance,staged,records,home/'output')
     for row in selected:row['installed']=True
     session.update(status='installed',backup=str(backup),installed_count=len(selected),nested_skipped=skipped_nested,
-                   language_set=any(r['file']=='options.txt' for r in records))
+                   nested_packed=0 if pack else sum(1 for r in selected if is_nested(r)),
+                   language_set=bool(session.get('set_language')))  # options.txt changed now or already zh_tw
     write_json(report/'session.json',session)
     notify(92,'重新掃描實際遊戲資料','檢查套用後的語系與待查項目')
     try:
