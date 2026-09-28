@@ -94,6 +94,11 @@ QListWidget::item:hover { border-color: {primary_fade}; }
 QListWidget::item:selected { border-color: {primary}; background: {primary_bg}; color: {text}; }
 QCheckBox { color: {text}; spacing: 8px; }
 QCheckBox:disabled { color: {text40}; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1.5px solid {gray}; border-radius: 4px; background: {surface}; }
+QCheckBox::indicator:hover { border-color: {primary}; }
+QCheckBox::indicator:checked { border-color: {primary}; background: {primary}; image: url(__CHECK__); }
+QCheckBox::indicator:disabled { border-color: {line}; background: {disabled_bg}; }
+QCheckBox::indicator:checked:disabled { border-color: {primary_fade}; background: {primary_fade}; }
 QToolTip { background: {tooltip_bg}; color: {tooltip}; border: none; padding: 4px 6px; }
 QScrollArea { border: none; background: transparent; }
 QScrollBar:vertical { width: 10px; background: transparent; }
@@ -107,7 +112,9 @@ STATE_ROLE={'已套用':'green','待套用':'primary','已確認':'primary','待
 
 def stylesheet(theme):
     tokens=THEMES[theme]
-    return re.sub(r'\{(\w+)\}',lambda m:tokens.get(m[1],m[0]),STYLE_TEMPLATE).replace('__ARROW__',bundled_path('assets/chevron.svg').as_posix())
+    return (re.sub(r'\{(\w+)\}',lambda m:tokens.get(m[1],m[0]),STYLE_TEMPLATE)
+            .replace('__ARROW__',bundled_path('assets/chevron.svg').as_posix())
+            .replace('__CHECK__',bundled_path('assets/check.svg').as_posix()))
 
 
 def label(text='',kind=None):

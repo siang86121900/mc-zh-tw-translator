@@ -13,7 +13,7 @@ version_info=VSVersionInfo(ffi=FixedFileInfo(filevers=version_numbers,prodvers=v
     VarFileInfo([VarStruct('Translation',[1033,1200])])])
 a=Analysis([str(root/'scripts/desktop_launcher.py')],
            pathex=[str(root/'src'),str(root/'scripts')],
-           binaries=[],datas=collect_data_files('opencc')+[(str(root/'assets/mc-translator.ico'),'assets'),(str(root/'assets/chevron.svg'),'assets')],
+           binaries=[],datas=collect_data_files('opencc')+[(str(root/'assets/mc-translator.ico'),'assets'),(str(root/'assets/chevron.svg'),'assets'),(str(root/'assets/check.svg'),'assets')],
            hiddenimports=['full_translation_audit'],
            excludes=['PySide6.QtWebEngineCore','PySide6.QtWebEngineWidgets','PySide6.QtQml',
                      'PySide6.QtQuick','matplotlib','numpy','pandas','scipy','PIL','reportlab',
