@@ -120,13 +120,19 @@ class DesktopUiTests(unittest.TestCase):
     def test_connected_account_hides_setup_buttons_and_enables_ai_option(self):
         with tempfile.TemporaryDirectory() as d:
             window=MainWindow(Path(d))
-            self.assertFalse(window.use_ai.isEnabled())
+            self.assertTrue(window.use_ai.isEnabled())  # preference is always clickable
+            window.use_ai.setChecked(False);self.assertIn('不使用 AI',window.ai_hint.text())
+            window.use_ai.setChecked(True);self.assertIn('尚未連接',window.ai_hint.text())
             with patch('mc_zh_tw_translator.codex_bridge.find_runtime',return_value=Path(d)/'codex.exe'):
                 window.ai_connected(dict(account=dict(email='a@b.c',planType='plus'),warning='',quota=[],models=[dict(model='m',isDefault=True)]))
                 self.assertTrue(window.ai_install_btn.isHidden());self.assertTrue(window.ai_login_btn.isHidden())
                 self.assertFalse(window.ai_logout_btn.isHidden());self.assertTrue(window.use_ai.isEnabled())
                 window.ai_connected(dict(account=dict(email='a@b.c'),warning='帳號已達用量限制',quota=[],models=[dict(model='m')]))
-                self.assertFalse(window.use_ai.isEnabled());self.assertIn('用量限制',window.ai_hint.text())
+                self.assertTrue(window.use_ai.isEnabled());self.assertIn('用量限制',window.ai_hint.text())
+                with patch.object(QMessageBox,'question',return_value=QMessageBox.Yes) as ask,patch.object(window,'run_worker') as run:
+                    window.path.setText(d);window.full_translation_job()
+                    self.assertIn('AI 目前無法使用',ask.call_args[0][2])  # checked box never sends to an over-limit account
+                    run.assert_called_once()
             window.close()
 
     def test_no_translation_rows_leave_missing_filter_and_page_size_applies(self):

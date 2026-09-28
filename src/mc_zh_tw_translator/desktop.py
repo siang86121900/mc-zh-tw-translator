@@ -404,13 +404,14 @@ class MainWindow(QMainWindow):
         else:set_pill(self.ai_badge,'未安裝元件' if not installed else '未連接','todo')
         model=self.ai_models.currentData() if connected else None
         usable=bool(connected and model and not warning)
-        self.use_ai.setEnabled(usable);self.ai_connect_link.setVisible(not connected)
-        if usable and self.use_ai.isChecked():
+        # The box is only the user's preference; it stays clickable and AI runs only when also usable.
+        self.use_ai.setEnabled(not self.busy);self.ai_connect_link.setVisible(not connected)
+        if not self.use_ai.isChecked():hint='不使用 AI：參考來源缺漏的文字會留在報告，之後可在報告頁補翻。'
+        elif usable:
             hint=f'會先用模組包中文與參考庫翻譯，只把剩下的缺漏交給「{model.get("displayName") or model["model"]}」；消耗你原本的 Codex 額度。'
-        elif usable:hint='不使用 AI：參考來源缺漏的文字會留在報告，之後可在報告頁補翻。'
-        elif connected and warning:hint='AI 暫不可用：'+warning+' 參考來源仍會照常翻譯並套用。'
-        elif connected:hint='請到「AI 帳號與模型」選擇補翻模型。'
-        else:hint='未連接 AI：參考來源會照常翻譯並套用，缺漏留在報告。連接後可自動補翻。'
+        elif connected and warning:hint='AI 暫不可用（'+warning.rstrip('。')+'），這次只用參考來源翻譯；額度恢復後會自動補翻。'
+        elif connected:hint='請到「AI 帳號與模型」選擇補翻模型；在那之前只用參考來源翻譯。'
+        else:hint='尚未連接 AI，這次只用參考來源翻譯，缺漏留在報告。連接後會自動補翻。'
         self.ai_hint.setText(hint)
         self.side_ai.setText('AI 補翻：'+('額度不足' if warning else '已連接' if connected else '未連接'))
 
@@ -606,7 +607,8 @@ class MainWindow(QMainWindow):
         if not self.path.text().strip(): self.choose_folder()
         if not self.path.text().strip(): return
         # AI runs only when the user ticked the option and the account can currently be used.
-        model=self.ai_models.currentData() if self.use_ai.isEnabled() and self.use_ai.isChecked() else None
+        usable=self.ai_connected_now() and not (self.ai_info or {}).get('warning')
+        model=self.ai_models.currentData() if usable and self.use_ai.isChecked() else None
         if model:
             ai_line=('參考來源缺漏的文字會交給模型「'+model['model']+'」補翻，消耗你原本 ChatGPT 的 Codex 額度。\n'+ai.PRIVACY)
         elif self.use_ai.isChecked() and self.ai_connected_now():
