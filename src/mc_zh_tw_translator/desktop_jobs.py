@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import collections
+import hashlib
+import io
 import json
 import os
 import re
@@ -24,9 +26,11 @@ SOURCE_NAMES = {'same_source_zh_cn':'同檔簡中', 'instance_zh_cn':'模組包�
                 'reference_pack_or_cfpa':'參考庫', 'glossary':'術語表',
                 'translation_memory':'已確認記憶', 'existing_zh_tw':'既有繁中',
                 'ai_translation':'AI 補譯', 'manual':'使用者修訂', 'untranslated':'缺少來源',
-                'keep_original':'無需翻譯'}
+                'keep_original':'無需翻譯','instance_resourcepack':'已安裝資源包',
+                'not_installed':'未安裝模組（略過）'}
 HAN = re.compile('[\u3400-\u9fff]')
 FORMAT = re.compile(r'§[0-9a-fk-or]|\$\([^)]+\)|\{[\w.]+\}', re.I)
+TRANSLATION_PACK = re.compile(r'(?:instance!/)?(?:config/openloader/|resourcepacks/)')
 PARAMETER = re.compile(r'%(?:\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?[sdfxXeEgGc%]|\{\d*\}|\$\([^)]+\)|§[0-9a-fk-or]|\\n', re.I)
 ROMAN = re.compile(r'(?=[MDCLXVI])M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})')
 KEY_NAMES = {'shift','ctrl','control','alt','tab','esc','escape','enter','return','space','backspace','delete','del',
@@ -103,6 +107,30 @@ def validate_text(original, value):
             and original.count('\n')==value.count('\n'))
 
 
+S2T = OpenCC('s2t')  # character-only conversion: any change means simplified characters were present
+
+
+class TranslationMemory:
+    """Translations the user confirmed in the report, reused for the same mod, key and English text.
+
+    Only user-confirmed rows are stored, so automatic, reference or AI output never becomes memory.
+    """
+    def __init__(self, home):
+        self.path=Path(home)/'translation_memory.json'
+        try:self.entries=json.loads(self.path.read_text(encoding='utf-8')).get('entries',{})
+        except (OSError,ValueError):self.entries={}
+    @staticmethod
+    def ident(namespace,key,original):
+        return namespace+'\t'+key+'\t'+hashlib.sha256(original.encode('utf-8')).hexdigest()[:16]
+    def lookup(self,namespace,key,original):
+        entry=self.entries.get(self.ident(namespace,key,original)) if namespace and original else None
+        return entry['text'] if entry else None
+    def remember(self,namespace,key,original,text,source):
+        self.entries[self.ident(namespace,key,original)]=dict(text=text,original=original,source=source,
+                                                              confirmed_at=datetime.now().isoformat(timespec='seconds'))
+        write_json(self.path,dict(format=1,entries=self.entries))
+
+
 def usable(original, value):
     return isinstance(value,str) and bool(HAN.search(value)) and validate_text(original,value)
 
@@ -111,7 +139,79 @@ def write_json(path, data):
     path.parent.mkdir(parents=True,exist_ok=True)
     temp = path.with_suffix(path.suffix+'.tmp')
     temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    temp.replace(path)
+    for attempt in range(10):
+        try:
+            temp.replace(path);break
+        except PermissionError:
+            # Windows refuses to replace a file another thread is reading at this instant.
+            if attempt==9:raise
+            time.sleep(.05)
+    if path.name=='session.json' and isinstance(data,dict) and 'rows' in data:
+        # Reports can be ~100 MB; the history list reads this small sidecar instead.
+        # It is a display convenience, so failing to write it must never fail the job.
+        try:write_json(path.with_name('summary.json'),session_summary(data))
+        except OSError:pass
+
+
+def session_summary(session):
+    rows=session.get('rows',[])
+    return dict(status=session.get('status'),installed_count=session.get('installed_count',0),
+                translated=sum(bool(r.get('changed') and r.get('supported')) for r in rows),
+                pending_apply=sum(bool(r.get('reviewed') and r.get('changed') and r.get('supported') and not r.get('installed')) for r in rows),
+                missing=sum(r.get('origin')=='untranslated' and bool(r.get('supported')) for r in rows),
+                instance=session.get('instance'),batch=session.get('batch'))
+
+
+LAUNCHER_ROOTS = (
+    ('CurseForge', '{home}/curseforge/minecraft/Instances'),
+    ('Modrinth', '{appdata}/ModrinthApp/profiles'),
+    ('Modrinth', '{appdata}/com.modrinth.theseus/profiles'),
+    ('Prism', '{appdata}/PrismLauncher/instances'),
+    ('PolyMC', '{appdata}/PolyMC/instances'),
+    ('MultiMC', '{home}/MultiMC/instances'),
+    ('ATLauncher', '{appdata}/ATLauncher/instances'),
+    ('GDLauncher', '{appdata}/gdlauncher_carbon/data/instances'),
+)
+
+
+def is_instance(folder):
+    return folder.is_dir() and any((folder/x).is_dir() for x in ('mods','kubejs','config'))
+
+
+def discover_instances(extra=()):
+    """Modpack folders from common launcher locations plus folders the user picked before.
+
+    Launchers let users move their data, so this is a convenience list only; pasting a
+    path or choosing a folder always remains available.
+    """
+    home=Path.home(); appdata=Path(os.environ.get('APPDATA',home/'AppData/Roaming'))
+    found={}
+    for launcher,pattern in LAUNCHER_ROOTS:
+        root=Path(pattern.format(home=home,appdata=appdata))
+        try:
+            children=[p for p in root.iterdir()] if root.is_dir() else []
+        except OSError:
+            continue
+        for p in children:
+            # Prism/MultiMC keep the game under .minecraft or minecraft.
+            game=next((c for c in (p,p/'.minecraft',p/'minecraft') if is_instance(c)),None)
+            if game:found.setdefault(str(game).casefold(),(launcher,p.name,game))
+    for path in extra:
+        p=Path(str(path).strip().strip('"'))
+        if path and is_instance(p):found.setdefault(str(p).casefold(),('最近使用',p.name,p))
+    return sorted(found.values(),key=lambda x:(x[0]!='最近使用',x[0],x[1].casefold()))
+
+
+def asset_namespaces(z, depth=0):
+    """Asset namespaces of a mod jar, including jar-in-jar libraries (META-INF/jarjar etc.)."""
+    found={n.split('/')[1] for n in z.namelist() if n.startswith('assets/') and n.count('/')>=2}
+    if depth<2:
+        for name in z.namelist():
+            if not name.lower().endswith('.jar'):continue
+            try:
+                with zipfile.ZipFile(io.BytesIO(z.read(name))) as inner:found|=asset_namespaces(inner,depth+1)
+            except (zipfile.BadZipFile,OSError,RuntimeError):continue
+    return found
 
 
 def scan(instance, report, notify, cancelled):
@@ -123,11 +223,18 @@ def scan(instance, report, notify, cancelled):
             if p.suffix.lower() in ('.jar','.zip') and p.is_file():
                 contained(instance,p.relative_to(instance).as_posix())
                 archives.append(p)
+    audit.installed_namespaces={'minecraft','realms','c','forge','neoforge','fabric'}
     for i,p in enumerate(sorted(archives)):
         if cancelled(): raise InterruptedError('已停止，遊戲原檔未修改。')
         notify(5+int(35*i/max(1,len(archives))), '掃描模組與資源', p.name)
         audit.source_hashes[p.relative_to(instance).as_posix()]=file_hash(p)
         audit.archive(p,p.relative_to(instance).as_posix())
+        if p.relative_to(instance).parts[0]=='mods':
+            try:
+                with zipfile.ZipFile(p) as z:audit.installed_namespaces|=asset_namespaces(z)
+            except (OSError,zipfile.BadZipFile):pass
+    kubejs=instance/'kubejs/assets'
+    if kubejs.is_dir():audit.installed_namespaces|={p.name for p in kubejs.iterdir() if p.is_dir()}
     notify(42,'掃描任務、設定與腳本','正在檢查外部文字和程式字串候選')
     for folder in ('kubejs','config','defaultconfigs','patchouli_books','datapacks','resourcepacks','vaultpatcher','hotai','immersive_furniture'):
         for p in (instance/folder).rglob('*'):
@@ -192,7 +299,19 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         m=re.search(r'assets/([^/]+)/lang/',r['source'])
         if m and (r['source'].startswith('instance!/kubejs/assets/') or r['source'].startswith('config/openloader/')):
             instance_cn.setdefault((m[1],r['key']),[]).append((r['source'],r['zh_cn']))
+    # Translation resource packs installed in this modpack (often community work) come before
+    # online references; zh_tw is used as-is and zh_cn is converted to Taiwan wording.
+    instance_rp={}
+    for r in audit.rows:
+        m=re.search(r'assets/([^/]+)/lang/',r['source'])
+        if r['kind']!='language' or not m or not re.match(r'(?:instance!/)?resourcepacks/',r['source']):continue
+        for value in (r['current'],cc.convert(r['zh_cn']) if isinstance(r['zh_cn'],str) else None):
+            if isinstance(value,str) and HAN.search(value):
+                instance_rp.setdefault((m[1],r['key']),[]).append((r['source'],value));break
     counts=collections.Counter()
+    memory=TranslationMemory(home)
+    # Without any scanned mod jar there is nothing to compare against, so nothing is skipped.
+    installed=getattr(audit,'installed_namespaces',None) if any(r['source'].startswith('mods/') for r in audit.rows) else None
     last_publish=time.monotonic()
     for i,r in enumerate(audit.rows):
         if i%200==0:
@@ -212,21 +331,35 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             continue
         original=r['en'] if isinstance(r['en'],str) else r['zh_cn'] or r['current'] or ''
         m=re.search(r'assets/([^/]+)/lang/',r['source']); ns=m[1] if m else ''
-        options=[('existing_zh_tw',r['current'],r['source']),('same_source_zh_cn',r['zh_cn'],r['source'])]
+        if installed is not None and ns and ns not in installed and TRANSLATION_PACK.match(r['source']):
+            # Bundled translation packs (e.g. a whole CFPA pack via OpenLoader) cover mods this
+            # modpack does not have; the game never shows those strings.
+            counts['not_installed']+=1;continue
+        # Source order (AGENTS.md): correct zh_tw → same-file zh_cn → pack/CFPA references →
+        # confirmed translation memory → glossary; AI only runs later for what is still missing.
+        existing=r['current'] if isinstance(r['current'],str) and S2T.convert(r['current'])==r['current'] else None
+        options=[('existing_zh_tw',existing,r['source']),('same_source_zh_cn',r['zh_cn'],r['source'])]
         options += [('instance_zh_cn',v,p) for p,v in instance_cn.get((ns,r['key']),[]) if p!=r['source']]
+        options += [('instance_resourcepack',v,p) for p,v in instance_rp.get((ns,r['key']),[]) if p!=r['source']]
         if ns:
             options += [('reference_pack_or_cfpa',ref.get(ns,{}).get(r['key']),f'reference:{n}') for n,ref in enumerate(refs)]
+        options.append(('translation_memory',memory.lookup(ns,r['key'],original),'translation_memory.json'))
         options.append(('glossary',MINECRAFT_GLOSSARY.get(original.lower()),'MINECRAFT_GLOSSARY'))
+        if existing is None and isinstance(r['current'],str):
+            # A zh_tw that still contains simplified characters is only a last-resort candidate.
+            options.append(('existing_zh_tw',cc.convert(r['current']),r['source']+'（原含簡體，已轉繁）'))
         value=original; origin='untranslated'; evidence=''; issue='缺少可用中文來源'
         for name,candidate,source in options:
             if usable(original,candidate):
                 value=cc.convert(candidate) if name in ('same_source_zh_cn','instance_zh_cn') else candidate
                 if not validate_text(original,value):continue
                 origin=name;evidence=source
-                issue='需校對台灣用語、版本語意與名稱' if name!='existing_zh_tw' else ''
+                issue='' if name in ('existing_zh_tw','translation_memory') else '需校對台灣用語、版本語意與名稱'
                 break
-        if origin=='existing_zh_tw' and cc.convert(value)!=value:
-            issue='既有繁中可能含簡體或不同用語，請核對'
+        if origin=='existing_zh_tw' and existing is None:
+            issue='既有繁中含簡體字，已轉為台灣繁體，請核對'
+        elif origin=='existing_zh_tw' and cc.convert(value)!=value:
+            issue='既有繁中用語可能與台灣用語不同，請核對'
         reason=keep_original_reason(original,r['key'],ns) if origin=='untranslated' else ''
         if reason:
             # Parameters, key names and similar strings stay as-is; they are neither gaps nor AI work.
@@ -235,7 +368,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         supported=r['kind']=='language' or ('/en_us/' in r['source'] or '/zh_tw/' in r['source'])
         changed=value!=r['current'] and origin!='untranslated' and (origin!='keep_original' or bool(issue))
         counts[origin]+=1
-        if changed or issue:
+        if changed or issue or origin=='keep_original':  # keep rows stay visible under the report's 無需翻譯 filter
             result['rows'].append(dict(r,proposed=value,origin=origin,evidence=evidence,issue=issue,
                                        supported=supported,reviewed=False,changed=changed))
     result.update(source_counts=dict(counts),status='needs_review',api=0,ai_translation=0)

@@ -6,18 +6,27 @@
 
 從 [最新版下載頁](https://github.com/siang86121900/mc-zh-tw-translator/releases/latest) 下載 `MCTranslator.exe`，雙擊即可，不需要安裝 Python。
 
-1. **關閉遊戲**，貼上模組包資料夾路徑（例如 CurseForge 的 `Instances\模組包名稱`），或按「選擇資料夾」。
+1. **關閉遊戲**，從下拉清單選擇模組包（會自動列出 CurseForge、Modrinth、Prism、MultiMC、ATLauncher 的模組包和你用過的資料夾）。找不到時可直接貼上路徑，或按「選擇資料夾」。
 2. （選用）勾選「參考來源缺漏時，用 AI 補翻」。需要先在「AI 帳號與模型」連接 ChatGPT。
 3. 按 **一鍵完整翻譯並套用**，等它跑完。
 4. 重新啟動遊戲，語言選「繁體中文（台灣）」。
 
-遊戲沒關也沒關係：譯文和報告會先保存，關掉遊戲後按「重試套用」即可，不用重新翻譯。
+遊戲沒關也沒關係：譯文和報告會先保存，關掉遊戲後按「重試套用」即可，不用重新翻譯。跑完時會跳出 Windows 通知，工作列圖示也會顯示進度。
 
 ## 譯文從哪裡來
 
-依序使用：模組包自己附的中文 → [ModsTranslationPack](https://github.com/TeamKugimiya/ModsTranslationPack) 與 [CFPA](https://github.com/CFPAOrg/Minecraft-Mod-Language-Package) 參考庫 → Minecraft 術語表 → （選用）AI 補翻。簡體來源會轉成台灣用語。
+每一句依序查找，找到就停：
 
-`%s` 這類參數、按鍵名稱（Shift）、羅馬數字、尺寸（64 x 64）、NBT 等縮寫會保留原文，不算缺漏。
+1. 模組原本附的正確繁中（含簡體字的不算）
+2. 同一個模組附的簡中，轉成台灣用語
+3. 模組包裡的中文（KubeJS、OpenLoader、已安裝的繁中資源包）與最新的 [ModsTranslationPack](https://github.com/TeamKugimiya/ModsTranslationPack)、[CFPA](https://github.com/CFPAOrg/Minecraft-Mod-Language-Package) 參考庫
+4. 你在報告裡「確認這筆」校對過的翻譯記憶（`MCTranslatorData\translation_memory.json`，之後翻其他模組包也會沿用）
+5. Minecraft 術語表
+6. （選用）AI 補翻
+
+每次翻譯前都會確認參考庫是最新版，無法確認就停止。
+
+`%s` 這類參數、按鍵名稱（Shift）、羅馬數字、尺寸（64 x 64）、NBT 等縮寫、歌曲的「作者 - 曲名」、開發者註解會保留原文，列為「無需翻譯」。模組包附帶的翻譯包裡、**沒安裝的模組**會自動略過，因為遊戲不會顯示它們。
 
 所有譯文都會在「翻譯報告」標出來源；可用篩選按鈕只看「缺少中文來源」「AI 補譯」等類別，雙擊可逐筆修改。
 
@@ -43,6 +52,7 @@
 ## 目前限制
 
 - 圖片裡的文字、程式寫死的文字、部分動態組句不一定能翻；這些會列在報告的「待查程式與設定」。
+- 包在其他模組 jar 裡的內嵌函式庫（jar-in-jar，例如 ponder、flywheel），它們自己的介面文字目前還不會翻譯。
 - 自動檢查只確認格式、參數與數值沒被改壞，不保證每句語意都正確。
 - 移動 EXE 時請連同 `MCTranslatorData` 資料夾一起移動；這個資料夾含有登入資料，不要分享給別人。
 

@@ -360,17 +360,15 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
                         raise BridgeError('AI 回傳識別碼不符，已停止。')
                     mapped[value['id']] = value
                 if set(mapped) != {str(i) for i,_,_ in batch}: raise BridgeError('AI 回傳識別碼不符，已停止。')
-                # Validate the entire batch before mutating any row.
+                # Reject only the rows that break formatting; the rest of the batch is still usable.
                 for i, row, original in batch:
                     value = mapped[str(i)]; text = value.get('translation')
-                    if not isinstance(value.get('note'), str) or not text or not jobs.validate_text(original, text):
-                        raise BridgeError('AI 譯文格式、參數或換行不符；本批未採用，前批已保留。')
-                    if re.findall(r'\d+(?:\.\d+)?', original) != re.findall(r'\d+(?:\.\d+)?', text):
-                        raise BridgeError('AI 改動數值；本批未採用。')
-                for i, row, original in batch:
-                    value = mapped[str(i)]; text = value['translation']
                     row.update(ai_attempted=True, ai_model=selected_model, ai_provider='codex_chatgpt',
                                ai_original_sha256=hashlib.sha256(original.encode()).hexdigest())
+                    if not isinstance(value.get('note'), str) or not isinstance(text, str) or not text or not jobs.validate_text(original, text):
+                        row['issue'] = 'AI 譯文的參數、格式碼或換行不符，已退回原文，未採用。'; continue
+                    if re.findall(r'\d+(?:\.\d+)?', original) != re.findall(r'\d+(?:\.\d+)?', text):
+                        row['issue'] = 'AI 譯文改動了數值，已退回原文，未採用。'; continue
                     if text == original:
                         row['issue'] = 'AI 保留原文：' + (value['note'] or '需確認是否應翻譯')
                         continue

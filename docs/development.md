@@ -17,6 +17,8 @@
 
 參考庫來自 ModsTranslationPack main 與 CFPA autobuild。版本、資產時間、雜湊及條目數以當次預檢紀錄為準；無法確認最新就停止正式翻譯。不使用外部翻譯 API，參考來源缺漏記錄為 `ai_translation`。
 
+桌面版的翻譯記憶存在程式資料夾的 `translation_memory.json`，只收使用者在報告中按「確認這筆」的譯文，以「模組 namespace＋語系鍵＋原文雜湊」對應；自動來源、參考庫與 AI 候選不會寫入。模組包附帶的翻譯包（OpenLoader、resourcepacks）中，namespace 不在已安裝模組（含 jar-in-jar）裡的語系會略過並計入 `not_installed`。
+
 ## 打包與發布
 
 ```powershell

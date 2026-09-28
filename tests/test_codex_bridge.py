@@ -92,14 +92,18 @@ class CodexBridgeTests(unittest.TestCase):
             self.assertEqual(result['ai_status'],'paused');self.assertEqual(result['ai_translation'],12)
             self.assertEqual(len(ai.pending_rows(result)),1)
 
-    def test_invalid_batch_never_marks_any_row_reviewed_or_translated(self):
+    def test_invalid_row_is_rejected_alone_and_never_reviewed(self):
         class Bad(FakeClient):
             def translate(self,payload,model):
                 result=super().translate(payload,model);result['translations'][-1]['translation']='數值被改成 99'
                 return result
         with tempfile.TemporaryDirectory() as d:
             result=ai.supplement(self.session(Path(d)),Path(d),'account-model',lambda *_:None,client_factory=Bad)
-            self.assertEqual(result['ai_status'],'paused');self.assertEqual(len(ai.pending_rows(result)),2)
+            self.assertEqual(result['ai_status'],'completed')
+            rows=result['rows'];self.assertEqual(rows[0]['origin'],'ai_translation')
+            self.assertEqual(rows[-1]['origin'],'untranslated');self.assertIn('退回原文',rows[-1]['issue'])
+            self.assertFalse(any(r.get('reviewed') for r in rows))
+            self.assertEqual(ai.pending_rows(result),[])  # the rejected row is not resent automatically
 
     def test_duplicate_ids_rejected(self):
         class Bad(FakeClient):

@@ -9,13 +9,13 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QSettings, QLockFile
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QSettings, QLockFile, QSize
 from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QColor, QPixmap
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QLineEdit, QFileDialog, QStackedWidget, QProgressBar,
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QComboBox, QTextEdit, QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QCheckBox,
-    QScrollArea, QSizePolicy, QListView, QPlainTextEdit)
+    QScrollArea, QSizePolicy, QListView, QPlainTextEdit, QSystemTrayIcon, QStyledItemDelegate, QStyle)
 
 from . import desktop_jobs as jobs
 from . import updater
@@ -64,6 +64,8 @@ QPushButton#primary:hover { background: {primary_hover}; border-color: {primary_
 QPushButton#primary:disabled { background: {primary_fade}; border-color: {primary_fade}; color: #FFFFFF; }
 QPushButton#link { border: none; background: transparent; color: {primary}; padding: 2px 0px; text-align: left; }
 QPushButton#link:hover { text-decoration: underline; }
+QPushButton#iconbtn { padding: 0px; font-size: 16px; border-radius: 16px; color: {text80}; }
+QPushButton#iconbtn:hover { color: {primary}; border-color: {primary}; }
 QPushButton#nav { text-align: left; border: none; border-radius: 8px; background: transparent; padding: 10px 12px; color: {text80}; font-weight: 600; }
 QPushButton#nav:hover { color: {primary}; }
 QPushButton#nav:checked { color: {primary}; background: {primary_bg}; }
@@ -86,8 +88,10 @@ QTableWidget::item { padding: 4px 8px; border-bottom: 1px solid {line}; }
 QHeaderView::section { background: {soft}; color: {text80}; padding: 9px 8px; border: none; border-bottom: 1px solid {gray}; font-weight: 700; font-size: 12px; }
 QTextEdit, QPlainTextEdit, QListWidget { background: {surface}; color: {text}; border: 1px solid {gray}; border-radius: 6px; padding: 8px; }
 QPlainTextEdit#log { font-family: Consolas, "Microsoft JhengHei UI"; font-size: 12px; color: {text80}; }
-QListWidget::item { padding: 12px; border-bottom: 1px solid {line}; }
-QListWidget::item:selected { color: {primary}; background: {primary_bg}; }
+QListWidget { padding: 6px; outline: 0px; }
+QListWidget::item { border: 1px solid {gray}; border-radius: 6px; margin: 4px 2px; background: {surface}; }
+QListWidget::item:hover { border-color: {primary_fade}; }
+QListWidget::item:selected { border-color: {primary}; background: {primary_bg}; color: {text}; }
 QCheckBox { color: {text}; spacing: 8px; }
 QCheckBox:disabled { color: {text40}; }
 QToolTip { background: {tooltip_bg}; color: {tooltip}; border: none; padding: 4px 6px; }
@@ -135,6 +139,37 @@ def set_pill(widget,text,state=''):
     widget.style().unpolish(widget);widget.style().polish(widget)
 
 
+class TaskbarProgress:
+    """Windows taskbar button progress (ITaskbarList3) via ctypes; silently inert elsewhere."""
+    NOPROGRESS,INDETERMINATE,NORMAL,ERROR,PAUSED=0,1,2,4,8
+    def __init__(self):
+        self.ptr=None
+        if os.name!='nt':return
+        try:
+            import ctypes,uuid
+            from ctypes import wintypes
+            self.ctypes=ctypes
+            ole=ctypes.windll.ole32;ole.CoInitialize(None)
+            guid=lambda s:(ctypes.c_byte*16).from_buffer_copy(uuid.UUID(s).bytes_le)
+            ptr=ctypes.c_void_p()
+            if ole.CoCreateInstance(guid('56FDF344-FD6D-11d0-958A-006097C9A090'),None,1,
+                                    guid('ea1afb91-9e28-4b86-90e9-9e9f8a5eee84'),ctypes.byref(ptr))!=0:return
+            vtable=ctypes.cast(ctypes.cast(ptr,ctypes.POINTER(ctypes.c_void_p))[0],ctypes.POINTER(ctypes.c_void_p))
+            proto=lambda i,*args:ctypes.WINFUNCTYPE(ctypes.c_long,ctypes.c_void_p,*args)(vtable[i])
+            self.hr_init=proto(3);self.set_value=proto(9,wintypes.HWND,ctypes.c_ulonglong,ctypes.c_ulonglong)
+            self.set_state=proto(10,wintypes.HWND,ctypes.c_int)
+            if self.hr_init(ptr)==0:self.ptr=ptr
+        except Exception:
+            logging.info('Taskbar progress unavailable',exc_info=True)
+    def update(self,window,value=None,state=NORMAL):
+        if not self.ptr:return
+        try:
+            hwnd=int(window.winId());self.set_state(self.ptr,hwnd,state)
+            if value is not None and state==self.NORMAL:self.set_value(self.ptr,hwnd,max(0,min(100,int(value))),100)
+        except Exception:
+            logging.info('Taskbar progress update failed',exc_info=True)
+
+
 def open_path(path):
     if Path(path).exists():QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
 
@@ -165,6 +200,53 @@ class Worker(QThread):
                      preview_pending=sum(r.get('origin') in ('untranslated','pending') for r in rows))
         preview.pop('source_hashes',None)
         self.checkpoint.emit(json.dumps(preview,ensure_ascii=False))
+
+
+MODULE_ROLE=Qt.UserRole+1
+
+
+class OriginalDelegate(QStyledItemDelegate):
+    """Original text with its mod namespace underneath in small muted type."""
+    def __init__(self,window):
+        super().__init__(window);self.window=window
+    def paint(self,painter,option,index):
+        module=index.data(MODULE_ROLE)
+        if not module:return super().paint(painter,option,index)
+        self.initStyleOption(option,index);text=option.text;option.text=''
+        style=option.widget.style() if option.widget else QApplication.style()
+        style.drawControl(QStyle.CE_ItemViewItem,option,painter,option.widget)
+        tokens=THEMES['dark' if self.window.dark_theme else 'light']
+        rect=option.rect.adjusted(10,5,-8,-5);painter.save()
+        painter.setPen(QColor(tokens['text']));painter.setFont(option.font)
+        painter.drawText(rect,Qt.AlignLeft|Qt.AlignTop,option.fontMetrics.elidedText(text,Qt.ElideRight,rect.width()))
+        small=QFont(option.font);small.setPointSizeF(max(7.0,option.font.pointSizeF()*0.78));painter.setFont(small)
+        painter.setPen(QColor(tokens['text60']));painter.drawText(rect,Qt.AlignLeft|Qt.AlignBottom,module)
+        painter.restore()
+
+
+def stamp_text(name):
+    """'20260929-010716-f0aed0' -> '9/29 01:07'; unknown formats pass through."""
+    m=re.match(r'(\d{4})(\d{2})(\d{2})-?(\d{2})(\d{2})',name)
+    return f'{int(m[2])}/{int(m[3])} {m[4]}:{m[5]}' if m else name
+
+
+def history_label(session_path):
+    """Readable report name: modpack · time · state · count, from the small summary sidecar."""
+    parts=[session_path.parents[2].name,stamp_text(session_path.parent.name)]
+    try:
+        s=json.loads((session_path.parent/'summary.json').read_text(encoding='utf-8'))
+        if s.get('status')=='installed':parts+=['已套用',f"{s.get('installed_count',0):,} 筆"]
+        elif s.get('pending_apply'):parts+=['未套用',f"{s['pending_apply']:,} 筆"]
+        else:parts+=[{'cancelled':'已停止','blocked':'需要處理','restored':'已還原','awaiting_game':'等待關閉遊戲',
+                      'apply_failed':'套用未完成'}.get(s.get('status'),'待校對'),f"{s.get('translated',0):,} 筆"]
+    except (OSError,ValueError):
+        parts.append('舊紀錄')
+    return '　·　'.join(parts)
+
+
+def row_module(row):
+    m=re.search(r'assets/([^/]+)/',row.get('source',''))
+    return m[1] if m else row.get('source','').split('!')[0]
 
 
 class ReviewDialog(QDialog):
@@ -208,8 +290,11 @@ class MainWindow(QMainWindow):
         self.settings=QSettings(str(home/'settings.ini'),QSettings.IniFormat)
         self.preview_seen=set();self.started_at=0;self.last_activity=0;self.update_worker=None
         self.background=[];self.quit_after_worker=False;self.filter_mode='all';self.live_session=False
+        self.taskbar=TaskbarProgress();self.tray=None
         self.dark_theme=str(self.settings.value('theme','light')).lower()=='dark'
         self.setWindowTitle('模組包中文化 · MC Translator');self.resize(1120,800);self.setMinimumSize(880,600)
+        geometry=self.settings.value('geometry')
+        if geometry is not None:self.restoreGeometry(geometry)
         icon_file=bundled_path('assets/mc-translator.ico')
         if icon_file.exists():self.setWindowIcon(QIcon(str(icon_file)))
         else:
@@ -221,8 +306,7 @@ class MainWindow(QMainWindow):
         brand=label('MC  /  模組包中文化','brand');brand.setWordWrap(False);brand.setSizePolicy(QSizePolicy.Minimum,QSizePolicy.Preferred)
         top.addWidget(brand);top.addStretch()
         self.update_badge=button('有新版本',lambda:self.navigate(3));self.update_badge.hide();top.addWidget(self.update_badge)
-        self.theme_btn=button('亮色模式' if self.dark_theme else '深色模式',self.toggle_theme)
-        self.theme_btn.setToolTip('切換介面顏色；設定會自動記住')
+        self.theme_btn=button('',self.toggle_theme);self.theme_btn.setObjectName('iconbtn');self.theme_btn.setFixedSize(36,32)
         top.addWidget(self.theme_btn);top.addSpacing(10);top.addWidget(label('v'+updater.VERSION,'pill'));shell.addWidget(header)
         body=QHBoxLayout();body.setSpacing(0);shell.addLayout(body,1)
         sidebar=QFrame();sidebar.setObjectName('sidebar');sidebar.setFixedWidth(200)
@@ -236,12 +320,14 @@ class MainWindow(QMainWindow):
         self.pages=QStackedWidget();body.addWidget(self.pages,1)
         self.make_start();self.make_report();self.make_backups();self.make_updates();self.make_ai();self.navigate(0)
         self.refresh_history();self.refresh_backups()
-        self.path.setText(self.settings.value('instance',''))
+        self.refresh_instances();self.path.setText(self.settings.value('instance',''))
         for combo in self.findChildren(QComboBox):
             view=QListView();view.setUniformItemSizes(True);combo.setView(view)
             # Let the list's own rounded border show instead of the native popup frame's square corners.
             popup=view.window();popup.setWindowFlags(popup.windowFlags()|Qt.FramelessWindowHint|Qt.NoDropShadowWindowHint)
-            popup.setAttribute(Qt.WA_TranslucentBackground);popup.setStyleSheet('background: transparent; border: none;')
+            # Only the outer container is transparent; the list itself keeps the themed background.
+            popup.setObjectName('comboPopup');popup.setAttribute(Qt.WA_TranslucentBackground)
+            popup.setStyleSheet('#comboPopup { background: transparent; border: none; }')
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(10);combo.setMaxVisibleItems(10)
         self.apply_theme();self.update_ai_controls()
@@ -259,11 +345,14 @@ class MainWindow(QMainWindow):
     def make_start(self):
         box=self.page('翻譯工作台','選擇模組包，掃描、翻譯、備份與套用一次完成。')
         f,b=card();b.addWidget(label('模組包資料夾','section'))
-        b.addWidget(label('選擇包含 mods、config 或 kubejs 的資料夾。','sub'))
-        row=QHBoxLayout();self.path=QLineEdit();self.path.setPlaceholderText('可直接貼上資料夾路徑，或按「選擇資料夾」');self.path.setReadOnly(False)
-        self.path.setToolTip('可從檔案總管複製路徑後直接貼上；貼上後按一鍵翻譯即可。')
+        b.addWidget(label('從清單選擇偵測到的模組包，或直接貼上包含 mods、config 或 kubejs 的資料夾路徑。','sub'))
+        # Editable combo: detected launchers' instances in the list, and free text for any other location.
+        row=QHBoxLayout();self.instance_box=QComboBox();self.instance_box.setEditable(True);self.instance_box.setInsertPolicy(QComboBox.NoInsert)
+        self.path=self.instance_box.lineEdit();self.path.setPlaceholderText('選擇模組包，或貼上資料夾路徑')
+        self.path.setToolTip('清單會列出 CurseForge、Modrinth、Prism 等啟動器的模組包，以及你用過的資料夾。找不到時可直接貼上路徑。')
         self.path.textChanged.connect(lambda value:self.settings.setValue('instance',value.strip().strip('"')))
-        self.choose=button('選擇資料夾',self.choose_folder);row.addWidget(self.path,1);row.addWidget(self.choose);b.addLayout(row)
+        self.instance_box.activated.connect(self.pick_instance)
+        self.choose=button('選擇資料夾',self.choose_folder);row.addWidget(self.instance_box,1);row.addWidget(self.choose);b.addLayout(row)
         # Reference sources translate first; AI only fills what is still missing, and only when opted in.
         ai_row=QHBoxLayout();self.use_ai=QCheckBox('參考來源缺漏時，用 AI 補翻')
         self.use_ai.setChecked(str(self.settings.value('use_ai','true')).lower()=='true')
@@ -281,13 +370,39 @@ class MainWindow(QMainWindow):
         f,b=card();head=QHBoxLayout();head.addWidget(label('處理進度','section'));head.addStretch();self.status=label('等待開始','pill');set_pill(self.status,'等待開始','todo');head.addWidget(self.status);b.addLayout(head)
         self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0);self.progress.setTextVisible(False);b.addWidget(self.progress)
         self.progress.setFixedHeight(6)
-        self.step=label('準備好了，先選擇你的模組包。');self.detail=label('原始檔會在套用前備份，翻譯報告直接顯示在程式裡。','sub');b.addWidget(self.step);b.addWidget(self.detail)
-        self.elapsed=label('掃描會自動執行，不需要另外操作。','sub');b.addWidget(self.elapsed)
+        self.step=label('選好模組包後按「一鍵完整翻譯並套用」；原檔會先備份。');self.detail=label('','sub');b.addWidget(self.step);b.addWidget(self.detail)
+        self.elapsed=label('','sub');b.addWidget(self.elapsed)
         self.report_link=button('查看翻譯報告',lambda:self.navigate(1));b.addWidget(self.report_link,alignment=Qt.AlignLeft);box.addWidget(f)
-        head=QHBoxLayout();head.addWidget(label('即時處理紀錄','section'));head.addStretch();box.addLayout(head)
+        self.activity_head=label('即時處理紀錄','section');box.addWidget(self.activity_head)
         self.activity=QPlainTextEdit();self.activity.setObjectName('log');self.activity.setReadOnly(True);self.activity.setMinimumHeight(130)
-        self.activity.setMaximumBlockCount(300);self.activity.setPlaceholderText('開始後會列出目前處理的檔案、下載進度，以及最新產生的原文 → 譯文。')
+        self.activity.setMaximumBlockCount(300)
         box.addWidget(self.activity,1)
+        box.addStretch()
+        self.set_start_expanded(False)
+
+    def set_start_expanded(self,expanded):
+        """Idle start page stays short; progress details and the live log appear once work starts."""
+        for widget in (self.progress,self.detail,self.elapsed,self.report_link,self.activity_head,self.activity):
+            widget.setVisible(expanded)
+
+    def refresh_instances(self):
+        recent=[p for p in (self.settings.value('recent_instances',[]) or []) if p]
+        if isinstance(recent,str):recent=[recent]
+        current=self.path.text()
+        self.instance_box.blockSignals(True);self.instance_box.clear()
+        for launcher,name,path in jobs.discover_instances(recent):
+            self.instance_box.addItem(f'{name}　·　{launcher}',str(path))
+        self.instance_box.setCurrentIndex(-1);self.path.setText(current);self.instance_box.blockSignals(False)
+
+    def pick_instance(self,index):
+        path=self.instance_box.itemData(index)
+        if path:self.path.setText(path)
+
+    def remember_instance(self,path):
+        recent=[p for p in (self.settings.value('recent_instances',[]) or []) if p]
+        if isinstance(recent,str):recent=[recent]
+        recent=[str(path)]+[p for p in recent if p.casefold()!=str(path).casefold()]
+        self.settings.setValue('recent_instances',recent[:8]);self.refresh_instances()
 
     def make_report(self):
         box=self.page('翻譯報告','隨處理進度保存；即使停止或尚未套用，也能查看已產生的內容。')
@@ -314,6 +429,7 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().hide();self.table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch);self.table.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch)
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft|Qt.AlignVCenter);self.table.horizontalHeader().setHighlightSections(False)
         self.table.setColumnWidth(2,110);self.table.setColumnWidth(3,96);self.table.cellDoubleClicked.connect(self.review_row);box.addWidget(self.table,1)
+        self.table.setItemDelegateForColumn(0,OriginalDelegate(self))
         nav=QHBoxLayout();self.prev=button('上一頁',lambda:self.turn_page(-1));self.next=button('下一頁',lambda:self.turn_page(1));self.page_label=label('0 筆','sub');self.page_label.setWordWrap(False)
         self.page_size=QComboBox();self.page_size.setToolTip('每頁顯示筆數')
         for size in (50,100,200,500):self.page_size.addItem(f'每頁 {size} 筆',size)
@@ -328,7 +444,8 @@ class MainWindow(QMainWindow):
 
     def make_backups(self):
         box=self.page('備份與還原','每次套用都保留原檔。還原前會檢查後續修改，避免蓋掉你的檔案。')
-        self.backups=QListWidget();box.addWidget(self.backups,1)
+        self.backups=QListWidget();self.backups.setSpacing(2);box.addWidget(self.backups,1)
+        self.backups_empty=label('還沒有備份。第一次套用翻譯時，會先把要修改的原檔備份在這裡。','sub');box.addWidget(self.backups_empty)
         row=QHBoxLayout();row.addWidget(button('重新整理',self.refresh_backups));row.addWidget(button('開啟備份資料夾',self.open_backup));row.addStretch()
         self.restore_btn=button('還原選取批次',self.restore_job);row.addWidget(self.restore_btn);box.addLayout(row)
         box.addWidget(label('只還原該批修改的檔案，並移除該批新增的翻譯檔。若檔案之後有變更，會先停止並說明。','sub'))
@@ -358,7 +475,8 @@ class MainWindow(QMainWindow):
     def apply_theme(self):
         QApplication.instance().setStyleSheet(stylesheet('dark' if self.dark_theme else 'light'))
         if hasattr(self,'table'):self.fill_table()  # state colours come from the theme tokens
-        self.theme_btn.setText('亮色模式' if self.dark_theme else '深色模式')
+        self.theme_btn.setText('☀' if self.dark_theme else '☾')
+        self.theme_btn.setToolTip('切換為亮色模式' if self.dark_theme else '切換為深色模式')
         self.settings.setValue('theme','dark' if self.dark_theme else 'light')
         QApplication.processEvents()
 
@@ -499,11 +617,12 @@ class MainWindow(QMainWindow):
 
     def ai_done(self,result):
         self.job_done(result);self.ai_status.setText(result['ai_message']);self.navigate(1)
+        self.notify_finished('AI 補翻已結束',result['ai_message'])
         if result.get('ai_status')=='paused':QMessageBox.information(self,'AI 補翻已暫停',result['ai_message'])
 
     def choose_folder(self):
         path=QFileDialog.getExistingDirectory(self,'選擇模組包根資料夾',self.path.text() or str(Path.home()))
-        if path:self.path.setText(path);self.settings.setValue('instance',path)
+        if path:self.path.setText(str(Path(path)));self.settings.setValue('instance',str(Path(path)))
 
     def instance_path(self):
         value=str(self.path.text() or '').strip()
@@ -517,9 +636,9 @@ class MainWindow(QMainWindow):
             # The startup account check owns the Codex process; never run two against one login store.
             QMessageBox.information(self,'正在確認帳號','程式正在背景確認 AI 帳號狀態，請幾秒後再試。');return
         self.busy=True;self.mode=mode
-        if mode in ('plan','full_translate','apply','ai_translate'):self.live_session=True
+        if mode in ('plan','full_translate','apply','ai_translate'):self.live_session=True;self.set_start_expanded(True)
         self.started_at=self.last_activity=time.monotonic()
-        for b in (self.path,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai):b.setEnabled(False)
+        for b in (self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai):b.setEnabled(False)
         if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
         self.history.setEnabled(False);self.cancel.setEnabled(mode in ('plan','full_translate','ai_translate','ai_login','ai_install'));self.ai_stop_btn.setEnabled(mode in ('ai_translate','ai_login','ai_install'))
         self.worker=Worker(operation)
@@ -534,7 +653,8 @@ class MainWindow(QMainWindow):
             # The update helper waits for this process to exit; exit() skips the busy close guard.
             QApplication.exit(0);return
         self.progress.setRange(0,100)
-        for b in (self.path,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models):b.setEnabled(True)
+        self.taskbar.update(self,state=TaskbarProgress.NOPROGRESS);self.setWindowTitle('模組包中文化 · MC Translator')
+        for b in (self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models):b.setEnabled(True)
         self.history.setEnabled(True);self.cancel.setEnabled(False);self.ai_stop_btn.setEnabled(False)
         self.install_btn.setEnabled(bool(self.update_info and self.update_info.get('status')=='available'))
         self.ai_progress.hide();self.update_ai_controls();self.update_ai_button()
@@ -555,9 +675,21 @@ class MainWindow(QMainWindow):
         if title in ('更新參考庫','AI 補翻中'):self.progress.setRange(0,0)
         else:self.progress.setRange(0,100)
         self.progress.setValue(value);self.step.setText(title);self.detail.setText(detail);set_pill(self.status,'處理中','progress')
+        indeterminate=self.progress.maximum()==0
+        self.taskbar.update(self,None if indeterminate else value,TaskbarProgress.INDETERMINATE if indeterminate else TaskbarProgress.NORMAL)
+        self.setWindowTitle(('' if indeterminate else f'{value}% · ')+'模組包中文化 · MC Translator')
         self.cancel.setEnabled(self.mode in ('plan','full_translate','ai_translate','ai_login','ai_install') and title not in ('驗證並準備套用','備份與套用','重新掃描實際遊戲資料','已套用已校對的文字'))
         self.append_activity(title+' · '+detail)
         if self.mode.startswith('ai_'):self.ai_status.setText(title+'：'+detail)
+
+    def notify_finished(self,title,message):
+        """Tell the user a long job ended even if they switched to another window."""
+        QApplication.alert(self)
+        if self.isActiveWindow() or not QSystemTrayIcon.isSystemTrayAvailable():return
+        if not self.tray:
+            self.tray=QSystemTrayIcon(self.windowIcon(),self);self.tray.setToolTip('MC Translator')
+            self.tray.messageClicked.connect(lambda:(self.showNormal(),self.raise_(),self.activateWindow()))
+        self.tray.show();self.tray.showMessage(title,message,QSystemTrayIcon.Information,8000)
 
     def append_activity(self,text):
         line=time.strftime('%H:%M:%S')+'  '+str(text).replace('\n',' ')
@@ -628,6 +760,7 @@ class MainWindow(QMainWindow):
                 +ai_line+'\n\n遊戲必須先關閉；圖片文字、硬編碼程式和無法確認的特殊格式會列入報告。\n是否繼續？')
         if QMessageBox.question(self,'一鍵完整翻譯',prompt)!=QMessageBox.Yes:return
         instance=self.instance_path();self.progress.setValue(0);set_pill(self.status,'處理中','progress')
+        if jobs.is_instance(instance):self.remember_instance(instance)
         self.run_worker('full_translate',lambda w:self.full_translation_operation(instance,model,w),self.full_translation_done)
 
     def full_translation_operation(self,instance,model,w):
@@ -637,6 +770,8 @@ class MainWindow(QMainWindow):
         self.job_done(result);self.navigate(1)
         applied=result.get('installed_count',0)
         leftovers=sum(r.get('origin')=='untranslated' for r in result.get('rows',[]))
+        self.notify_finished('翻譯完成' if result['status']=='installed' else '翻譯已停止，需要處理',
+                             f'已套用 {applied:,} 筆，仍待處理 {leftovers:,} 筆。' if result['status']=='installed' else (result.get('apply_error') or '請查看翻譯報告。'))
         if result['status']=='installed':
             QMessageBox.information(self,'本次處理完成',f'已套用 {applied:,} 筆。\n仍待處理 {leftovers:,} 筆，請查看報告。')
         elif result['status']=='awaiting_game':
@@ -677,8 +812,8 @@ class MainWindow(QMainWindow):
     def refresh_history(self):
         current=self.session['report'] if self.session else None
         self.history.clear();self.history.addItem('選擇本機翻譯紀錄',None)
-        for p in sorted((self.home/'output').glob('*/報告/*/session.json'),reverse=True)[:100]:
-            self.history.addItem(p.parents[2].name+' / '+p.parent.name,str(p))
+        for p in sorted((self.home/'output').glob('*/報告/*/session.json'),key=lambda p:p.parent.name,reverse=True)[:100]:
+            self.history.addItem(history_label(p),str(p))
             if str(p.parent)==current:self.history.setCurrentIndex(self.history.count()-1)
 
     def load_history(self,index):
@@ -698,6 +833,11 @@ class MainWindow(QMainWindow):
     def use_session(self,session):
         """Adopt a saved report; older reports get the current no-translation rules."""
         self.session=session;jobs.reclassify_keep_original(session)
+        summary=Path(session.get('report',''))/'summary.json'
+        if session.get('report') and not summary.exists() and summary.parent.is_dir():
+            # Reports from before v0.4.3 lack the sidecar the history list reads.
+            try:jobs.write_json(summary,jobs.session_summary(session));self.refresh_history()
+            except OSError:logging.info('Cannot write report summary',exc_info=True)
 
     def update_ai_button(self):
         count=len(ai.pending_rows(self.session)) if self.session and not self.session.get('is_preview') else 0
@@ -730,11 +870,12 @@ class MainWindow(QMainWindow):
             for j,text in enumerate((original,r['proposed'],jobs.SOURCE_NAMES.get(r['origin'],r['origin']),'● '+state)):
                 item=QTableWidgetItem(str(text).replace('\n',' ')[:130])
                 item.setToolTip(f"{r['key']}\n{r['source']}\n{r.get('issue') or ''}" if j==0 else str(text))
+                if j==0:item.setData(MODULE_ROLE,row_module(r))
                 if j==3:
                     item.setForeground(QColor(tokens[STATE_ROLE.get(state,'text60')]))
                     font=item.font();font.setBold(True);item.setFont(font)
                 self.table.setItem(i,j,item)
-            self.table.setRowHeight(i,40)
+            self.table.setRowHeight(i,50)
         self.table.setUpdatesEnabled(True)
         self.page_label.setText(f'共 {len(filtered):,} 筆 · 第 {self.page_index+1} / {pages} 頁')
         self.prev.setEnabled(self.page_index>0);self.next.setEnabled(self.page_index+1<pages)
@@ -766,8 +907,12 @@ class MainWindow(QMainWindow):
     def review_current(self):self.review_row(self.table.currentRow(),0)
     def review_row(self,index,column=0):
         if self.busy or not self.session or index<0 or index>=len(getattr(self,'visible_rows',[])):return
-        dialog=ReviewDialog(self.visible_rows[index],self)
+        row=self.visible_rows[index];dialog=ReviewDialog(row,self)
         if dialog.exec()==QDialog.Accepted:
+            # Only rows the user confirmed here become translation memory for later modpacks.
+            original=row.get('en') or row.get('zh_cn') or row.get('current') or ''
+            if row.get('kind')=='language' and row_module(row) and original:
+                jobs.TranslationMemory(self.home).remember(row_module(row),row['key'],original,row['proposed'],row['source'])
             jobs.write_json(Path(self.session['report'])/'session.json',self.session);self.fill_table()
 
     def apply_job(self):
@@ -775,7 +920,10 @@ class MainWindow(QMainWindow):
         count=sum(bool(r.get('reviewed') and r.get('changed') and r.get('supported') and not r.get('installed')) for r in self.session['rows'])
         if not count:QMessageBox.information(self,'先校對譯文','請在報告中雙擊譯文，核對後按「確認這筆」。');return
         if QMessageBox.question(self,'備份並套用',f'將備份原檔，並套用 {count} 筆已確認譯文到：\n{self.session["instance"]}\n\n請先關閉此模組包的遊戲。是否繼續？')!=QMessageBox.Yes:return
-        self.navigate(0);self.run_worker('apply',lambda w:jobs.apply_session(self.session,self.home,w.progress.emit),self.job_done)
+        self.navigate(0);self.run_worker('apply',lambda w:jobs.apply_session(self.session,self.home,w.progress.emit),self.apply_done)
+
+    def apply_done(self,result):
+        self.job_done(result);self.notify_finished('套用完成',f"已套用 {result.get('installed_count',0):,} 筆，原檔已備份。")
 
     def open_report(self):
         if self.session:open_path(self.session['report'])
@@ -785,10 +933,18 @@ class MainWindow(QMainWindow):
         for p in sorted((self.home/'output').glob('*/原始備份/*/_備份紀錄/manifest.json'),reverse=True):
             try:
                 data=json.loads(p.read_text(encoding='utf-8'))
-                state={'installed':'可還原','restored':'已還原','restoring':'還原中斷','backed_up':'已備份','rolled_back':'已復原失敗操作'}.get(data['status'],data['status'])
-                item=QListWidgetItem(f"{Path(data['instance']).name}   ·   {state}\n{p.parents[1].name}　{len(data['files'])} 個檔案")
-                item.setData(Qt.UserRole,(str(p.parents[1]),data));self.backups.addItem(item)
+                state,role={'installed':('可還原','done'),'restored':('已還原','todo'),'restoring':('還原中斷','blocked'),
+                            'backed_up':('已備份','progress'),'rolled_back':('已復原失敗操作','todo')}.get(data['status'],(data['status'],'todo'))
+                added=sum(f.get('before') is None for f in data['files'])
+                row=QWidget();line=QHBoxLayout(row);line.setContentsMargins(14,10,14,10);text=QVBoxLayout();text.setSpacing(2)
+                text.addWidget(label(Path(data['instance']).name,'section'))
+                text.addWidget(label(f"{stamp_text(p.parents[1].name)}　·　修改 {len(data['files'])-added:,} 個檔案"+(f"、新增 {added:,} 個" if added else ''),'sub'))
+                line.addLayout(text,1);pill=label('','pill');set_pill(pill,state,role);line.addWidget(pill,0,Qt.AlignVCenter)
+                row.setAttribute(Qt.WA_TransparentForMouseEvents)
+                item=QListWidgetItem();item.setSizeHint(row.sizeHint().expandedTo(QSize(0,64)))
+                item.setData(Qt.UserRole,(str(p.parents[1]),data));self.backups.addItem(item);self.backups.setItemWidget(item,row)
             except (ValueError,KeyError,OSError):continue
+        self.backups_empty.setVisible(self.backups.count()==0)
 
     def open_backup(self):
         item=self.backups.currentItem()
@@ -857,7 +1013,10 @@ class MainWindow(QMainWindow):
         elif any(w.isRunning() for w in self.background):
             running=next(w for w in self.background if w.isRunning())
             self.hide();running.finished.connect(self.close);event.ignore()
-        else:event.accept()
+        else:
+            if self.isVisible():self.settings.setValue('geometry',self.saveGeometry())
+            if self.tray:self.tray.hide()
+            event.accept()
 
 
 def app_home():

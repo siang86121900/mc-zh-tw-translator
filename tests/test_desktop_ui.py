@@ -157,4 +157,17 @@ class DesktopUiTests(unittest.TestCase):
             self.assertIn('還沒寫入模組包',window.report_summary.text())
             window.close()
 
+    def test_history_label_is_readable_and_start_page_starts_compact(self):
+        from mc_zh_tw_translator.desktop import history_label
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        with tempfile.TemporaryDirectory() as d:
+            report=Path(d)/'output/Pack/報告/20260928-235851-36c382';report.mkdir(parents=True)
+            row=dict(source='s',key='k',en='Hi',proposed='嗨',origin='same_source_zh_cn',supported=True,reviewed=True,changed=True)
+            jobs.write_json(report/'session.json',dict(report=str(report),status='needs_review',rows=[row]*3))
+            self.assertEqual(history_label(report/'session.json'),'Pack　·　9/28 23:58　·　未套用　·　3 筆')
+            window=MainWindow(Path(d))
+            self.assertTrue(window.activity.isHidden());self.assertTrue(window.progress.isHidden())
+            window.set_start_expanded(True);self.assertFalse(window.activity.isHidden())
+            window.close()
+
 if __name__=='__main__':unittest.main()

@@ -22,6 +22,52 @@ class WorkflowTests(unittest.TestCase):
 
     def make_plan(self):return plan(self.instance,self.home,lambda *_:None,references=([{},{}],{'tested':True}))
 
+    def test_installed_translation_resourcepack_is_a_source(self):
+        import zipfile
+        rp=self.instance/'resourcepacks';rp.mkdir()
+        with zipfile.ZipFile(rp/'community-zh_tw.zip','w') as z:
+            z.writestr('pack.mcmeta','{"pack":{"pack_format":34,"description":"x"}}')
+            z.writestr('assets/demo/lang/zh_tw.json',json.dumps({'demo.missing':'未知文字'}))
+        row=next(r for r in self.make_plan()['rows'] if r['key']=='demo.missing' and r['source'].startswith('instance!/kubejs'))
+        self.assertEqual((row['origin'],row['proposed']),('instance_resourcepack','未知文字'))
+
+    def test_translation_pack_entries_for_uninstalled_mods_are_skipped(self):
+        import zipfile
+        (self.instance/'mods').mkdir()
+        import io
+        nested=io.BytesIO()
+        with zipfile.ZipFile(nested,'w') as z:z.writestr('assets/lib/textures/a.png','x')
+        with zipfile.ZipFile(self.instance/'mods/real.jar','w') as z:
+            z.writestr('assets/real/lang/en_us.json',json.dumps({'real.a':'Real'}))
+            z.writestr('META-INF/jarjar/lib.jar',nested.getvalue())  # jar-in-jar library counts as installed
+        packs=self.instance/'config/openloader/packs';packs.mkdir(parents=True)
+        with zipfile.ZipFile(packs/'cfpa.zip','w') as z:
+            z.writestr('assets/ghost/lang/en_us.json',json.dumps({'ghost.a':'Ghost'}))
+            z.writestr('assets/real/lang/en_us.json',json.dumps({'real.b':'Real B'}))
+            z.writestr('assets/lib/lang/en_us.json',json.dumps({'lib.a':'Library'}))
+        result=self.make_plan()
+        self.assertFalse(any('ghost' in r['source'] for r in result['rows']))
+        self.assertTrue(any(r['key']=='real.b' for r in result['rows']))
+        self.assertTrue(any(r['key']=='lib.a' for r in result['rows']))
+        self.assertEqual(result['source_counts']['not_installed'],1)
+
+    def test_source_order_uses_memory_and_rejects_simplified_zh_tw(self):
+        from mc_zh_tw_translator.desktop_jobs import TranslationMemory
+        (self.lang/'zh_tw.json').write_text(json.dumps({'demo.hello':'你好 %s','demo.missing':'未知设置'}),encoding='utf-8')
+        TranslationMemory(self.home).remember('demo','demo.missing','Unknown text','未知的文字','test')
+        rows={r['key']:r for r in self.make_plan()['rows']}
+        # A correct zh_tw needs no change; a zh_tw with simplified characters yields to memory.
+        self.assertNotIn('demo.hello',rows)
+        self.assertEqual((rows['demo.missing']['origin'],rows['demo.missing']['proposed']),('translation_memory','未知的文字'))
+
+    def test_discover_instances_from_launcher_and_recent_paths(self):
+        from mc_zh_tw_translator.desktop_jobs import discover_instances
+        home=Path(self.temp.name)/'home';pack=home/'curseforge/minecraft/Instances/Pack A';(pack/'mods').mkdir(parents=True)
+        (home/'curseforge/minecraft/Instances/not-a-pack').mkdir()
+        with patch('pathlib.Path.home',return_value=home),patch.dict('os.environ',{'APPDATA':str(home/'none')}):
+            found=discover_instances([str(self.instance),'C:/missing/path'])
+        self.assertEqual([(l,n) for l,n,_ in found],[('最近使用',self.instance.name),('CurseForge','Pack A')])
+
     def test_keep_original_only_for_unambiguous_strings(self):
         from mc_zh_tw_translator.desktop_jobs import keep_original_reason as keep
         for text in ('%s','%d (%dx)','%1$s HPS','%d FE','VI','64 x 64','Shift','Ctrl + Shift','NBT','https://example.com/a'):
@@ -74,7 +120,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['errors'],[]);self.assertEqual(len(result['repairs']),1)
         rows={r['key']:r for r in result['rows'] if r['source'].startswith('mods/')}
         self.assertEqual(rows['a.mode']['proposed'],'模式')
-        self.assertNotIn('a.fmt',rows);self.assertNotIn('a.key',rows)  # kept as-is, not reported as missing
+        # Kept as-is: listed under 無需翻譯, never counted as missing and never written.
+        for key in ('a.fmt','a.key'):
+            self.assertEqual(rows[key]['origin'],'keep_original');self.assertFalse(rows[key]['changed'])
         self.assertGreaterEqual(result['source_counts'].get('keep_original',0),2)
         rows['a.mode']['reviewed']=True
         apply_session(result,self.home,lambda *_:None)
