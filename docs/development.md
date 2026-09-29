@@ -81,6 +81,14 @@ python -m mc_zh_tw_translator verify 'tmp/pack/batch/mods' --input 'C:/path/inst
 - `fetch_catalog()` 讀 `https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/index.json`；404 視為尚無公開翻譯。補丁下載網址必須是本專案的 GitHub Release 附件，並驗 SHA-256 與大小。
 - CurseForge 整合包由 `%APPDATA%/CurseForge/agent/GameInstances/MinecraftGameInstance.json` 偵測（含自訂位置），整合包身分讀 `minecraftinstance.json`；「用 CurseForge 安裝」開啟 `curseforge://install?addonId=<projectID>&fileId=<fileID>`，無反應時請使用者手動搜尋。
 
+一鍵流程 `desktop_jobs.full_translation`：`plan` → `prepare_to_apply`（`unify_same_key`、`unify_suggested_terms`、`auto_confirm_safe`）→ `apply_session` → AI 補翻與核對 → 再一次 `prepare_to_apply` 與 `apply_session`。進度由它自己換算成整個工作的百分比（來源 0–50、第一次寫入 50–72、AI 72–90、第二次寫入 90–100），介面直接顯示。
+
+沒有自己英文的列以 `en_ref` 記下已安裝模組的英文，`original_of(row)` 是各處檢查譯文時共用的原文（en → en_ref → zh_cn → current）；`en` 維持原值，翻譯記憶與來源紀錄的對應不變。掃描快取版本為 `scan-4`，多存每個模組檔宣告的模組與語系 namespace（`present_mods`）。
+
+加裝模組：`patches.added_mods` 由 `minecraftinstance.json` 的 `installedAddons` 扣掉整合包清單得出，寫進補丁清冊的 `added_mods`（格式仍是 `mctranslator-patch-1`，舊版程式會忽略）；目錄的 `addedMods` 只供顯示。`patches.install_mods` 下載、校驗並經 `apply_reviewed` 寫入。
+
+`patches.wait_for_modpack` 供「安裝整合包與翻譯」使用：開啟 `curseforge://install` 後輪詢 CurseForge 的 instance 清單，以補丁清冊裡每個檔案是否到齊（模組檔比對大小）判斷安裝完成，再呼叫 `apply_patch`。
+
 套用補丁後在 `applied_patches.json` 記錄每個 instance 最後套用的補丁雜湊；目錄上同一整合包版本的補丁雜湊不同時顯示「翻譯有更新」。
 
 上架一個已翻譯整合包（需使用者授權）：`python scripts/publish_translation.py <補丁.zip> --translator 名稱 [--notes 說明] [--dry-run]`。它把補丁放到 `translations` 分支的 `packs/<projectID>/`、更新 `index.json`（同整合包同版本會取代）並推送。手動作法：

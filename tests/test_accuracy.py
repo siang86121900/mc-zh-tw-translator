@@ -113,6 +113,89 @@ class AiReviewTests(Base):
         self.assertEqual((result['status'],result['ai_status'],result['ai_review_status']),('installed','completed','completed'))
         self.assertEqual(self.written(),{'a':'獲得 20 點經驗','b':'持續 3 秒','c':'普通文字','d':'未知的東西'})
 
+    def one_click(self,notify=lambda *_:None,cancelled=lambda:False):
+        supplement,review=ai.supplement,ai.review
+        with patch.object(ai,'supplement',lambda *a,**k:supplement(*a,client_factory=FakeClient,**k)),\
+             patch.object(ai,'review',lambda *a,**k:review(*a,client_factory=FakeClient,**k)),\
+             patch('mc_zh_tw_translator.desktop_jobs.refresh',return_value=([{},{}],{'sources':['tw','cn']})):
+            return full_translation(self.instance,self.home,'account-model',notify,cancelled)
+
+    def batches(self):
+        return sorted((self.home/'output').glob('*/原始備份/*/_備份紀錄/manifest.json'))
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_one_click_writes_what_the_sources_give_before_ai_starts(self,_):
+        FakeClient.translations={'Unknown thing':'未知的東西'};seen=[]
+        class Watching(FakeClient):
+            def translate(inner,payload,model,glossary=None):
+                seen.append(dict(self.written()));return FakeClient.translate(inner,payload,model,glossary)
+        supplement,review=ai.supplement,ai.review;progress=[]
+        with patch.object(ai,'supplement',lambda *a,**k:supplement(*a,client_factory=Watching,**k)),\
+             patch.object(ai,'review',lambda *a,**k:review(*a,client_factory=FakeClient,**k)),\
+             patch('mc_zh_tw_translator.desktop_jobs.refresh',return_value=([{},{}],{'sources':['tw','cn']})):
+            result=full_translation(self.instance,self.home,'account-model',lambda value,title,detail='':progress.append((value,title,detail)))
+        # The game already had the converted text while AI was still being asked.
+        self.assertEqual(seen,[{'a':'獲得 10 點經驗','b':'持續 3 秒','c':'普通文字'}])
+        self.assertEqual(self.written()['d'],'未知的東西')
+        self.assertEqual((result['status'],result['installed_count'],len(self.batches())),('installed',4,2))
+        self.assertTrue(all(r.get('installed') for r in result['rows'] if r['changed'] and r['supported']))
+        values=[v for v,*_ in progress]
+        self.assertEqual(values,sorted(values));self.assertEqual(values[-1],100)  # the bar never runs backwards
+        self.assertTrue(any('已經寫入遊戲' in detail for _,title,detail in progress if title=='AI 補翻中'))
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_ai_can_finish_a_book_page_the_first_write_created(self,_):
+        import zipfile
+        (self.instance/'mods').mkdir()
+        page=lambda name,text:json.dumps(dict(name=name,pages=[dict(type='text',text=text)]),ensure_ascii=False)
+        with zipfile.ZipFile(self.instance/'mods/real.jar','w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="real"\n')
+            z.writestr('assets/real/lang/en_us.json','{}')
+            z.writestr('assets/real/patchouli_books/guide/en_us/entries/a.json',page('Alpha','Unknown thing'))
+            z.writestr('assets/real/patchouli_books/guide/zh_cn/entries/a.json',page('阿尔法','Unknown thing'))
+        FakeClient.translations={'Unknown thing':'未知的東西'}
+        result=self.one_click()
+        self.assertEqual((result['status'],result.get('apply_error'),len(self.batches())),('installed',None,2))
+        with zipfile.ZipFile(self.instance/'mods/real.jar') as z:
+            written=json.loads(z.read('assets/real/patchouli_books/guide/zh_tw/entries/a.json'))
+        self.assertEqual((written['name'],written['pages'][0]['text']),('阿爾法','未知的東西'))
+
+    def test_a_write_the_game_blocked_is_tried_again_after_ai(self):
+        FakeClient.translations={'Unknown thing':'未知的東西'};calls=[]
+        def closed(instance):
+            calls.append(1)
+            if len(calls)==1:raise jobs.GameRunningError('遊戲正在執行')
+        with patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed',closed):
+            result=self.one_click()
+        self.assertEqual((result['status'],result['installed_count'],len(self.batches())),('installed',4,1))
+        self.assertNotIn('apply_error',result)
+        self.assertEqual(self.written()['d'],'未知的東西')
+
+    def test_a_game_that_stays_open_keeps_everything_for_a_later_retry(self):
+        FakeClient.translations={'Unknown thing':'未知的東西'}
+        with patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed',side_effect=jobs.GameRunningError('遊戲正在執行')):
+            result=self.one_click()
+        self.assertEqual((result['status'],result['installed_count'],result['ai_status']),('awaiting_game',0,'completed'))
+        self.assertFalse((self.instance/'kubejs/assets/demo/lang/zh_tw.json').exists())
+        self.assertEqual(jobs.applicable_count(result),4)
+        with patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed'):
+            jobs.prepare_to_apply(result);apply_session(result,self.home,lambda *_:None)
+        self.assertEqual(self.written()['d'],'未知的東西')
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_stopping_during_ai_keeps_what_was_written(self,_):
+        FakeClient.translations={'Unknown thing':'未知的東西'};stop=[]
+        class Stopping(FakeClient):
+            def translate(inner,payload,model,glossary=None):
+                stop.append(1);return FakeClient.translate(inner,payload,model,glossary)
+        supplement=ai.supplement
+        with patch.object(ai,'supplement',lambda *a,**k:supplement(*a,client_factory=Stopping,**k)),\
+             patch('mc_zh_tw_translator.desktop_jobs.refresh',return_value=([{},{}],{'sources':['tw','cn']})):
+            result=full_translation(self.instance,self.home,'account-model',lambda *_:None,lambda:bool(stop))
+        self.assertEqual((result['status'],result['installed_count'],len(self.batches())),('installed',3,1))
+        self.assertNotIn('d',self.written())
+        self.assertEqual(jobs.applicable_count(result),1)  # AI's finished row waits in the report
+
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_gaps_can_be_filled_after_the_batch_was_applied(self,_):
         session=self.make_plan()
@@ -224,6 +307,142 @@ class RepeatedTextTests(Base):
         for key in ('a','b'):
             self.assertEqual(rows[key]['origin'],'untranslated');self.assertIn('改動了數值',rows[key]['issue'])
         self.assertEqual((session['ai_translation'],ai.pending_rows(session)),(0,[]))
+
+
+class SameKeyTests(Base):
+    """A modpack can hold one key in the mod, in a bundled language pack and in KubeJS assets."""
+    MOD='mods/real.jar!/assets/real/lang/en_us.json'
+    PACK='config/openloader/packs/cfpa.zip!/assets/real/lang/zh_cn.json'
+    KUBEJS='instance!/kubejs/assets/real/lang/zh_cn.json'
+
+    def layered(self,name,en,mod_cn=None,pack_cn=None,kubejs_cn=None,mod_tw=None):
+        import zipfile
+        instance=self.root/name;(instance/'mods').mkdir(parents=True)
+        (instance/'manifest.json').write_text('{"minecraft":{"version":"1.21.1"}}',encoding='utf-8')
+        with zipfile.ZipFile(instance/'mods/real.jar','w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="real"\n')
+            z.writestr('assets/real/lang/en_us.json',json.dumps(en))
+            if mod_cn:z.writestr('assets/real/lang/zh_cn.json',json.dumps(mod_cn,ensure_ascii=False))
+            if mod_tw:z.writestr('assets/real/lang/zh_tw.json',json.dumps(mod_tw,ensure_ascii=False))
+        if pack_cn:
+            packs=instance/'config/openloader/packs';packs.mkdir(parents=True)
+            with zipfile.ZipFile(packs/'cfpa.zip','w') as z:
+                z.writestr('pack.mcmeta','{"pack":{"pack_format":34,"description":"x"}}')
+                z.writestr('assets/real/lang/zh_cn.json',json.dumps(pack_cn,ensure_ascii=False))
+        if kubejs_cn:
+            lang=instance/'kubejs/assets/real/lang';lang.mkdir(parents=True)
+            (lang/'zh_cn.json').write_text(json.dumps(kubejs_cn,ensure_ascii=False),encoding='utf-8')
+        return instance
+
+    def rows(self,session):
+        return {(r['source'],r['key']):r for r in session['rows']}
+
+    def test_reference_without_english_to_compare_is_not_a_match(self):
+        instance=self.layered('比對包',{'a':'Battery Upgrade Tier 1','b':'Fuel Upgrade'},
+                              pack_cn={'a':'升级：电池，等级1','b':'升级：燃料','c':'只有中文的句子'})
+        tw={'real':{'a':'電池升級 T1','b':'舊的燃料升級','c':'沒有英文的參考'},
+            '__pairs__':{'real':{'a':[('電池升級 T1','Battery Upgrade Tier 1')],'b':[('舊的燃料升級','Fuel Booster')]}}}
+        rows=self.rows(self.make_plan(instance,([tw,{}],{'sources':['tw','cn']})))
+        a=rows[(self.PACK,'a')]
+        # The pack has no English of its own; the installed mod's English confirms the reference.
+        self.assertEqual((a['origin'],a['proposed'],a['issue'],a['en_ref'],a['en']),
+                         ('reference_pack_or_cfpa','電池升級 T1','','Battery Upgrade Tier 1',None))
+        self.assertFalse(jobs.needs_check(a))
+        # Written for other English: the converted Chinese comes first.
+        self.assertEqual((rows[(self.PACK,'b')]['origin'],rows[(self.PACK,'b')]['proposed']),('same_source_zh_cn','升級：燃料'))
+        # No English anywhere: the reference is not taken as confirmed.
+        self.assertEqual((rows[(self.PACK,'c')]['origin'],rows[(self.PACK,'c')]['proposed']),('same_source_zh_cn','只有中文的句子'))
+        self.assertNotIn('en_ref',rows[(self.PACK,'c')])
+
+    def test_unconfirmed_reference_is_used_last_and_listed_for_checking(self):
+        instance=self.layered('只有參考',{'x':'Other','gone':'Gone thing'})
+        tw={'real':{'gone':'沒有英文的參考'}}  # the reference holds no English for this key
+        session=self.make_plan(instance,([tw,{}],{'sources':['tw','cn']}))
+        row=next(r for r in session['rows'] if r['key']=='gone')
+        self.assertEqual((row['origin'],row['proposed']),('stale_reference','沒有英文的參考'))
+        self.assertIn('沒有英文可以比對',row['issue']);self.assertTrue(jobs.needs_check(row))
+        self.assertEqual(jobs.row_category(row),'version_ref')
+
+    def test_every_file_of_a_key_gets_the_same_translation(self):
+        instance=self.layered('三層包',{'a':'To Wither Or Not','b':'Catacomb'},mod_cn={'a':'生存还是凋零','b':'墓穴'},
+                              pack_cn={'a':'生存还是凋零⋯⋯','b':'墓穴'},kubejs_cn={'a':'凋零，还是不凋零','b':'地下墓窟'})
+        session=self.make_plan(instance);rows=self.rows(session)
+        for key,text in (('a','凋零，還是不凋零'),('b','地下墓窟')):
+            found={source:rows[(source,key)]['proposed'] for source in (self.MOD,self.PACK,self.KUBEJS)}
+            self.assertEqual(set(found.values()),{text},found)  # the modpack's own wording, in all three
+        self.assertEqual(rows[(self.KUBEJS,'a')]['origin'],'same_source_zh_cn')
+        self.assertEqual(rows[(self.MOD,'a')]['origin'],'instance_zh_cn')
+
+    def test_people_written_taiwan_chinese_of_the_mod_is_not_hidden_by_an_override(self):
+        instance=self.layered('繁中包',{'a':'Settings'},mod_tw={'a':'設定'},pack_cn={'a':'设置选项'})
+        session=self.make_plan(instance);rows=self.rows(session)
+        self.assertFalse(rows[(self.MOD,'a')]['changed'])  # nothing to change in the mod; listed beside the file that follows it
+        pack=rows[(self.PACK,'a')]
+        self.assertEqual((pack['proposed'],pack['origin'],pack['same_key_as']),('設定','existing_zh_tw',self.MOD))
+        self.assertEqual(session['same_key_count'],1)
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_naming_things_alike_reaches_every_file_and_a_second_run_writes_nothing(self,_):
+        import zipfile
+        instance=self.layered('統一包',{'item.real.palm_log':'Palm Log','item.real.other':'Other thing'},
+                              mod_cn={'item.real.palm_log':'棕榈原木','item.real.other':'其他东西'})
+        lang=instance/'kubejs/assets/real/lang';lang.mkdir(parents=True)
+        (lang/'zh_tw.json').write_text(json.dumps({'item.real.palm_log':'棕櫚原木'},ensure_ascii=False),encoding='utf-8')
+        with zipfile.ZipFile(instance/'mods/trees.jar','w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="trees"\n')
+            z.writestr('assets/trees/lang/en_us.json',json.dumps({'item.trees.palm_log':'Palm Log'}))
+        tw={'trees':{'item.trees.palm_log':'棕櫚木原木'},'__pairs__':{'trees':{'item.trees.palm_log':[('棕櫚木原木','Palm Log')]}}}
+        def one_click():
+            with patch('mc_zh_tw_translator.desktop_jobs.refresh',return_value=([tw,{}],{'sources':['tw','cn']})):
+                return full_translation(instance,self.home,None,lambda *_:None)
+        def in_mod():
+            with zipfile.ZipFile(instance/'mods/real.jar') as z:return json.loads(z.read('assets/real/lang/zh_tw.json'))['item.real.palm_log']
+        first=one_click()
+        in_kubejs=lambda:json.loads((lang/'zh_tw.json').read_text(encoding='utf-8'))['item.real.palm_log']
+        # the people-written name of another mod is the most trusted; the mod and the file that overrides it both get it
+        self.assertEqual((first['status'],in_mod(),in_kubejs()),('installed','棕櫚木原木','棕櫚木原木'))
+        files={p:p.read_bytes() for p in instance.rglob('*') if p.is_file()};batches=len(list((self.home/'output').glob('*/原始備份/*')))
+        again=one_click()
+        self.assertEqual(jobs.applicable_count(again),0)
+        self.assertEqual({p:p.read_bytes() for p in instance.rglob('*') if p.is_file()},files)
+        self.assertEqual(len(list((self.home/'output').glob('*/原始備份/*'))),batches)
+
+    def test_what_the_user_confirmed_for_the_mod_also_applies_to_the_override(self):
+        instance=self.layered('記憶包',{'a':'Direwolf'},mod_cn={'a':'恐狼'},pack_cn={'a':'冰原狼'})
+        jobs.TranslationMemory(self.home).remember('real','a','Direwolf','牙狼','test')
+        rows=self.rows(self.make_plan(instance))
+        self.assertEqual({rows[(s,'a')]['proposed'] for s in (self.MOD,self.PACK)},{'牙狼'})
+        self.assertEqual({rows[(s,'a')]['origin'] for s in (self.MOD,self.PACK)},{'translation_memory'})
+
+    def test_chinese_with_other_parameters_than_the_installed_english_is_refused(self):
+        instance=self.layered('參數包',{'a':'Divide by %s?','b':'Costs 5 gems'},pack_cn={'a':'§c除以§f8吗？','b':'花费 8 颗宝石'})
+        rows=self.rows(self.make_plan(instance))
+        self.assertEqual(rows[(self.PACK,'a')]['origin'],'untranslated')
+        # a number that differs from the installed English is listed, as it is for rows with their own English
+        self.assertIn('數值和原文不同',rows[(self.PACK,'b')]['issue']);self.assertTrue(jobs.needs_check(rows[(self.PACK,'b')]))
+
+    def test_modpack_renamed_text_keeps_its_own_wording(self):
+        instance=self.layered('改名包',{'a':'Iron Sword'},mod_cn={'a':'铁剑'})
+        lang=instance/'kubejs/assets/real/lang';lang.mkdir(parents=True)
+        (lang/'en_us.json').write_text(json.dumps({'a':'Hero Blade'}),encoding='utf-8')
+        (lang/'zh_cn.json').write_text(json.dumps({'a':'英雄之刃'},ensure_ascii=False),encoding='utf-8')
+        tw={'real':{'a':'鐵製長劍'},'__pairs__':{'real':{'a':[('鐵製長劍','Iron Sword')]}}}
+        rows={(r['source'].split('!/')[0],r['key']):r for r in self.make_plan(instance,([tw,{}],{'sources':['tw','cn']}))['rows']}
+        renamed=rows[('instance','a')]
+        self.assertEqual((renamed['proposed'],renamed['renamed']),('英雄之刃',True))  # not the name of the mod's English
+        self.assertEqual(rows[('mods/real.jar','a')]['proposed'],'鐵製長劍')
+
+    def test_differing_ai_answers_for_one_key_become_one_and_confirmed_rows_stay(self):
+        row=lambda source,zh,origin='ai_translation',**more:dict(source=source,key='a',kind='language',en='Odd gadget',current=None,
+                                                                  proposed=zh,origin=origin,supported=True,changed=True,reviewed=False,**more)
+        rows=[row(self.MOD,'怪東西'),row('instance!/kubejs/assets/real/lang/en_us.json','奇怪的裝置'),
+              row('config/openloader/packs/x.zip!/assets/real/lang/en_us.json','第三種')]
+        self.assertEqual(jobs.unify_same_key(rows),2)
+        self.assertEqual({r['proposed'] for r in rows},{'奇怪的裝置'})  # the file the game reads first
+        rows=[row(self.MOD,'怪東西'),row('instance!/kubejs/assets/real/lang/en_us.json','我的譯法','manual',review_method='user_confirmed_in_ui'),
+              row('config/openloader/packs/x.zip!/assets/real/lang/en_us.json','另一個我的譯法','manual',review_method='user_confirmed_in_ui')]
+        self.assertEqual(jobs.unify_same_key(rows),1)  # the unconfirmed row follows; what the user wrote is never replaced
+        self.assertEqual([r['proposed'] for r in rows],['我的譯法','我的譯法','另一個我的譯法'])
 
 
 if __name__=='__main__':unittest.main()

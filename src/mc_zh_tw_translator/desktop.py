@@ -11,13 +11,13 @@ import time
 import zipfile
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QSettings, QLockFile, QSize
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QSettings, QLockFile, QSize, QRect, QPoint
 from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QColor, QPixmap, QPalette
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QLineEdit, QFileDialog, QStackedWidget, QProgressBar,
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QComboBox, QTextEdit, QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QCheckBox,
-    QScrollArea, QSizePolicy, QListView, QPlainTextEdit, QSystemTrayIcon, QStyledItemDelegate, QStyle)
+    QScrollArea, QSizePolicy, QListView, QPlainTextEdit, QSystemTrayIcon, QStyledItemDelegate, QStyle, QLayout)
 
 from . import desktop_jobs as jobs
 from . import updater
@@ -111,7 +111,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 '''
 
 # Table state colours reuse the four DESIGN.md status roles.
-STATE_ROLE={'已套用':'green','已套用・建議確認':'orange','待套用':'primary','已確認':'primary','待校對':'orange','比對中':'text60','待查':'text60','無需翻譯':'text40'}
+STATE_ROLE={'不需更動':'text40','已套用':'green','已套用・建議確認':'orange','待套用':'primary','已確認':'primary','待校對':'orange','比對中':'text60','待查':'text60','無需翻譯':'text40'}
 
 
 def stylesheet(theme):
@@ -272,7 +272,7 @@ class ReviewDialog(QDialog):
         box.addWidget(label(row['key'],'muted'))
         path=label(row['source'],'sub');path.setTextInteractionFlags(Qt.TextSelectableByMouse);box.addWidget(path)
         box.addWidget(label('原文'))
-        original=QTextEdit();original.setPlainText(row.get('en') or row.get('zh_cn') or row.get('current') or '')
+        original=QTextEdit();original.setPlainText(jobs.original_of(row))
         original.setReadOnly(True);original.setMaximumHeight(155);box.addWidget(original)
         box.addWidget(label('繁體中文譯文'))
         self.value=QTextEdit();self.value.setPlainText(row['proposed']);box.addWidget(self.value)
@@ -290,13 +290,43 @@ class ReviewDialog(QDialog):
         if not self.check.isChecked():
             QMessageBox.information(self,'請先校對','核對完成後，請勾選確認欄位。');return
         text=self.value.toPlainText()
-        original=self.row.get('en') or self.row.get('zh_cn') or self.row.get('current') or ''
+        original=jobs.original_of(self.row)
         if not jobs.validate_text(original,text):
             QMessageBox.warning(self,'格式不符','請保留原文的參數、格式碼及換行數量。');return
         if text!=self.row['proposed']:
             self.row['previous_origin']=self.row['origin'];self.row['origin']='manual'
         self.row.update(proposed=text,reviewed=True,changed=text!=self.row.get('current'),review_method='user_confirmed_in_ui')
         self.accept()
+
+
+class FlowLayout(QLayout):
+    """Widgets in a row that continues on the next line when the window is too narrow."""
+    def __init__(self,parent=None,spacing=8):
+        super().__init__(parent);self.items=[];self.setSpacing(spacing);self.setContentsMargins(0,0,0,0)
+    def addItem(self,item):self.items.append(item)
+    def count(self):return len(self.items)
+    def itemAt(self,index):return self.items[index] if 0<=index<len(self.items) else None
+    def takeAt(self,index):return self.items.pop(index) if 0<=index<len(self.items) else None
+    def expandingDirections(self):return Qt.Orientations()
+    def hasHeightForWidth(self):return True
+    def heightForWidth(self,width):return self.arrange(QRect(0,0,width,0),False)
+    def setGeometry(self,rect):
+        super().setGeometry(rect);self.arrange(rect,True)
+    def sizeHint(self):return self.minimumSize()
+    def minimumSize(self):
+        size=QSize()
+        for item in self.shown():size=size.expandedTo(item.minimumSize())
+        return size
+    def shown(self):return [i for i in self.items if not i.isEmpty()]
+    def arrange(self,rect,move):
+        x=rect.x();y=rect.y();line=0
+        for item in self.shown():
+            hint=item.sizeHint()
+            if x>rect.x() and x+hint.width()>rect.right()+1:
+                x=rect.x();y+=line+self.spacing();line=0
+            if move:item.setGeometry(QRect(QPoint(x,y),hint))
+            x+=hint.width()+self.spacing();line=max(line,hint.height())
+        return y+line-rect.y()
 
 
 class MainWindow(QMainWindow):
@@ -410,9 +440,14 @@ class MainWindow(QMainWindow):
         for widget in (self.progress,self.detail,self.elapsed,self.report_link,self.activity_head,self.activity):
             widget.setVisible(expanded)
 
+    def recent_instances(self):
+        """Folders used before. One saved folder is read back as text, not as a list of one."""
+        value=self.settings.value('recent_instances',[]) or []
+        if isinstance(value,str):value=[value]
+        return [p for p in value if isinstance(p,str) and len(p)>3 and Path(p).is_absolute()]
+
     def refresh_instances(self):
-        recent=[p for p in (self.settings.value('recent_instances',[]) or []) if p]
-        if isinstance(recent,str):recent=[recent]
+        recent=self.recent_instances()
         current=self.path.text()
         self.instance_box.blockSignals(True);self.instance_box.clear()
         for launcher,name,path in jobs.discover_instances(recent):
@@ -424,8 +459,7 @@ class MainWindow(QMainWindow):
         if path:self.path.setText(path)
 
     def remember_instance(self,path):
-        recent=[p for p in (self.settings.value('recent_instances',[]) or []) if p]
-        if isinstance(recent,str):recent=[recent]
+        recent=self.recent_instances()
         recent=[str(path)]+[p for p in recent if p.casefold()!=str(path).casefold()]
         self.settings.setValue('recent_instances',recent[:8]);self.refresh_instances()
 
@@ -446,26 +480,30 @@ class MainWindow(QMainWindow):
         self.sources_toggle=button('顯示譯文來源明細',self.toggle_sources);self.sources_toggle.setObjectName('link');b.addWidget(self.sources_toggle,alignment=Qt.AlignLeft)
         self.report_sources=label('','sub');self.report_sources.hide();b.addWidget(self.report_sources)
         self.report_errors=label('','warn');self.report_errors.hide();b.addWidget(self.report_errors);box.addWidget(f)
+        # Filters, table and buttons are one panel as tall as the window: many rows show at once and the
+        # buttons stay in view with them, instead of a short table above four rows of buttons.
+        self.list_panel=QWidget();outer=box;box=QVBoxLayout(self.list_panel);box.setContentsMargins(0,0,0,0);box.setSpacing(12)
+        outer.addWidget(self.list_panel,1)
         # Two groups: translated (split by how) and untranslated (split by why); each chip shows its count.
         self.chips={};self.chip_names={}
         groups=((None,(('all','全部'),)),
                 ('已翻譯',(('translated','全部已翻譯'),('review','建議確認'))+tuple((c,jobs.CATEGORY_NAMES[c]) for c in jobs.TRANSLATED_CATEGORIES)),
                 ('未翻譯',tuple((c,jobs.CATEGORY_NAMES[c]) for c in jobs.UNTRANSLATED_CATEGORIES)))
         for title,items in groups:
-            chips=QHBoxLayout();chips.setSpacing(6)
+            line=QHBoxLayout();line.setSpacing(6);chips=FlowLayout(spacing=6)
             if title:
-                head=label(title,'sub');head.setFixedWidth(52);chips.addWidget(head)
+                head=label(title,'sub');head.setFixedWidth(52);line.addWidget(head,0,Qt.AlignTop)
             for mode,text in items:
-                chip=button(text,lambda checked=False,m=mode:self.set_filter(m));chip.setObjectName('chip');chip.setCheckable(True)
+                chip=button(text,lambda checked=False,m=mode:self.pick_filter(m));chip.setObjectName('chip');chip.setCheckable(True)
                 chip.setChecked(mode==self.filter_mode);self.chips[mode]=chip;self.chip_names[mode]=text;chips.addWidget(chip)
-            chips.addStretch();box.addLayout(chips)
+            line.addLayout(chips,1);box.addLayout(line)
         self.search=QLineEdit();self.search.setPlaceholderText('搜尋模組、文字或語系鍵')
         # Reports hold ~180k rows; wait for a typing pause instead of refiltering per keystroke.
         self.search_timer=QTimer(self);self.search_timer.setSingleShot(True);self.search_timer.setInterval(300);self.search_timer.timeout.connect(self.reset_table)
         self.search.textChanged.connect(self.search_timer.start)
         box.addWidget(self.search)
         self.table=QTableWidget(0,4);self.table.setHorizontalHeaderLabels(['原文 / 語系鍵','建議譯文','來源','狀態'])
-        self.table.setMinimumHeight(260);self.table.setShowGrid(False);self.table.setWordWrap(False)
+        self.table.setMinimumHeight(220);self.table.setShowGrid(False);self.table.setWordWrap(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows);self.table.setSelectionMode(QAbstractItemView.ExtendedSelection);self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().hide();self.table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch);self.table.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch)
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft|Qt.AlignVCenter);self.table.horizontalHeader().setHighlightSections(False)
@@ -478,17 +516,18 @@ class MainWindow(QMainWindow):
         self.page_size.setCurrentIndex(max(0,self.page_size.findData(saved)))
         self.page_size.currentIndexChanged.connect(lambda *_:(self.settings.setValue('page_size',self.page_size.currentData()),self.reset_table()))
         nav.addWidget(self.prev);nav.addWidget(self.next);nav.addWidget(self.page_label);nav.addStretch();nav.addWidget(self.page_size);box.addLayout(nav)
-        actions=QHBoxLayout();self.review_btn=button('查看並校對',self.review_current);self.apply_btn=button('備份並套用譯文',self.apply_job,True)
+        self.review_btn=button('查看並校對',self.review_current);self.apply_btn=button('備份並套用譯文',self.apply_job,True)
         self.ai_run_btn=button('AI 補翻缺漏',self.ai_supplement);self.ai_check_btn=button('AI 核對疑點',self.ai_review)
-        actions.addWidget(self.review_btn);actions.addStretch();actions.addWidget(self.apply_btn);box.addLayout(actions)
-        # One short row per kind of action, so a narrow window never has to cut a button off.
-        helpers=QHBoxLayout();helpers.addWidget(self.ai_run_btn);helpers.addWidget(self.ai_check_btn);helpers.addStretch();box.addLayout(helpers)
         # Confirming many rows at once: what is listed now (after filters and search), and a way back.
-        confirm=QHBoxLayout();self.confirm_all_btn=button('確認目前列出的全部',self.confirm_listed)
+        self.confirm_all_btn=button('確認目前列出的全部',self.confirm_listed)
         self.confirm_all_btn.setToolTip('把目前列出的譯文記成「你確認的」。之後翻譯任何整合包，同一個模組的同一句會優先用它。')
         self.undo_confirm_btn=button('取消上次整批確認',self.undo_confirm_listed);self.undo_confirm_btn.setObjectName('link')
-        confirm.addWidget(self.confirm_all_btn);confirm.addWidget(self.undo_confirm_btn);confirm.addStretch();box.addLayout(confirm)
-        box.addWidget(label('「一鍵完整翻譯並套用」已直接套用所有通過檢查的譯文。「建議確認」只列 AI 補譯、版本不同的參考譯文和自動統一的譯名，雙擊可修正；按「確認這筆」後會記住，下次翻譯自動使用。','sub'))
+        # One bar: what to do with the listed rows on the left, writing to the game on the right. The left
+        # side wraps onto a second line in a narrow window, so no button is ever cut off.
+        actions=QHBoxLayout();actions.setSpacing(12);tools=FlowLayout(spacing=8)
+        for b in (self.review_btn,self.confirm_all_btn,self.ai_run_btn,self.ai_check_btn,self.undo_confirm_btn):tools.addWidget(b)
+        actions.addLayout(tools,1);actions.addWidget(self.apply_btn,0,Qt.AlignTop|Qt.AlignRight);box.addLayout(actions)
+        box.addWidget(label('雙擊一列可以修正譯文；按「確認這筆」後會記住，下次翻譯自動使用。「建議確認」只列 AI 補譯、版本待確認的參考譯文、數值和原文不同的譯文與自動統一的譯名。','sub'))
 
     def make_backups(self):
         box=self.page('備份與還原','每次套用都保留原檔。還原前會檢查後續修改，避免蓋掉你的檔案。')
@@ -517,15 +556,16 @@ class MainWindow(QMainWindow):
     def navigate(self,index):
         self.pages.setCurrentIndex(index)
         for i,b in enumerate(self.navs):b.setChecked(i==index)
-        if index==1:self.fill_table()
+        if index==1:self.fit_list();self.fill_table()
         if index==2:self.refresh_backups()
         if index==5:self.refresh_terms()
         if index==6 and self.catalog is None:self.refresh_catalog()
         elif index==6:self.mark_catalog_seen()
 
     def make_shared(self):
-        box=self.page('已翻譯整合包','已經翻好的整合包，選一個按「安裝翻譯」就完成。只含翻譯文字，不含模組檔；安裝前會先備份。')
+        box=self.page('已翻譯整合包','已經翻好的整合包，按一個按鈕就裝好。整合包和翻譯者加裝的模組都從 CurseForge 官方下載，這裡只提供翻譯文字；安裝前會先備份。')
         head=QHBoxLayout();self.patch_status=label('','sub');head.addWidget(self.patch_status,1)
+        self.patch_cancel=button('停止等待',self.cancel_install);self.patch_cancel.hide();head.addWidget(self.patch_cancel,0,Qt.AlignTop)
         self.catalog_refresh=button('重新整理',self.refresh_catalog);head.addWidget(self.catalog_refresh,0,Qt.AlignTop);box.addLayout(head)
         self.catalog_box=QVBoxLayout();self.catalog_box.setSpacing(12);box.addLayout(self.catalog_box)
         box.addStretch()
@@ -591,11 +631,11 @@ class MainWindow(QMainWindow):
                 'other_version':('整合包版本不同','todo'),'not_installed':('未安裝整合包','todo')}
         notes={'update':'你安裝後這份翻譯又更新了。',
                'other_version':'你的整合包版本和這份翻譯不同，只會翻譯相同的模組；建議先在 CurseForge 更新整合包。',
-               'not_installed':'你的電腦還沒有這個整合包，先用 CurseForge 安裝，裝好後回來按「重新整理」。'}
+               'not_installed':'你的電腦還沒有這個整合包。按下面的按鈕，CurseForge 會下載整合包，裝好後這裡自動裝上翻譯並把語言設成繁體中文。'}
         actions={'update':[('更新翻譯',True,self.apply_catalog_patch)],'exact':[('安裝翻譯',True,self.apply_catalog_patch)],
                  'applied':[('重新安裝',False,self.apply_catalog_patch)],
                  'other_version':[('仍要安裝',False,self.apply_catalog_patch),('用 CurseForge 更新整合包',False,self.install_with_curseforge)],
-                 'not_installed':[('用 CurseForge 安裝整合包',True,self.install_with_curseforge)]}
+                 'not_installed':[('安裝整合包與翻譯',True,self.install_pack_and_translation)]}
         for pack in self.catalog:
             f,b=card();top=QHBoxLayout();name=label(pack['name'],'section');name.setWordWrap(True);top.addWidget(name,1)
             if pack.get('new'):
@@ -609,7 +649,10 @@ class MainWindow(QMainWindow):
             b.addWidget(label(modpack,'muted'));b.addWidget(label(translation,'sub'))
             newer=(f"整合包已有新版本 {pack['newest_version']} 的翻譯，在 CurseForge 更新整合包後即可安裝。"
                    if pack['status'] in ('exact','applied','update') and not pack['latest'] else '')
-            for text in (pack['notes'],notes.get(pack['status'],''),newer):
+            extra=pack.get('addedMods') or []
+            added=(f"翻譯者另外加裝了 {len(extra)} 個模組：" +'、'.join(m['name'] for m in extra[:8])+('…' if len(extra)>8 else '')
+                   +'。安裝時可以選擇要不要一起加入。') if extra else ''
+            for text in (pack['notes'],added,notes.get(pack['status'],''),newer):
                 if text:b.addWidget(label(text,'sub'))
             row=QHBoxLayout()
             for text,primary,fn in actions[pack['status']]:
@@ -629,31 +672,78 @@ class MainWindow(QMainWindow):
         name,ok=QInputDialog.getItem(self,title,'要安裝到哪個整合包？',[n for n,_ in options],0,False)
         return dict(options).get(name) if ok else None
 
-    def confirm_patch(self,target,name,other_version):
+    def ask_install(self,title,text,pack):
+        """Ask before installing. Returns None (do nothing), True (also add the translator's mods) or False."""
+        mods=pack.get('addedMods') or []
+        if not mods:return False if QMessageBox.question(self,title,text+'\n\n是否繼續？')==QMessageBox.Yes else None
+        names='、'.join(m['name'] for m in mods[:12])+('…' if len(mods)>12 else '')
+        box=QMessageBox(self);box.setIcon(QMessageBox.Question);box.setWindowTitle(title)
+        box.setText(text+f"\n\n翻譯者另外加裝了 {len(mods)} 個模組（共 {sum(m['size'] for m in mods)/1024/1024:.1f} MB）：{names}\n"
+                    '選擇加入時，本程式從 CurseForge 的官方檔案伺服器下載，確認和翻譯者用的是同一個檔案才放進模組資料夾；'
+                    '之後可在「備份與還原」移除。不加入的話，這些模組的翻譯會略過。')
+        both=box.addButton('加入模組並安裝翻譯',QMessageBox.AcceptRole);only=box.addButton('只安裝翻譯',QMessageBox.ActionRole)
+        box.addButton('取消',QMessageBox.RejectRole);box.setDefaultButton(both)
+        box.exec()
+        return True if box.clickedButton() is both else False if box.clickedButton() is only else None
+
+    def confirm_patch(self,target,pack,other_version):
         warn='\n\n整合包版本和翻譯時不同：只會翻譯檔案完全相同的模組，其餘略過（不會覆蓋）。' if other_version else ''
         language='，並把遊戲語言設為繁體中文' if self.set_language.isChecked() else ''
-        return QMessageBox.question(self,'安裝翻譯',f'將把「{name}」的翻譯安裝到{language}：\n{target}\n\n會先備份要修改的原檔，之後可在「備份與還原」復原。請先關閉這個整合包的遊戲。{warn}\n\n是否繼續？')==QMessageBox.Yes
+        return self.ask_install('安裝翻譯',f"將把「{pack['name']}」的翻譯安裝到{language}：\n{target}\n\n會先備份要修改的原檔，之後可在「備份與還原」復原。請先關閉這個整合包的遊戲。{warn}",pack)
 
     def apply_catalog_patch(self,pack):
         target=self.choose_patch_target(pack['projectID'],pack['fileID'],'安裝翻譯')
         if not target:return
         identity=patches.instance_identity(Path(target))
-        if not self.confirm_patch(target,pack['name'],identity['fileID']!=pack['fileID']):return
+        add=self.confirm_patch(target,pack,identity['fileID']!=pack['fileID'])
+        if add is None:return
         language=self.set_language.isChecked()
         def operation(w):
             path=patches.download_patch(pack,self.home,lambda v:w.progress.emit(v,'下載翻譯',pack['name']))
-            return patches.apply_patch(Path(target),path,self.home,w.progress.emit,set_language=language)
+            return dict(patches.apply_patch(Path(target),path,self.home,w.progress.emit,set_language=language,add_mods=add,cancelled=lambda:w.cancelled),
+                        notes=pack.get('notes',''))
         self.run_worker('patch_apply',operation,self.patch_applied)
+
+    def install_pack_and_translation(self,pack):
+        """One button for someone who has nothing yet: CurseForge installs the modpack, then the translation goes on."""
+        if self.busy or not pack['projectID']:return
+        add=self.ask_install('安裝整合包與翻譯',f"將安裝「{pack['name']}」整合包版本 {pack['version'] or ''}，並裝上繁體中文翻譯。\n\n"
+                             '1. CurseForge 會跳出來，請在它的視窗確認安裝（整合包由 CurseForge 從官方下載）。\n'
+                             '2. 這裡會等整合包裝好，不用回來按任何按鈕。\n'
+                             '3. 裝好後自動裝上翻譯，並把遊戲語言設成繁體中文。\n\n'
+                             '下載整合包可能需要幾分鐘到幾十分鐘，請不要關閉本程式。',pack)
+        if add is None:return
+        if not QDesktopServices.openUrl(QUrl(patches.curseforge_install_url(pack))):
+            QMessageBox.warning(self,'找不到 CurseForge','這台電腦沒有安裝 CurseForge，或它沒有接手安裝。請先安裝 CurseForge 並開啟一次，再回來按這個按鈕。');return
+        def operation(w):
+            path=patches.download_patch(pack,self.home,lambda v:w.progress.emit(v,'下載翻譯',pack['name']))
+            z,manifest=patches.read_patch(path);z.close()
+            instance=patches.wait_for_modpack(pack,manifest,w.progress.emit,lambda:w.cancelled)
+            result=patches.apply_patch(instance,path,self.home,w.progress.emit,set_language=True,add_mods=add,cancelled=lambda:w.cancelled)
+            return dict(result,installed_modpack=True,notes=pack.get('notes',''))
+        self.run_worker('patch_install',operation,self.patch_applied)
+
+    def cancel_install(self):
+        if self.worker and self.mode in ('patch_install','patch_apply'):
+            self.worker.cancelled=True;self.patch_cancel.setEnabled(False);self.patch_status.setText('正在停止…')
 
     def patch_applied(self,result):
         self.refresh_backups();self.refresh_catalog();self.check_outdated()
         lines=[f"已翻譯 {len(result['applied']):,} 個檔案。" if result['applied'] else '沒有需要更新的檔案。']
+        if result.get('installed_modpack'):lines.insert(0,'整合包已由 CurseForge 裝好：'+Path(result['instance']).name)
+        mods=result.get('mods') or {}
+        if mods.get('installed'):lines.append(f"已加入翻譯者加裝的 {len(mods['installed'])} 個模組："+'、'.join(mods['installed'][:8])+('…' if len(mods['installed'])>8 else ''))
+        if mods.get('skipped'):
+            lines.append(f"{len(mods['skipped'])} 個加裝的模組沒有加入：")
+            lines+=['・'+s['name']+'：'+s['reason']+('（'+s['page']+'）' if s.get('page') else '') for s in mods['skipped'][:8]]
+        if result.get('mods_offered'):lines.append(f"沒有加入翻譯者加裝的 {len(result['mods_offered'])} 個模組，它們的翻譯已略過。")
         if result['already']:lines.append(f"{len(result['already']):,} 個檔案先前已翻譯。")
         if result['skipped']:
             lines.append(f"略過 {len(result['skipped']):,} 個和翻譯時版本不同的檔案（未修改）：")
             lines+=['・'+s['file'] for s in result['skipped'][:8]]+(['…'] if len(result['skipped'])>8 else [])
         if result['backup']:lines.append('原檔已備份，可在「備份與還原」復原。')
         lines.append('遊戲語言已設為繁體中文（台灣）。' if result['language_set'] else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
+        if result.get('notes'):lines+=['','翻譯者的說明：',result['notes']]
         self.patch_status.setText('');self.notify_finished('翻譯已安裝',lines[0])
         QMessageBox.information(self,'翻譯已安裝','\n'.join(lines))
 
@@ -985,7 +1075,7 @@ class MainWindow(QMainWindow):
     def confirmable(self,row):
         return bool(row.get('supported') and row.get('kind')=='language' and row.get('origin') not in ('untranslated','keep_original','not_display','pending')
                     and not str(row.get('review_method') or '').startswith('user_confirmed') and row_module(row)
-                    and jobs.usable(row.get('en') or row.get('zh_cn') or row.get('current') or '',row.get('proposed')))
+                    and jobs.usable(jobs.original_of(row),row.get('proposed')))
 
     def confirm_listed(self):
         if self.busy or not self.session or self.session.get('is_preview'):return
@@ -999,7 +1089,7 @@ class MainWindow(QMainWindow):
                                 '確認錯了可以按「取消上次整批確認」。'+wide)!=QMessageBox.Yes:return
         batch=Path(self.session['report']).name+'-'+time.strftime('%H%M%S')
         jobs.TranslationMemory(self.home).remember_many(
-            [(row_module(r),r['key'],r.get('en') or r.get('zh_cn') or r.get('current') or '',r['proposed'],r['source']) for r in rows],batch)
+            [(row_module(r),r['key'],jobs.original_of(r),r['proposed'],r['source']) for r in rows],batch)
         for r in rows:r.update(reviewed=True,review_method='user_confirmed_batch',confirmed_batch=batch)
         self.settings.setValue('last_confirm_batch',batch)
         jobs.write_json(Path(self.session['report'])/'session.json',self.session);self.fill_table()
@@ -1036,6 +1126,8 @@ class MainWindow(QMainWindow):
         self.started_at=self.last_activity=time.monotonic()
         for b in (self.ai_check_btn,self.confirm_all_btn,self.undo_confirm_btn,self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai,*self.pack_buttons):b.setEnabled(False)
         if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
+        self.patch_cancel.setVisible(mode in ('patch_install','patch_apply'));self.patch_cancel.setEnabled(True)
+        self.patch_cancel.setText('停止等待' if mode=='patch_install' else '停止')
         self.history.setEnabled(False);self.cancel.setEnabled(mode in ('plan','full_translate','ai_translate','ai_login','ai_install'));self.ai_stop_btn.setEnabled(mode in ('ai_translate','ai_login','ai_install'))
         self.worker=Worker(operation)
         self.worker.progress.connect(self.on_progress)
@@ -1053,7 +1145,7 @@ class MainWindow(QMainWindow):
         for b in (self.confirm_all_btn,self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,*self.pack_buttons):b.setEnabled(True)
         self.history.setEnabled(True);self.cancel.setEnabled(False);self.ai_stop_btn.setEnabled(False)
         self.install_btn.setEnabled(bool(self.update_info and self.update_info.get('status')=='available'))
-        self.ai_progress.hide();self.update_ai_controls();self.update_ai_button()
+        self.ai_progress.hide();self.patch_cancel.hide();self.update_ai_controls();self.update_ai_button()
 
     def on_progress(self,value,title,detail):
         self.last_activity=time.monotonic()
@@ -1064,12 +1156,7 @@ class MainWindow(QMainWindow):
             return
         if self.mode.startswith('patch_'):
             self.patch_status.setText(f'{title}：{detail}（{value}%）' if detail else title);return
-        if self.mode=='full_translate':
-            # Overall stages never show 100% at the end of source matching.
-            if title=='來源整理完成':value=65
-            elif title.startswith('AI'):value=65+int(value*.10)
-            elif title in ('驗證並準備套用','備份與套用','重新掃描實際遊戲資料','已套用已校對的文字'):value=75+int(value*.25)
-            else:value=int(value*.65)
+        # One-click reports progress for the whole job itself (see jobs.full_translation).
         if title in ('更新參考庫','AI 補翻中'):self.progress.setRange(0,0)
         else:self.progress.setRange(0,100)
         self.progress.setValue(value);self.step.setText(title);self.detail.setText(detail);set_pill(self.status,'處理中','progress')
@@ -1112,7 +1199,7 @@ class MainWindow(QMainWindow):
                 fresh.append(row)
                 self.preview_seen.add(key)
         for row in fresh[-5:]:
-            self.append_activity(f"{jobs.SOURCE_NAMES.get(row['origin'],row['origin'])} · {(row.get('en') or row.get('zh_cn') or row['key'])[:65]} → {row['proposed'][:80]}（尚未套用）")
+            self.append_activity(f"{jobs.SOURCE_NAMES.get(row['origin'],row['origin'])} · {(jobs.original_of(row) or row['key'])[:65]} → {row['proposed'][:80]}（尚未套用）")
         if len(fresh)>5:self.append_activity(f'另有 {len(fresh)-5:,} 筆譯文，完整內容請看翻譯報告。')
         self.update_stats();self.refresh_history();self.fill_table()
 
@@ -1194,7 +1281,8 @@ class MainWindow(QMainWindow):
         usable=self.ai_connected_now() and not (self.ai_info or {}).get('warning')
         model=self.ai_models.currentData() if usable and self.use_ai.isChecked() else None
         if model:
-            ai_line=('參考來源缺漏的文字會交給模型「'+model['model']+'」補翻，數值或版本有疑點的譯文也會請它對照英文核對；'
+            ai_line=('參考來源能翻的會先寫入遊戲（通常幾分鐘）。之後缺漏的文字交給模型「'+model['model']+'」補翻，'
+                     '數值或版本有疑點的譯文也會請它對照英文核對；AI 比較慢，做完再寫入第二次。'
                      '消耗你原本 ChatGPT 的 Codex 額度。\n'+ai.PRIVACY)
         elif self.use_ai.isChecked() and self.ai_connected_now():
             ai_line='AI 目前無法使用（'+((self.ai_info or {}).get('warning') or '尚未選擇模型')+'），這次只使用參考來源；缺漏會留在報告。'
@@ -1217,14 +1305,23 @@ class MainWindow(QMainWindow):
         if result.get('ai_review_message'):self.ai_status.setText(result['ai_review_message'])
         applied=result.get('installed_count',0)
         leftovers=sum(r.get('origin')=='untranslated' and bool(r.get('supported')) for r in result.get('rows',[]))
-        self.notify_finished('翻譯完成' if result['status']=='installed' else '翻譯已停止，需要處理',
-                             f'已套用 {applied:,} 筆，仍待處理 {leftovers:,} 筆。' if result['status']=='installed' else (result.get('apply_error') or '請查看翻譯報告。'))
+        if self.nothing_new(result):self.notify_finished('翻譯完成','先前套用的翻譯都還在，這次沒有新的內容要寫入。')
+        else:self.notify_finished('翻譯完成' if result['status']=='installed' else '翻譯已停止，需要處理',
+                                  f'已套用 {applied:,} 筆，仍待處理 {leftovers:,} 筆。' if result['status']=='installed' else (result.get('apply_error') or '請查看翻譯報告。'))
         if result['status']=='installed':
-            notes='\n'.join(self.applied_notes(result))
+            notes='\n'.join(self.applied_notes(result));waiting=self.unapplied_count()
+            if waiting:notes=f'另有 {waiting:,} 筆已翻好但還沒寫入，可在報告頁按「備份並套用譯文」。'+('\n'+notes if notes else '')
             QMessageBox.information(self,'本次處理完成',f'已套用 {applied:,} 筆。\n仍待處理 {leftovers:,} 筆，請查看報告。'+('\n\n'+notes if notes else '')
                                     +'\n\n重新啟動遊戲後生效。')
         elif result['status']=='awaiting_game':
             QMessageBox.information(self,'譯文已保存，等待套用',result['apply_error'])
+        elif self.nothing_new(result):
+            QMessageBox.information(self,'沒有需要寫入的內容',f"這個模組包先前套用的 {result['recovered_count']:,} 筆翻譯都還在，這次沒有新的內容要寫入。\n仍待處理 {leftovers:,} 筆，請查看報告。")
+
+    def nothing_new(self,session):
+        """A modpack translated before and unchanged since: everything is still applied, nothing waits."""
+        return bool(session.get('status')=='needs_review' and session.get('recovered_count') and not session.get('is_preview')
+                    and not jobs.applicable_count(session))
 
     def cancel_job(self):
         if self.worker and self.mode in ('plan','full_translate','ai_translate','ai_login','ai_install'):
@@ -1279,8 +1376,24 @@ class MainWindow(QMainWindow):
         for name,chip in self.chips.items():chip.setChecked(name==mode)
         self.reset_table()
 
-    def reset_table(self,*_):self.page_index=0;self.fill_table()
-    def turn_page(self,direction):self.page_index=max(0,self.page_index+direction);self.fill_table()
+    def pick_filter(self,mode):
+        """A filter the user clicked: also bring the whole list into view."""
+        self.set_filter(mode);self.fit_list()
+        QTimer.singleShot(0,self.show_list)  # after the page has taken its new height
+
+    def show_list(self):
+        area=self.pages.widget(1);area.widget().layout().activate()
+        area.verticalScrollBar().setValue(max(0,self.list_panel.y()-8))
+
+    def fit_list(self):
+        """Filters, table and buttons together are as tall as the window shows."""
+        if hasattr(self,'list_panel'):self.list_panel.setMinimumHeight(max(420,self.pages.widget(1).viewport().height()-16))
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self.fit_list()
+
+    def reset_table(self,*_):self.page_index=0;self.show_rows()
+    def turn_page(self,direction):self.page_index=max(0,self.page_index+direction);self.show_rows()
 
     def use_session(self,session):
         """Adopt a saved report; older reports get the current no-translation rules."""
@@ -1298,39 +1411,54 @@ class MainWindow(QMainWindow):
         doubts=len(ai.doubt_rows(self.session)) if self.session and not self.session.get('is_preview') else 0
         self.ai_check_btn.setText(f'AI 核對疑點（{doubts:,} 筆）' if doubts else 'AI 核對疑點')
         self.ai_check_btn.setEnabled(bool(doubts) and not self.busy)
-        listed=sum(self.confirmable(r) for r in getattr(self,'listed_rows',[])) if self.session and not self.session.get('is_preview') else 0
+        listed=getattr(self,'listed_confirmable',0) if self.session and not self.session.get('is_preview') else 0
         self.confirm_all_btn.setText(f'確認目前列出的全部（{listed:,} 筆）' if listed else '確認目前列出的全部')
         self.confirm_all_btn.setEnabled(bool(listed) and not self.busy)
         self.undo_confirm_btn.setVisible(bool(self.settings.value('last_confirm_batch','')));self.undo_confirm_btn.setEnabled(not self.busy)
 
     def fill_table(self):
+        """The whole report page, after the report itself changed."""
         if not self.session:
-            self.table.setRowCount(0);return
-        rows=self.session['rows'];mode=self.filter_mode;query=self.search.text().strip().casefold()
-        size=int(self.page_size.currentData() or 100)
-        categories=[jobs.row_category(r) for r in rows]
-        counts=collections.Counter(categories);counts['all']=len(rows)
+            self.facts=None;self.table.setRowCount(0);return
+        rows=self.session['rows'];preview=self.session.get('is_preview')
+        # Each row is judged once per change of the report; filtering, searching and paging through
+        # some 100,000 rows then only read these lists.
+        self.facts=dict(rows=rows,count=len(rows),category=[jobs.row_category(r) for r in rows],check=[jobs.needs_check(r) for r in rows],
+                        confirmable=[not preview and self.confirmable(r) for r in rows])
+        counts=collections.Counter(self.facts['category']);counts['all']=len(rows)
         counts['translated']=sum(counts[c] for c in jobs.TRANSLATED_CATEGORIES)
-        counts['review']=sum(jobs.needs_check(r) for r in rows)
-        for chip_mode,chip in self.chips.items():  # not 'mode': that is the active filter used below
+        counts['review']=sum(self.facts['check'])
+        for chip_mode,chip in self.chips.items():
             chip.setText(f"{self.chip_names[chip_mode]} {counts[chip_mode]:,}")
             chip.setVisible(chip_mode in ('all','translated','review','missing') or counts[chip_mode]>0)
-        def match(r,category):
-            if query and query not in (r['source']+' '+r['key']+' '+str(r.get('en') or r.get('current') or '')+' '+r['proposed']).casefold():return False
-            if mode=='all':return True
-            if mode=='review':return jobs.needs_check(r)
-            if mode=='translated':return category in jobs.TRANSLATED_CATEGORIES
-            return category==mode
-        filtered=[r for r,c in zip(rows,categories) if match(r,c)];pages=max(1,(len(filtered)+size-1)//size)
-        self.listed_rows=filtered
+        self.show_rows()
+        self.fill_summary()
+
+    def show_rows(self):
+        """The rows of the current filter, search and page."""
+        facts=getattr(self,'facts',None)
+        if not self.session:return self.fill_table()
+        rows=self.session['rows']
+        if not facts or facts['rows'] is not rows or facts['count']!=len(rows):return self.fill_table()
+        mode=self.filter_mode;query=self.search.text().strip().casefold()
+        size=int(self.page_size.currentData() or 100)
+        def match(i,r):
+            if mode=='review' and not facts['check'][i]:return False
+            if mode=='translated' and facts['category'][i] not in jobs.TRANSLATED_CATEGORIES:return False
+            if mode not in ('all','review','translated') and facts['category'][i]!=mode:return False
+            return not query or query in (r['source']+' '+r['key']+' '+str(jobs.original_of(r))+' '+str(r.get('zh_cn') or '')+' '+r['proposed']).casefold()
+        listed=[i for i,r in enumerate(rows) if match(i,r)];pages=max(1,(len(listed)+size-1)//size)
+        filtered=[rows[i] for i in listed]
+        self.listed_rows=filtered;self.listed_confirmable=sum(facts['confirmable'][i] for i in listed)
         self.page_index=min(self.page_index,pages-1)
         self.visible_rows=filtered[self.page_index*size:(self.page_index+1)*size]
         tokens=THEMES['dark' if self.dark_theme else 'light']
         self.table.setUpdatesEnabled(False);self.table.setRowCount(len(self.visible_rows))
         for i,r in enumerate(self.visible_rows):
             state=(('已套用・建議確認' if jobs.needs_check(r) else '已套用') if r.get('installed') else '待套用' if r.get('review_method')=='auto_validated_one_click' else '已確認' if r['reviewed']
-                   else '無需翻譯' if r['origin'] in ('keep_original','not_display') else '比對中' if r['origin']=='pending' else '待校對' if r['supported'] and r['changed'] else '待查')
-            original=r.get('en') or r.get('zh_cn') or r.get('current') or r['key']
+                   else '無需翻譯' if r['origin'] in ('keep_original','not_display') else '比對中' if r['origin']=='pending' else '待校對' if r['supported'] and r['changed']
+                   else '不需更動' if r['supported'] and r['origin']!='untranslated' else '待查')
+            original=jobs.original_of(r) or r['key']
             for j,text in enumerate((original,r['proposed'],jobs.SOURCE_NAMES.get(r['origin'],r['origin']),'● '+state)):
                 item=QTableWidgetItem(str(text).replace('\n',' ')[:130])
                 if j==0:
@@ -1340,7 +1468,10 @@ class MainWindow(QMainWindow):
                     seen={'ok':'AI 已對照英文核對：無誤','fixed':'AI 核對後改寫','rejected':'AI 核對：'+str(checked.get('note') or ''),
                           'skipped':'AI 未核對：'+str(checked.get('note') or '')}.get(checked.get('verdict'),'')
                     mine='你已確認' if str(r.get('review_method') or '').startswith('user_confirmed') else ''
-                    item.setToolTip('\n'.join(x for x in (shown and '模組：'+shown,r['key'],r['source'],r.get('issue') or '',seen,mine) if x))
+                    # A file that holds only Chinese is shown with the installed mod's English; its own text is kept here.
+                    own='這個檔案裡的中文：'+str(r.get('zh_cn')) if r.get('en_ref') and r.get('zh_cn') else ''
+                    same='和「'+r['same_key_as'].split('!/')[0].split('/')[-1]+'」裡的同一句用同一個譯文' if r.get('same_key_as') else ''
+                    item.setToolTip('\n'.join(x for x in (shown and '模組：'+shown,r['key'],r['source'],own,r.get('issue') or '',same,seen,mine) if x))
                 else:item.setToolTip(str(text))
                 if j==0:item.setData(MODULE_ROLE,jobs.module_label(self.session.get('instance'),r))
                 if j==3:
@@ -1348,9 +1479,12 @@ class MainWindow(QMainWindow):
                     font=item.font();font.setBold(True);item.setFont(font)
                 self.table.setItem(i,j,item)
             self.table.setRowHeight(i,50)
-        self.table.setUpdatesEnabled(True)
+        self.table.setUpdatesEnabled(True);self.table.scrollToTop()
         self.page_label.setText(f'共 {len(filtered):,} 筆 · 第 {self.page_index+1} / {pages} 頁')
         self.prev.setEnabled(self.page_index>0);self.next.setEnabled(self.page_index+1<pages)
+        self.update_ai_button()
+
+    def fill_summary(self):
         counts=self.session.get('source_counts',{})
         # Gaps are counted once, in the line above; the source line lists where translations came from.
         self.report_sources.setText('譯文來源：'+'　'.join(f'{jobs.SOURCE_NAMES.get(k,k)} {v:,}' for k,v in sorted(counts.items(),key=lambda kv:-kv[1]) if k!='untranslated'))
@@ -1360,8 +1494,9 @@ class MainWindow(QMainWindow):
         badges={'installed':('已套用','done'),'blocked':('需要處理','blocked'),'apply_failed':('套用未完成','blocked'),'awaiting_game':('等待關閉遊戲','progress'),
                 'cancelled':('已停止','todo'),'restored':('已還原','todo'),'scanning':('處理中','progress'),'references':('處理中','progress'),'matching':('處理中','progress')}
         partial=self.session['status']=='installed' and self.unapplied_count()
-        set_pill(self.report_state,*(('部分套用','progress') if partial else badges.get(self.session['status'],('待套用','todo'))))
-        message=stages.get(self.session['status'],'本次已產生的譯文與待處理項目如下。')
+        kept=self.nothing_new(self.session)
+        set_pill(self.report_state,*(('部分套用','progress') if partial else ('已套用','done') if kept else badges.get(self.session['status'],('待套用','todo'))))
+        message='先前套用的翻譯都還在，這次沒有新的內容要寫入。' if kept else stages.get(self.session['status'],'本次已產生的譯文與待處理項目如下。')
         pending=self.unapplied_count()
         if pending and self.session['status'] in ('needs_review','ready_to_apply','installed'):
             # Reports from older versions could stop after confirming without writing anything.
@@ -1375,7 +1510,6 @@ class MainWindow(QMainWindow):
         problems+=[Path(str(r[0])).name+'：原本的 zh_tw.json 格式錯誤（遊戲也讀不到），已依英文與簡中重建' for r in self.session.get('repairs',[])]
         self.report_errors.setVisible(bool(problems))
         self.report_errors.setText('需要留意：\n'+'\n'.join('• '+p for p in problems[:5])+(f'\n另有 {len(problems)-5} 項，詳見報告資料夾。' if len(problems)>5 else ''))
-        self.update_ai_button()
 
     def toggle_sources(self):
         show=not self.report_sources.isVisible();self.report_sources.setVisible(show)
@@ -1391,7 +1525,7 @@ class MainWindow(QMainWindow):
         detail.setText('、'.join(f'{k} {n:,}' for k,n in o['check_kinds'])+'\n按上方「建議確認」查看' if o['check'] else '沒有需要確認的翻譯')
         value,detail=self.overview['backup']
         if o['backup']:value.setText('已備份');detail.setText(stamp_text(Path(o['backup']).name)+'\n可在「備份與還原」復原')
-        else:value.setText('—');detail.setText('還沒有套用，所以沒有備份')
+        else:value.setText('—');detail.setText('這次沒有寫入；先前的備份在「備份與還原」' if o['recovered'] else '還沒有套用，所以沒有備份')
         notes=[]
         if o['rechecked']:notes.append('套用後已重新掃描整合包確認寫入')
         if o['context']:notes.append(f"另有 {o['context']:,} 筆程式或設定裡的文字，需確認是否顯示在遊戲中（見「待查程式與設定」）")
@@ -1408,7 +1542,7 @@ class MainWindow(QMainWindow):
         row=self.visible_rows[index];dialog=ReviewDialog(row,self)
         if dialog.exec()==QDialog.Accepted:
             # Only rows the user confirmed here become translation memory for later modpacks.
-            original=row.get('en') or row.get('zh_cn') or row.get('current') or ''
+            original=jobs.original_of(row)
             if row.get('kind')=='language' and row_module(row) and original:
                 jobs.TranslationMemory(self.home).remember(row_module(row),row['key'],original,row['proposed'],row['source'])
             jobs.write_json(Path(self.session['report'])/'session.json',self.session);self.fill_table()
@@ -1425,7 +1559,7 @@ class MainWindow(QMainWindow):
         self.session['set_language']=self.set_language.isChecked()
         def operation(w):
             w.progress.emit(0,'整理譯文',f'統一譯名並確認 {count:,} 筆譯文，套用前不會修改任何檔案')
-            jobs.unify_suggested_terms(self.session);jobs.auto_confirm_safe(self.session)
+            jobs.prepare_to_apply(self.session)
             return jobs.apply_session(self.session,self.home,w.progress.emit)
         # Make the start page describe this job right away: which modpack, how many rows, what is happening.
         self.path.setText(self.session['instance'])

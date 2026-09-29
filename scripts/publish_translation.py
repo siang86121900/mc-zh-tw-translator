@@ -52,6 +52,9 @@ def main():
     z, manifest = read_patch(args.patch)
     z.close()
     pack = manifest['modpack']
+    # Mods the owner added through CurseForge: named in the catalog, downloaded by each player from CurseForge.
+    for mod in manifest['added_mods']:print('加裝的模組：', mod['name'], mod['fileName'], f"{mod['size']:,} bytes", '' if mod['url'] else '（作者只開放由 CurseForge 安裝，對方需自行加裝）')
+    for left in manifest.get('left_out_mods') or []:print('不分享的模組：', left.get('name'), left.get('reason'))
     if not pack.get('projectID') or not pack.get('fileID'):
         sys.exit('這個補丁不是從 CurseForge 整合包匯出的，無法對應版本，請改用檔案分享。')
     data = args.patch.read_bytes()
@@ -84,6 +87,7 @@ def main():
                                        revision=max([int(p.get('revision') or 1) for p in replaced] or [0])+1,
                                        gameVersion=pack.get('gameVersion', ''),
                                        translator=args.translator, updated=date.today().isoformat(), notes=args.notes,
+                                       addedMods=[dict(name=m['name'], size=m['size']) for m in manifest['added_mods']],
                                        url=RAW+relative, sha256=digest, size=len(data)))
             index['packs'].sort(key=lambda p: (p['name'].casefold(), p['updated']))
             (work/relative).parent.mkdir(parents=True, exist_ok=True)

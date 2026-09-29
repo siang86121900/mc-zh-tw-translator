@@ -36,20 +36,24 @@ class WorkflowTests(unittest.TestCase):
         (self.instance/'mods').mkdir()
         import io
         nested=io.BytesIO()
-        with zipfile.ZipFile(nested,'w') as z:z.writestr('assets/lib/textures/a.png','x')
+        with zipfile.ZipFile(nested,'w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="lib"\n')
+            z.writestr('assets/lib/textures/a.png','x')
         with zipfile.ZipFile(self.instance/'mods/real.jar','w') as z:
             z.writestr('assets/real/lang/en_us.json',json.dumps({'real.a':'Real'}))
+            z.writestr('assets/compat/textures/b.png','x');z.writestr('data/compat/recipes/b.json','{}')  # files for a mod that is absent
             z.writestr('META-INF/jarjar/lib.jar',nested.getvalue())  # jar-in-jar library counts as installed
         packs=self.instance/'config/openloader/packs';packs.mkdir(parents=True)
         with zipfile.ZipFile(packs/'cfpa.zip','w') as z:
             z.writestr('assets/ghost/lang/en_us.json',json.dumps({'ghost.a':'Ghost'}))
             z.writestr('assets/real/lang/en_us.json',json.dumps({'real.b':'Real B'}))
             z.writestr('assets/lib/lang/en_us.json',json.dumps({'lib.a':'Library'}))
+            z.writestr('assets/compat/lang/en_us.json',json.dumps({'compat.a':'Absent mod'}))
         result=self.make_plan()
-        self.assertFalse(any('ghost' in r['source'] for r in result['rows']))
+        self.assertFalse(any('ghost' in r['source'] or 'compat' in r['source'] for r in result['rows']))
         self.assertTrue(any(r['key']=='real.b' for r in result['rows']))
         self.assertTrue(any(r['key']=='lib.a' for r in result['rows']))
-        self.assertEqual(result['source_counts']['not_installed'],1)
+        self.assertEqual(result['source_counts']['not_installed'],2)
 
     def make_mod(self, nested=True):
         import io, zipfile

@@ -9,6 +9,10 @@ A patch holds translation text only, never mod code or whole mod jars:
 Applying only touches files whose current content is exactly the untranslated version the patch
 was made from, so a different mod version is skipped instead of being overwritten. Every write
 goes through apply_reviewed (backup, hash checks, rollback), so it can be restored like any batch.
+
+Mods the translator added to the modpack through CurseForge are named in the patch (project, file,
+size and SHA-256), never carried in it: the receiver's copy is downloaded from CurseForge itself and
+must match that SHA-256 before it is put into the mods folder.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ import io
 import json
 import re
 import shutil
+import time
 import uuid
 import zipfile
 from datetime import datetime
@@ -42,6 +47,12 @@ TRANSLATED = re.compile(r'(?:^|/)lang/zh_tw\.(?:json|lang)$|/zh_tw/[^/].*\.(?:js
 MAX_PATCH_SIZE = 200*1024*1024
 MAX_ENTRY_SIZE = 64*1024*1024       # one translated file, unpacked
 MAX_UNPACKED_SIZE = 1024*1024*1024  # the whole patch, unpacked
+# Added mods come from CurseForge's own file servers and nowhere else.
+CURSEFORGE_FILES = ('edge.forgecdn.net','mediafilez.forgecdn.net')
+MAX_MOD_SIZE = 300*1024*1024
+MAX_ADDED_MODS = 60
+MOD_FILE_NAME = re.compile(r'[^\\/:*?"<>|\x00-\x1f]{1,180}\.jar',re.I)
+ATTEMPTS = 3
 ATTRIBUTION = """MC Translator 繁體中文翻譯補丁
 
 這個補丁只包含翻譯文字，不含任何模組程式或模組檔案。請先安裝同一版本的模組包，
@@ -97,6 +108,95 @@ def instance_identity(instance: Path) -> dict:
     return identity
 
 
+def curseforge_record(instance: Path):
+    """CurseForge's own record of a modpack folder, or {} when it has none."""
+    try:
+        data=json.loads((Path(instance)/'minecraftinstance.json').read_text(encoding='utf-8-sig'))
+        return data if isinstance(data,dict) else {}
+    except (OSError,ValueError):return {}
+
+
+def modpack_projects(instance: Path, record=None):
+    """CurseForge project numbers of the mods the modpack itself brings, or None when that is unknown."""
+    record=curseforge_record(instance) if record is None else record
+    manifest=record.get('manifest') if isinstance(record.get('manifest'),dict) else None
+    if not manifest:
+        try:manifest=json.loads((Path(instance)/'manifest.json').read_text(encoding='utf-8-sig'))
+        except (OSError,ValueError):return None
+    try:return {int(f['projectID']):int(f['fileID']) for f in manifest.get('files') or []} or None
+    except (KeyError,TypeError,ValueError,AttributeError):return None
+
+
+def file_url(mod):
+    """Where CurseForge serves this file; an address outside its file servers is never used."""
+    url=mod.get('url')
+    if isinstance(url,str):
+        p=urlparse(url)
+        if p.scheme=='https' and p.netloc in CURSEFORGE_FILES and p.path.startswith('/files/') and not p.query and not p.fragment:return url
+        raise ValueError('模組下載網址不是 CurseForge 的檔案伺服器：'+str(mod.get('fileName')))
+    return None
+
+
+def checked_mod(mod):
+    """One added mod as read from a patch, with every field checked; raises on anything unexpected."""
+    if not isinstance(mod,dict):raise ValueError('補丁的加裝模組資料格式錯誤。')
+    name=mod.get('fileName')
+    if not isinstance(name,str) or not MOD_FILE_NAME.fullmatch(name) or name.startswith('.') or '..' in name:
+        raise ValueError('補丁的加裝模組檔名不安全：'+str(name)[:80])
+    try:project=int(mod['projectID']);file=int(mod['fileID']);size=int(mod['size'])
+    except (KeyError,TypeError,ValueError):raise ValueError('補丁的加裝模組資料不完整：'+name)
+    if project<=0 or file<=0 or not 0<size<=MAX_MOD_SIZE:raise ValueError('補丁的加裝模組資料不合理：'+name)
+    if not re.fullmatch('[0-9a-f]{64}',str(mod.get('sha256'))):raise ValueError('補丁的加裝模組缺少校驗碼：'+name)
+    page=mod.get('page') if isinstance(mod.get('page'),str) and mod['page'].startswith('https://www.curseforge.com/') else ''
+    return dict(projectID=project,fileID=file,fileName=name,size=size,sha256=mod['sha256'],url=file_url(mod),
+                name=str(mod.get('name') or name)[:120],page=page[:300])
+
+
+def added_mods(instance: Path, originals=None):
+    """(mods, left_out): what the owner added through CurseForge on top of the modpack.
+
+    `originals` maps a translated file to the SHA-256 it had before translation; the receiver
+    downloads the untranslated file, so that is the hash that counts. A mod is left out, with the
+    reason, when it cannot be given to someone else safely.
+    """
+    instance=Path(instance);record=curseforge_record(instance);official=modpack_projects(instance,record)
+    addons=record.get('installedAddons') if isinstance(record.get('installedAddons'),list) else []
+    if official is None:
+        return [],([dict(name='加裝的模組',reason='找不到整合包原本的模組清單，無法分辨哪些是後來加裝的')] if addons else [])
+    mods=[];left=[];known=set()
+    for addon in addons:
+        try:
+            installed=addon['installedFile'];project=int(addon['addonID']);file=int(installed['id'])
+            name=str(installed.get('fileNameOnDisk') or installed['fileName']);label=str(addon.get('name') or name)
+        except (KeyError,TypeError,ValueError):continue
+        known.add(name.casefold())
+        if project in official:
+            if official[project]!=file and (instance/'mods'/name).is_file():
+                left.append(dict(name=label,reason='整合包原有的模組被換成別的版本；對方保留整合包的版本，這個模組的翻譯會略過'))
+            continue
+        if ((addon.get('categorySection') or {}).get('path') or 'mods')!='mods' or not name.lower().endswith('.jar'):continue
+        path=instance/'mods'/name
+        if not path.is_file():continue  # disabled or removed
+        relative='mods/'+name;digest=(originals or {}).get(relative) or file_hash(path)
+        try:
+            mod=checked_mod(dict(projectID=project,fileID=file,fileName=name,size=installed.get('fileLength'),sha256=digest,
+                                 url=installed.get('downloadUrl') or None,name=label,page=addon.get('webSiteURL')))
+        except ValueError as exc:
+            left.append(dict(name=label,reason=str(exc)));continue
+        if not (originals or {}).get(relative) and path.stat().st_size!=mod['size']:
+            left.append(dict(name=label,reason='檔案和 CurseForge 記錄的大小不同（可能被修改過），不分享'));continue
+        if addon.get('allowModDistribution') is False:mod['url']=None  # the author lets only CurseForge itself install it
+        mods.append(mod)
+    try:
+        for p in sorted((instance/'mods').iterdir()):
+            if p.is_file() and p.suffix.lower()=='.jar' and p.name.casefold() not in known and 'mods/'+p.name!=jobs.PACK_MOD_FILE:
+                left.append(dict(name=p.name,reason='不是從 CurseForge 安裝的模組，對方無法自動下載'))
+    except OSError:pass
+    if len(mods)>MAX_ADDED_MODS:
+        left+=[dict(name=m['name'],reason=f'加裝的模組超過 {MAX_ADDED_MODS} 個，超出的不分享') for m in mods[MAX_ADDED_MODS:]];mods=mods[:MAX_ADDED_MODS]
+    return mods,left
+
+
 def installed_batches(home: Path, instance: Path):
     """Backups of batches still applied to this instance, oldest first."""
     target=instance.resolve();found=[]
@@ -138,12 +238,13 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
             item=files.setdefault(row['file'],dict(before=row['before'],backup=backup))
             item['after']=row['after']
     identity=instance_identity(instance)
+    mods,left_out=added_mods(instance,{file:item['before'] for file,item in files.items() if item['before']})
     stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
     folder=home/'output'/instance.name/'分享';folder.mkdir(parents=True,exist_ok=True)
     safe=re.sub(r'[\\/:*?"<>|]+','_',identity['name']).strip() or 'modpack'
     out=folder/f'{safe}{"-"+identity["version"] if identity["version"] else ""}-繁中翻譯-{stamp}.zip'
     manifest=dict(format=PATCH_FORMAT,app_version=VERSION,created=datetime.now().isoformat(timespec='seconds'),
-                  modpack=identity,files=[])
+                  modpack=identity,files=[],added_mods=mods,left_out_mods=left_out)
     skipped=[]
     tmp=out.with_suffix('.partial')
     try:
@@ -179,7 +280,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     finally:
         tmp.unlink(missing_ok=True)
     notify(100,'翻譯補丁已匯出',str(out))
-    return dict(path=str(out),files=len(manifest['files']),skipped=manifest['skipped'],modpack=identity,sha256=file_hash(out),size=out.stat().st_size)
+    return dict(path=str(out),files=len(manifest['files']),skipped=manifest['skipped'],modpack=identity,sha256=file_hash(out),size=out.stat().st_size,
+                added_mods=mods,left_out_mods=left_out)
 
 
 def read_patch(path: Path):
@@ -208,6 +310,10 @@ def read_patch(path: Path):
                     if not allowed_entry(name):raise ValueError(f'補丁包含不允許的內容：{file} / {name}')
                     if f'payload/{file}/{name}' not in names:raise ValueError(f'補丁缺少內容：{file} / {name}')
             elif f'payload/{file}' not in names or not item.get('after'):raise ValueError('補丁缺少內容：'+file)
+        mods=manifest.get('added_mods') or []
+        if not isinstance(mods,list) or len(mods)>MAX_ADDED_MODS:raise ValueError('補丁的加裝模組清單不合理，已拒絕。')
+        manifest['added_mods']=[checked_mod(m) for m in mods]
+        if len({m['fileName'].casefold() for m in manifest['added_mods']})!=len(mods):raise ValueError('補丁的加裝模組重複，已拒絕。')
         return z,manifest
     except Exception:
         z.close();raise
@@ -253,14 +359,126 @@ def plan_patch(instance: Path, z, manifest):
     return plan
 
 
-def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, set_language=False) -> dict:
-    """Apply a translation patch to an instance; only files matching the patch's original version change."""
+def mod_states(instance: Path, mods):
+    """For each added mod: 'present', 'install', 'other_version' or 'manual'."""
+    instance=Path(instance);record=curseforge_record(instance)
+    have={}
+    for addon in record.get('installedAddons') if isinstance(record.get('installedAddons'),list) else []:
+        try:have[int(addon['addonID'])]=str((addon['installedFile'].get('fileNameOnDisk') or addon['installedFile']['fileName']))
+        except (KeyError,TypeError,ValueError,AttributeError):continue
+    try:sizes={p:p.stat().st_size for p in (instance/'mods').iterdir() if p.is_file()}
+    except OSError:sizes={}
+    states=[]
+    for mod in mods:
+        path=instance/'mods'/mod['fileName']
+        same=[p for p,size in sizes.items() if size==mod['size'] and file_hash(p)==mod['sha256']]
+        if same or path.exists():state='present'  # a file of that name with other content is its translated copy
+        elif mod['projectID'] in have and (instance/'mods'/have[mod['projectID']]).exists():state='other_version'
+        elif not mod['url']:state='manual'
+        else:state='install'
+        states.append((mod,state))
+    return states
+
+
+def download_mod(mod, home: Path, progress=lambda _:None, session=None, cancelled=lambda:False, pause=time.sleep) -> Path:
+    """One added mod from CurseForge, kept only when its size and SHA-256 are the translator's."""
+    import requests
+    session=session or requests.Session()
+    folder=home/'downloads'/'mods';folder.mkdir(parents=True,exist_ok=True)
+    path=folder/(mod['sha256']+'.jar')
+    if path.exists() and path.stat().st_size==mod['size'] and file_hash(path)==mod['sha256']:return path
+    url=file_url(mod);problem=None
+    if not url:raise ValueError('這個模組的作者只開放由 CurseForge 安裝。')
+    for attempt in range(ATTEMPTS):
+        if cancelled():raise InterruptedError('已停止。')
+        part=folder/(uuid.uuid4().hex+'.partial');h=hashlib.sha256();received=0
+        try:
+            with session.get(url,stream=True,timeout=(15,60),headers={'User-Agent':f'MCTranslator/{VERSION}'}) as response:
+                if response.status_code>=500:raise requests.ConnectionError(f'HTTP {response.status_code}')
+                response.raise_for_status()
+                host=urlparse(response.url).netloc
+                if host not in CURSEFORGE_FILES:raise ValueError('下載被轉到 CurseForge 以外的位置，沒有安裝。')
+                with part.open('xb') as f:
+                    for block in response.iter_content(1024*1024):
+                        if cancelled():raise InterruptedError('已停止。')
+                        received+=len(block)
+                        if received>mod['size']:raise ValueError('下載到的檔案比翻譯者使用的大（校驗不符），沒有安裝。')
+                        h.update(block);f.write(block);progress(int(received*100/mod['size']))
+            if received!=mod['size'] or h.hexdigest()!=mod['sha256']:
+                raise ValueError('下載到的檔案和翻譯者使用的不是同一個（校驗不符），沒有安裝。')
+            if not zipfile.is_zipfile(part):raise ValueError('下載到的不是模組檔，沒有安裝。')
+            part.replace(path)
+            return path
+        except (requests.ConnectionError,requests.Timeout) as exc:
+            problem=exc
+            if attempt+1<ATTEMPTS:pause(2*(attempt+1))
+        finally:
+            part.unlink(missing_ok=True)
+    raise RuntimeError('連不上 CurseForge 的檔案伺服器，請確認網路後再試一次。') from problem
+
+
+def install_mods(instance: Path, mods, home: Path, notify=lambda *_:None, cancelled=lambda:False, session=None, pause=time.sleep) -> dict:
+    """Put the translator's added mods into the modpack: downloaded from CurseForge, verified, backed
+    up like any batch so that restoring the batch removes them again.
+
+    A mod that cannot be installed never stops the others or the translation; it is reported with
+    the reason and what to do.
+    """
+    instance=Path(instance).resolve()
+    result=dict(installed=[],present=[],skipped=[],backup=None)
+    states=mod_states(instance,mods);wanted=[m for m,s in states if s=='install']
+    reasons={'other_version':'已安裝這個模組的其他版本，沒有更動；這個模組的翻譯會略過',
+             'manual':'作者只開放由 CurseForge 安裝，請在 CurseForge 加裝這個模組'}
+    for mod,state in states:
+        if state=='present':result['present'].append(mod['fileName'])
+        elif state!='install':result['skipped'].append(dict(name=mod['name'],file=mod['fileName'],reason=reasons[state],page=mod['page']))
+    if not wanted:return result
+    needed=sum(m['size'] for m in wanted)
+    for folder,times in ((instance,1),(home,2)):
+        free=shutil.disk_usage(folder if folder.exists() else folder.parent).free
+        if free<needed*times+jobs.SPACE_MARGIN:
+            raise ValueError(f'硬碟空間不夠加裝模組（需要約 {(needed*times+jobs.SPACE_MARGIN)//1024//1024:,} MB），沒有修改任何檔案。')
+    staged=home/'tmp'/('mods-'+uuid.uuid4().hex[:8]);records=[]
+    try:
+        for i,mod in enumerate(wanted):
+            if cancelled():raise InterruptedError('已停止，沒有加裝任何模組。')
+            title=f"下載加裝的模組（{i+1}／{len(wanted)}）"
+            notify(int(100*i/len(wanted)),title,mod['name'])
+            try:
+                source=download_mod(mod,home,lambda v,m=mod,n=i:notify(int(100*(n+v/100)/len(wanted)),title,f"{m['name']} {v}%"),session,cancelled,pause)
+            except InterruptedError:raise
+            except Exception as exc:
+                result['skipped'].append(dict(name=mod['name'],file=mod['fileName'],page=mod['page'],
+                                               reason=jobs.explain_error(exc)+' 也可以在 CurseForge 自行加裝這個模組。'));continue
+            target=contained(staged,'mods/'+mod['fileName']);target.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(source,target)
+            records.append(dict(file='mods/'+mod['fileName'],before=None,after=mod['sha256'],reviewed=True,verified=True))
+            result['installed'].append(mod['fileName'])
+        if records:
+            vr=VerifyResult();check_java_zipfs([staged/r['file'] for r in records],vr)
+            if not vr.ok:raise ValueError('加裝的模組檔沒有通過檢查：'+'; '.join(vr.errors))
+            jobs.ensure_game_closed(instance)
+            notify(100,'加裝模組','寫入模組資料夾')
+            result['backup']=str(apply_reviewed(instance,staged,records,home/'output',jobs.waiting_note(notify,100,'加裝模組')))
+        return result
+    finally:
+        shutil.rmtree(staged,ignore_errors=True)
+
+
+def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, set_language=False,
+                add_mods=False, cancelled=lambda:False, session=None) -> dict:
+    """Apply a translation patch to an instance; only files matching the patch's original version change.
+
+    With add_mods the mods the translator added are installed first, so their translation applies too.
+    """
     instance=Path(instance).resolve()
     if not jobs.is_instance(instance):raise ValueError('找不到模組包資料夾（需要有 mods、config 或 kubejs）。')
     z,manifest=read_patch(patch)
     staged=home/'tmp'/('patch-'+uuid.uuid4().hex[:8])
     try:
         jobs.ensure_game_closed(instance)
+        mods=install_mods(instance,manifest['added_mods'],home,notify,cancelled,session) if add_mods and manifest['added_mods'] else None
+        if cancelled():raise InterruptedError('已停止，翻譯還沒有寫入。'+('加裝的模組已放進模組資料夾，可在「備份與還原」移除。' if mods and mods['installed'] else ''))
         plan=plan_patch(instance,z,manifest)
         staged.mkdir(parents=True)
         records=[];applied=[]
@@ -298,7 +516,8 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         result=dict(instance=str(instance),patch=str(patch),modpack=manifest.get('modpack',{}),backup=backup,applied=applied,
                     already=[p[0]['file'] for p in plan if p[1]=='already'],
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],
-                    language_set=bool(set_language))
+                    language_set=bool(set_language),mods=mods,
+                    mods_offered=[m['name'] for m in manifest['added_mods']] if mods is None else [])
         record_applied(home,instance,manifest,file_hash(Path(patch)))
         if applied or result_already(plan):jobs.record_translated(home,instance)
         merge_provenance(home,instance,z)
@@ -369,7 +588,9 @@ def fetch_catalog(session=None):
                               version=str(x.get('version') or ''),gameVersion=str(x.get('gameVersion') or ''),
                               translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),
                               modpackDate=str(x.get('modpackDate') or '')[:10],revision=max(1,int(x.get('revision') or 1)),
-                              notes=str(x.get('notes') or ''),url=x['url'],sha256=x['sha256'],size=int(x['size'])))
+                              notes=str(x.get('notes') or ''),url=x['url'],sha256=x['sha256'],size=int(x['size']),
+                              addedMods=[dict(name=str(m['name'])[:120],size=int(m['size'])) for m in (x.get('addedMods') or [])[:MAX_ADDED_MODS]
+                                         if isinstance(m,dict) and m.get('name') and 0<int(m.get('size') or 0)<=MAX_MOD_SIZE]))
         except (KeyError,TypeError,ValueError):continue
     return packs
 
@@ -398,6 +619,52 @@ def match_catalog(packs, instances, applied=None):
                          newest_version=versions[0]['version']))
     rows.sort(key=lambda r:({'update':0,'exact':1,'applied':2,'other_version':3}.get(r['status'],4),r['name'].casefold()))
     return rows
+
+
+def modpack_files_ready(instance: Path, manifest):
+    """(present, needed): files this translation belongs to that CurseForge has put in place.
+
+    A mod file counts once it is there at its full size; a file the translation replaces counts
+    once it exists. Sizes are compared instead of hashes so that checking every few seconds is cheap.
+    """
+    present=needed=0;added={'mods/'+m['fileName'].casefold() for m in manifest.get('added_mods') or []}
+    for item in manifest['files']:
+        if not item['archive'] and item.get('before') is None:continue  # a file the translation adds
+        if item['file'].casefold() in added:continue  # a mod the translator added; it is installed afterwards
+        needed+=1
+        try:
+            size=contained(instance,item['file']).stat().st_size
+            if not item['archive'] or size==item.get('size'):present+=1
+        except (OSError,ValueError):pass
+    return present,needed
+
+
+def wait_for_modpack(pack, manifest, notify=lambda *_:None, cancelled=lambda:False, find=None,
+                     timeout=2700, settle=180, calm=15, clock=time.monotonic, pause=time.sleep) -> Path:
+    """Wait while CurseForge installs the modpack a translation was made for; returns its folder.
+
+    The modpack is ready when every file the translation belongs to is in place and nothing has
+    changed for `calm` seconds. When the install stops changing for `settle` seconds before that
+    (CurseForge finished but some mods differ), the folder is returned as it is: the translation
+    is then applied to what matches and the rest is reported as skipped.
+    """
+    find=find or jobs.curseforge_instances;start=clock();changed=start;seen=None
+    while True:
+        if cancelled():raise InterruptedError('已停止等待。CurseForge 可以繼續安裝整合包；裝好後回到這一頁按「安裝翻譯」即可。')
+        found=[x for x in find() if x['projectID']==pack['projectID'] and x['fileID']==pack['fileID']]
+        if found:
+            instance=Path(found[0]['path']);present,needed=modpack_files_ready(instance,manifest)
+            try:state=(present,sum(1 for _ in (instance/'mods').iterdir()))
+            except OSError:state=(present,0)
+            if state!=seen:seen=state;changed=clock()
+            quiet=clock()-changed
+            notify(int(100*present/max(1,needed)),'等待 CurseForge 安裝整合包',f'已就緒 {present:,}／{needed:,} 個要翻譯的檔案')
+            if (present==needed and quiet>=calm) or (state[1] and quiet>=settle):return instance
+        else:
+            notify(0,'等待 CurseForge 安裝整合包','請在 CurseForge 的視窗確認安裝，這裡會自動接著做')
+        if clock()-start>timeout:
+            raise ValueError('等了很久，CurseForge 還沒有裝好這個整合包。請看一下 CurseForge 的安裝進度；裝好後回到這一頁按「安裝翻譯」即可。')
+        pause(3)
 
 
 def curseforge_install_url(pack) -> str:

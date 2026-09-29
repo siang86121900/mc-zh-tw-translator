@@ -500,21 +500,27 @@ def group_size(client, limit):
 
 
 def original_of(row):
-    return row.get('en') or row.get('zh_cn') or row.get('current') or ''
+    from .desktop_jobs import original_of as of  # imported late: desktop_jobs imports this module
+    return of(row)
 
 
 def without_repeats(rows):
     """Rows to send, and for each of them the rows that take its answer instead of being sent.
 
-    Only the same text in the same file counts as a repeat: there it is the same name or phrase, and
-    one answer keeps it worded the same way. The same English in another mod may mean something else
+    A repeat is the same text in the same file (the same name or phrase, which one answer keeps worded
+    the same way) or the same key of the same mod in another file (the mod, a bundled language pack
+    and KubeJS assets can each carry it). The same English in another mod may mean something else
     and is sent on its own.
     """
     first = {}; send = []; twins = {}
     for i, row in rows:
-        key = (row.get('source'), original_of(row))
-        if key in first: twins.setdefault(first[key], []).append(row)
-        else: first[key] = i; send.append((i, row))
+        text = original_of(row); mod = re.search(r'assets/([^/]+)/lang/', row.get('source') or '')
+        keys = [(row.get('source'), text)] + ([(mod[1], row.get('key'), text)] if mod else [])
+        known = next((first[k] for k in keys if k in first), None)
+        if known is not None: twins.setdefault(known, []).append(row)
+        else:
+            send.append((i, row))
+            for k in keys: first[k] = i
     return send, twins
 
 
@@ -703,7 +709,7 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
         for i, row, original in batch:
             done['answered'] += 1
             for n, r in enumerate([row] + twins.get(i, [])):
-                if adopt(session, r, original, answers[str(i)], selected_model, jobs, '與同一個檔案裡相同的原文用同一句譯文。' if n else ''):
+                if adopt(session, r, original, answers[str(i)], selected_model, jobs, '與這個模組裡相同的原文用同一句譯文。' if n else ''):
                     done['completed'] += 1; learned.append(r)
 
     def save():
