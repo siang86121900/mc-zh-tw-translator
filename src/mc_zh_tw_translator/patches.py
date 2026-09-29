@@ -294,7 +294,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                 if not vr.ok:raise ValueError('Java 驗證未通過：'+'; '.join(vr.errors))
             notify(80,'備份與套用','先保存所有原檔，再寫入翻譯')
             jobs.ensure_game_closed(instance)
-            backup=str(apply_reviewed(instance,staged,records,home/'output'))
+            backup=str(apply_reviewed(instance,staged,records,home/'output',jobs.waiting_note(notify)))
         result=dict(instance=str(instance),patch=str(patch),modpack=manifest.get('modpack',{}),backup=backup,applied=applied,
                     already=[p[0]['file'] for p in plan if p[1]=='already'],
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],

@@ -8,8 +8,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
@@ -41,20 +43,62 @@ def contained(root: Path, relative: str) -> Path:
     return path
 
 
-def atomic_copy(source: Path, destination: Path) -> None:
+# A launcher that watches the mods folder or an antivirus scan opens a file the moment it is written,
+# and Windows then refuses to rename or delete it for a moment. Waiting and trying again is the remedy.
+WAITS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.5, 3, 3, 3, 3, 5, 5, 5)
+WORK_FILE = re.compile(r'\.translation-[a-z0-9_]{8}')
+
+
+def when_free(action, name, on_wait=None):
+    """Run a file operation, waiting while another program briefly holds the file."""
+    for wait in WAITS:
+        try:
+            return action()
+        except PermissionError:
+            if on_wait:
+                on_wait(name)
+            time.sleep(wait)
+    return action()
+
+
+def remove_work_file(tmp: Path) -> None:
+    try:
+        when_free(lambda: tmp.unlink(missing_ok=True), tmp.name)
+    except OSError:
+        pass  # still held; clear_work_files removes it before the next batch is written
+
+
+def clear_work_files(folder: Path) -> None:
+    """Remove working copies an earlier write could not delete; nothing else in the folder is touched."""
+    try:
+        found = [p for p in folder.iterdir() if WORK_FILE.fullmatch(p.name) and p.is_file() and not p.is_symlink()]
+    except OSError:
+        return
+    for tmp in found:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def atomic_copy(source: Path, destination: Path, on_wait=None) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=destination.parent, prefix='.translation-', delete=False) as f:
         tmp = Path(f.name)
     try:
-        shutil.copy2(source, tmp)
-        if file_hash(tmp) != file_hash(source):
+        when_free(lambda: shutil.copy2(source, tmp), destination.name, on_wait)
+        if when_free(lambda: file_hash(tmp), destination.name, on_wait) != file_hash(source):
             raise RuntimeError(f'Copy verification failed: {source}')
-        os.replace(tmp, destination)
+        try:
+            when_free(lambda: os.replace(tmp, destination), destination.name, on_wait)
+        except PermissionError as exc:
+            # Name the file the player knows, not the working copy.
+            raise PermissionError(exc.errno, exc.strerror, str(destination), getattr(exc, 'winerror', None)) from exc
     finally:
-        tmp.unlink(missing_ok=True)
+        remove_work_file(tmp)
 
 
-def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_root: Path) -> Path:
+def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_root: Path, on_wait=None) -> Path:
     """Apply exact reviewed files; all originals are backed up before any write.
 
     Each record requires file, before (SHA-256 or null), after (SHA-256),
@@ -109,14 +153,16 @@ def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_roo
                 raise RuntimeError(f'備份檢查失敗，已停止，沒有修改任何檔案：{row["file"]}')
     journal['status'] = 'backed_up'
     save()
+    for folder in {target.parent for _, _, target in paths}:
+        clear_work_files(folder)
     applied = []
     try:
         for row, source, target in paths:
             if file_hash(source) != row['after'] or file_hash(target) != row['before']:
                 raise RuntimeError(f'寫入途中檔案被其他程式改動，已還原本批修改：{row["file"]}')
-            atomic_copy(source, target)
+            atomic_copy(source, target, on_wait)
             applied.append((row, target))
-            if file_hash(target) != row['after']:
+            if when_free(lambda: file_hash(target), target.name, on_wait) != row['after']:
                 raise RuntimeError(f'寫入後檢查不符，已還原本批修改：{row["file"]}')
         journal['status'] = 'installed'
         save()
@@ -127,7 +173,7 @@ def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_roo
                 if file_hash(target) != row['after']:
                     raise RuntimeError('Target changed again; retained for inspection')
                 if row['before'] is None:
-                    target.unlink()
+                    when_free(target.unlink, target.name)
                 else:
                     atomic_copy(contained(backup, row['file']), target)
             except Exception as rollback_error:

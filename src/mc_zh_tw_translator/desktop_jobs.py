@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from full_translation_audit import Audit, parse, placeholders, at
-from .deployment import apply_reviewed, contained, file_hash, atomic_copy
+from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_free
 from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
 from .verifier import VerifyResult, check_java_zipfs
@@ -1327,6 +1327,11 @@ def changed_since_scan(home, instance, what):
     return ValueError('模組包的檔案在掃描後有變動（可能是啟動器更新或手動修改），請重新按「一鍵完整翻譯並套用」：'+what)
 
 
+def waiting_note(notify, percent=80, stage='備份與套用'):
+    """Tells the player why a write is taking long: another program is reading the file just written."""
+    return lambda name:notify(percent,stage,f'「{name}」正被其他程式讀取（常見是啟動器或防毒掃描），稍等後自動再試')
+
+
 def apply_session(session, home, notify):
     """Back up and write this batch. The staged copies are working files and are removed afterwards,
     whether the batch was written or stopped; the backup and its record are what is kept."""
@@ -1430,7 +1435,7 @@ def stage_and_apply(session, home, notify, work):
         if not vr.ok:raise ValueError('Java 驗證未通過：'+'; '.join(vr.errors))
     notify(80,'備份與套用','先保存所有原檔，再寫入已校對文字')
     ensure_game_closed(instance)
-    backup=apply_reviewed(instance,staged,records,home/'output')
+    backup=apply_reviewed(instance,staged,records,home/'output',waiting_note(notify))
     for row in selected:row['installed']=True
     try:Provenance(home,instance).record(selected);record_translated(home,instance)
     except OSError as exc:session['errors'].append(['來源紀錄',str(exc)])
@@ -1503,9 +1508,9 @@ def restore_backup(backup: Path, expected_instance: Path):
     for row in todo:
         path=contained(instance,row['file'])
         if file_hash(path)!=row['after']:raise ValueError('還原途中檔案被修改：'+row['file'])
-        if row['before'] is None:path.unlink()
+        if row['before'] is None:when_free(path.unlink,path.name)
         else:atomic_copy(contained(backup,row['file']),path)
-        if file_hash(path)!=row['before']:raise ValueError('還原後雜湊不符：'+row['file'])
+        if when_free(lambda:file_hash(path),path.name)!=row['before']:raise ValueError('還原後雜湊不符：'+row['file'])
         record['restored_files'].append(row['file']);write_json(journal,record)
     record['status']='restored';write_json(journal,record)
     return dict(record,backup_path=str(backup))
