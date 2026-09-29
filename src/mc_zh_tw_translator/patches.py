@@ -291,6 +291,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],
                     language_set=bool(set_language))
         record_applied(home,instance,manifest,file_hash(Path(patch)))
+        if applied or result_already(plan):jobs.record_translated(home,instance)
         merge_provenance(home,instance,z)
         report=home/'output'/instance.name/'報告'/('補丁-'+datetime.now().strftime('%Y%m%d-%H%M%S'))
         report.mkdir(parents=True,exist_ok=True)
@@ -300,6 +301,10 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
     finally:
         z.close()
         shutil.rmtree(staged,ignore_errors=True)
+
+
+def result_already(plan):
+    return any(p[1]=='already' for p in plan)
 
 
 def merge_provenance(home: Path, instance: Path, z):

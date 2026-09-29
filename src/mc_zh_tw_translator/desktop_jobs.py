@@ -428,6 +428,38 @@ def is_instance(folder):
     return folder.is_dir() and any((folder/x).is_dir() for x in ('mods','kubejs','config'))
 
 
+def translated_instances(home):
+    try:return json.loads((Path(home)/'translated_instances.json').read_text(encoding='utf-8'))
+    except (OSError,ValueError):return {}
+
+
+def record_translated(home, instance):
+    """Remember which modpack version was translated, to notice when a launcher update replaces the files."""
+    from .patches import instance_identity
+    identity=instance_identity(Path(instance));data=translated_instances(home)
+    data[str(Path(instance).resolve()).casefold()]=dict(path=str(Path(instance).resolve()),name=identity['name'],
+        fileID=identity['fileID'],version=identity['version'],translated=datetime.now().isoformat(timespec='seconds'))
+    write_json(Path(home)/'translated_instances.json',data)
+
+
+def outdated_translations(home):
+    """Translated modpacks whose installed version changed since (a CurseForge update replaces the mod files)."""
+    from .patches import instance_identity
+    found=[]
+    for key,record in translated_instances(home).items():
+        path=Path(record.get('path',''))
+        if not record.get('fileID') or not is_instance(path) or record.get('dismissed')==instance_identity(path)['fileID']:continue
+        now=instance_identity(path)
+        if now['fileID'] and now['fileID']!=record['fileID']:
+            found.append(dict(key=key,path=str(path),name=now['name'],old_version=record.get('version',''),new_version=now['version'],fileID=now['fileID']))
+    return found
+
+
+def dismiss_outdated(home, key, fileID):
+    data=translated_instances(home)
+    if key in data:data[key]['dismissed']=fileID;write_json(Path(home)/'translated_instances.json',data)
+
+
 def curseforge_instances():
     """CurseForge's own instance list, which also covers a moved or custom instance folder.
 
@@ -1112,7 +1144,7 @@ def apply_session(session, home, notify):
     ensure_game_closed(instance)
     backup=apply_reviewed(instance,staged,records,home/'output')
     for row in selected:row['installed']=True
-    try:Provenance(home,instance).record(selected)
+    try:Provenance(home,instance).record(selected);record_translated(home,instance)
     except OSError as exc:session['errors'].append(['來源紀錄',str(exc)])
     session.update(status='installed',backup=str(backup),installed_count=len(selected),nested_skipped=skipped_nested,
                    nested_packed=0 if pack else sum(1 for r in selected if is_nested(r)),

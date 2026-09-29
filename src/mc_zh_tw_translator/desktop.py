@@ -345,7 +345,7 @@ class MainWindow(QMainWindow):
             combo.setMinimumContentsLength(10);combo.setMaxVisibleItems(10)
         self.apply_theme();self.update_ai_controls()
         self.clock=QTimer(self);self.clock.timeout.connect(self.tick_progress);self.clock.start(1000)
-        self.restore_latest_report()
+        self.restore_latest_report();self.check_outdated()
 
     def page(self,title,subtitle):
         page=QWidget();page.setObjectName('page')
@@ -357,6 +357,8 @@ class MainWindow(QMainWindow):
 
     def make_start(self):
         box=self.page('翻譯工作台','選擇模組包，掃描、翻譯、備份與套用一次完成。')
+        # Shown when a translated modpack was updated in its launcher, which replaces the translated files.
+        self.outdated_card,self.outdated_box=card();self.outdated_card.hide();box.addWidget(self.outdated_card)
         f,b=card();b.addWidget(label('模組包資料夾','section'))
         b.addWidget(label('從清單選擇偵測到的模組包，或直接貼上包含 mods、config 或 kubejs 的資料夾路徑。','sub'))
         # Editable combo: detected launchers' instances in the list, and free text for any other location.
@@ -594,7 +596,7 @@ class MainWindow(QMainWindow):
         self.run_worker('patch_apply',operation,self.patch_applied)
 
     def patch_applied(self,result):
-        self.refresh_backups();self.refresh_catalog()
+        self.refresh_backups();self.refresh_catalog();self.check_outdated()
         lines=[f"已翻譯 {len(result['applied']):,} 個檔案。" if result['applied'] else '沒有需要更新的檔案。']
         if result['already']:lines.append(f"{len(result['already']):,} 個檔案先前已翻譯。")
         if result['skipped']:
@@ -725,6 +727,13 @@ class MainWindow(QMainWindow):
         f,b=card();b.addWidget(label('補翻模型','section'))
         self.ai_models=QComboBox();self.ai_models.setPlaceholderText('登入後載入帳號可用模型');b.addWidget(self.ai_models)
         self.ai_model_detail=label('模型會影響上下文與術語判斷，較強不代表保證正確；目前沒有本專案的模型品質排行榜。','sub');b.addWidget(self.ai_model_detail)
+        # Differences shown are only what the official model list and the account's quota report.
+        self.ai_compare=QTableWidget(0,4);self.ai_compare.setHorizontalHeaderLabels(['模型','官方說明','翻譯時的推理強度','額度'])
+        self.ai_compare.verticalHeader().hide();self.ai_compare.setShowGrid(False);self.ai_compare.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ai_compare.setSelectionMode(QAbstractItemView.NoSelection);self.ai_compare.setWordWrap(False);self.ai_compare.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch)
+        self.ai_compare.horizontalHeader().setDefaultAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+        self.ai_compare.setColumnWidth(0,200);self.ai_compare.setColumnWidth(2,150);self.ai_compare.setColumnWidth(3,230)
+        self.ai_compare.hide();b.addWidget(self.ai_compare)
         self.ai_models.currentIndexChanged.connect(self.select_ai_model)
         b.addWidget(label('只列官方回傳的可用模型，使用該模型建議的推理設定。若模型不可用會停止，不偷偷換模型。','sub'))
         self.ai_model_card=f;box.addWidget(f)
@@ -772,12 +781,37 @@ class MainWindow(QMainWindow):
         worker.finished.connect(lambda w=worker:(self.background.remove(w),w.deleteLater()) if w in self.background else None)
         self.background.append(worker);worker.start();return worker
 
+    EFFORTS={'none':'不推理','minimal':'最低','low':'低','medium':'中','high':'高','xhigh':'很高','max':'最高','ultra':'極高'}
+
+    def model_quota_text(self,model):
+        q=((self.ai_info or {}).get('model_quota') or {}).get(model['model'].casefold())
+        if not q:return '共用 Codex 額度'
+        return f"專屬額度剩 {q['remaining']:g}%"+('（無法使用）' if q['remaining']<=10 else '')
+
     def select_ai_model(self,*_):
         model=self.ai_models.currentData()
         if model:
             self.settings.setValue('ai_model',model['model'])
-            self.ai_model_detail.setText((model.get('description') or model['model'])+'\n不同模型可能消耗不同額度；譯文仍需校對。')
+            effort=self.EFFORTS.get(model.get('defaultReasoningEffort'),model.get('defaultReasoningEffort') or '官方預設')
+            self.ai_model_detail.setText(f"官方說明：{model.get('description') or model['model']}\n"
+                                         f"翻譯時使用官方建議的推理強度「{effort}」；推理越深通常越慢、用量可能越多。{self.model_quota_text(model)}。\n"
+                                         '官方沒有提供各模型的翻譯品質或確切耗量數字，譯文仍需校對。')
         self.update_ai_controls()
+
+    def fill_model_compare(self,models):
+        self.ai_compare.setRowCount(len(models));self.ai_compare.setVisible(bool(models))
+        for i,m in enumerate(models):
+            name=(m.get('displayName') or m['model'])+('（預設）' if m.get('isDefault') else '')
+            effort=self.EFFORTS.get(m.get('defaultReasoningEffort'),m.get('defaultReasoningEffort') or '—')
+            for j,text in enumerate((name,m.get('description') or '',effort,self.model_quota_text(m))):
+                item=QTableWidgetItem(text);item.setToolTip(text);self.ai_compare.setItem(i,j,item)
+        for i in range(len(models)):self.ai_compare.setRowHeight(i,38)
+        self.ai_compare.setFixedHeight(38*min(8,len(models))+self.ai_compare.horizontalHeader().sizeHint().height()+4)
+
+    @staticmethod
+    def window_text(q):
+        span={300:'5 小時內',10080:'本週'}.get(q.get('minutes'),f"{q.get('minutes') or '?'} 分鐘內")
+        return f"{span}剩 {q['remaining']:g}%"
 
     def ai_operation(self,action,w):
         with ai.CodexClient(self.home,lambda:w.cancelled) as client:
@@ -819,7 +853,8 @@ class MainWindow(QMainWindow):
         if self.ai_models.count():self.ai_models.setCurrentIndex(chosen)
         self.ai_models.blockSignals(False);self.select_ai_model()
         self.ai_status.setText(('已連接 '+str(account.get('email') or 'ChatGPT')+' · '+str(account.get('planType') or '未知方案')) if account else '尚未連接 ChatGPT。')
-        self.ai_quota.setText(result.get('warning') or '　'.join(f"{q['minutes'] or '?'} 分鐘視窗剩餘 {q['remaining']:g}%" for q in result.get('quota',[])))
+        self.ai_quota.setText(result.get('warning') or 'Codex 額度：'+'　'.join(self.window_text(q) for q in result.get('quota',[])))
+        self.fill_model_compare(result.get('models',[]))
         self.update_ai_controls()
 
     def ai_supplement(self):
@@ -940,6 +975,32 @@ class MainWindow(QMainWindow):
         if len(fresh)>5:self.append_activity(f'另有 {len(fresh)-5:,} 筆譯文，完整內容請看翻譯報告。')
         self.update_stats();self.refresh_history();self.fill_table()
 
+    def check_outdated(self):
+        while self.outdated_box.count():
+            item=self.outdated_box.takeAt(0)
+            if item.widget():item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    w=item.layout().takeAt(0).widget()
+                    if w:w.deleteLater()
+        try:found=jobs.outdated_translations(self.home)
+        except Exception:logging.exception('Cannot check translated modpacks');found=[]
+        self.outdated_card.setVisible(bool(found))
+        if not found:return
+        head=label('整合包已更新，翻譯需要重新套用','section');self.outdated_box.addWidget(head)
+        for x in found:
+            text=label(f"「{x['name']}」已從版本 {x['old_version'] or '（舊版）'} 更新到 {x['new_version'] or '新版'}。"
+                       'CurseForge 更新時會換掉模組檔，之前的翻譯可能已被覆蓋。','sub');self.outdated_box.addWidget(text)
+            row=QHBoxLayout()
+            row.addWidget(button('重新翻譯並套用',lambda checked=False,p=x['path']:self.retranslate(p),True))
+            row.addWidget(button('查看現成翻譯',lambda:self.navigate(6)))
+            row.addWidget(button('略過',lambda checked=False,x=x:(jobs.dismiss_outdated(self.home,x['key'],x['fileID']),self.check_outdated())))
+            row.addStretch();self.outdated_box.addLayout(row)
+
+    def retranslate(self,path):
+        if self.busy:return
+        self.path.setText(path);self.full_translation_job()
+
     def restore_latest_report(self):
         candidates=list((self.home/'output').glob('*/報告/*/session.json'))
         if not candidates:return
@@ -991,7 +1052,7 @@ class MainWindow(QMainWindow):
                                      options=dict(set_language=self.set_language.isChecked()))
 
     def full_translation_done(self,result):
-        self.job_done(result);self.navigate(1)
+        self.job_done(result);self.navigate(1);self.check_outdated()
         applied=result.get('installed_count',0)
         leftovers=sum(r.get('origin')=='untranslated' and bool(r.get('supported')) for r in result.get('rows',[]))
         self.notify_finished('翻譯完成' if result['status']=='installed' else '翻譯已停止，需要處理',
@@ -1173,6 +1234,7 @@ class MainWindow(QMainWindow):
         self.navigate(0);self.run_worker('apply',lambda w:jobs.apply_session(self.session,self.home,w.progress.emit),self.apply_done)
 
     def apply_done(self,result):
+        self.check_outdated()
         self.job_done(result);self.notify_finished('套用完成',f"已套用 {result.get('installed_count',0):,} 筆，原檔已備份。")
 
     def applied_notes(self,result):

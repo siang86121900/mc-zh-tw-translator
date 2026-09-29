@@ -167,6 +167,19 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(session['renamed_count'],1)
 
 
+    def test_modpack_update_after_translation_is_noticed(self,_):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        self.translate()
+        self.assertEqual(jobs.outdated_translations(self.home),[])
+        # CurseForge updates the modpack: new fileID/version and the translated jars are replaced.
+        (self.translator/'minecraftinstance.json').write_text(json.dumps({'name':'Demo Pack','projectID':123,'fileID':789,'gameVersion':'1.21.1'}),encoding='utf-8')
+        (self.translator/'manifest.json').write_text(json.dumps({'name':'Demo Pack','version':'2.0','minecraft':{'version':'1.21.1'}}),encoding='utf-8')
+        [found]=jobs.outdated_translations(self.home)
+        self.assertEqual((found['old_version'],found['new_version']),('1.0','2.0'))
+        jobs.dismiss_outdated(self.home,found['key'],found['fileID'])
+        self.assertEqual(jobs.outdated_translations(self.home),[])
+
+
 class OneClickTests(unittest.TestCase):
     def test_names_in_finds_longest_modpack_names(self):
         from mc_zh_tw_translator.desktop_jobs import names_in

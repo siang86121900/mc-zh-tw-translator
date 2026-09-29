@@ -50,6 +50,17 @@ class CodexBridgeTests(unittest.TestCase):
         value=limits();value['rateLimitsByLimitId']={'codex':limits()['rateLimits'],'other':limits(95)['rateLimits']}
         with self.assertRaises(ai.BridgeError):ai.quota_guard(dict(type='chatgpt',planType='pro'),value)
 
+    def test_other_models_reserved_quota_does_not_block(self):
+        # Shape of a real Plus account: Codex quota fine, a reserve for one specific model used up.
+        value=limits();reserve=dict(limitId='base_model_inference',limitName='gpt-reserve',normalModelSlug='gpt-5.6-luna',
+                                    primary=dict(usedPercent=100,windowDurationMins=10080),secondary=None,credits=None)
+        value['rateLimitsByLimitId']={'codex':limits()['rateLimits'],'base_model_inference':reserve}
+        account=dict(type='chatgpt',planType='plus')
+        self.assertEqual(ai.quota_guard(account,value)[0]['remaining'],80)
+        self.assertTrue(ai.quota_guard(account,value,'gpt-6-astra'))
+        with self.assertRaises(ai.BridgeError):ai.quota_guard(account,value,'gpt-5.6-luna')  # that model's own reserve
+        self.assertEqual(ai.model_quotas(value)['gpt-5.6-luna']['remaining'],0)
+
     def test_child_cannot_inherit_api_keys_or_auth_proxy(self):
         with patch.dict(os.environ,{'OPENAI_API_KEY':'secret','OPENAI_BASE_URL':'https://evil.test','CODEX_AUTH_JSON':'secret','CODEX_HOME':'outside','CODEX_ACCESS_TOKEN':'secret'}):
             env=ai.child_environment(Path('isolated'))
