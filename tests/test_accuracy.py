@@ -185,4 +185,45 @@ class ConfirmManyTests(Base):
         window.close()
 
 
+class RepeatedTextTests(Base):
+    """The same text in the same file is asked once, so it costs less and is worded the same way."""
+    def supplement(self,session):
+        return ai.supplement(session,self.home,'account-model',lambda *_:None,client_factory=FakeClient)
+
+    def test_same_text_in_one_file_is_sent_once_and_shared(self):
+        instance=self.pack('重複包',{'form.a':'base form','form.b':'base form','form.c':'base form','other':'Unknown thing'},{'z':'无关'})
+        FakeClient.translations={'base form':'基礎形態','Unknown thing':'未知的東西'}
+        session=self.supplement(self.make_plan(instance));rows={r['key']:r for r in session['rows']}
+        sent=[r['text'] for kind,payload in FakeClient.sent for r in payload]
+        self.assertEqual(sorted(sent),['Unknown thing','base form'])
+        self.assertEqual({rows[k]['proposed'] for k in ('form.a','form.b','form.c')},{'基礎形態'})
+        self.assertEqual({rows[k]['origin'] for k in ('form.a','form.b','form.c')},{'ai_translation'})
+        self.assertNotIn('相同的原文',rows['form.a']['issue']);self.assertIn('相同的原文',rows['form.b']['issue'])
+        self.assertEqual((session['ai_status'],session['ai_translation']),('completed',4))
+        self.assertEqual(ai.pending_rows(session),[])
+        self.assertFalse(any(r.get('reviewed') for r in rows.values()))  # shared answers are still AI work to check
+        # Each key is remembered, so the next modpack reuses all three without asking.
+        again=self.pack('重複包二',{'form.a':'base form','form.c':'base form'},{'z':'无关'})
+        reused={r['key']:r for r in self.make_plan(again)['rows']}
+        self.assertEqual((reused['form.a']['proposed'],reused['form.c']['ai_reused']),('基礎形態',True))
+
+    def test_same_text_in_another_mod_is_asked_separately(self):
+        instance=self.pack('兩個模組',{'a':'Odd gadget'},{'z':'无关'})
+        other=instance/'kubejs/assets/second/lang';other.mkdir(parents=True)
+        (other/'en_us.json').write_text(json.dumps({'a':'Odd gadget'}),encoding='utf-8')
+        FakeClient.translations={'Odd gadget':'怪東西'}
+        session=self.supplement(self.make_plan(instance))
+        sent=[(r['text'],r['source']) for kind,payload in FakeClient.sent for r in payload]
+        self.assertEqual(len(sent),2);self.assertEqual(len({source for _,source in sent}),2)
+        self.assertEqual(session['ai_translation'],2)
+
+    def test_rejected_answer_is_not_used_for_the_repeats_either(self):
+        instance=self.pack('數值包',{'a':'Costs 5 gems','b':'Costs 5 gems'},{'z':'无关'})
+        FakeClient.translations={'Costs 5 gems':'花費 8 顆寶石'}
+        session=self.supplement(self.make_plan(instance));rows={r['key']:r for r in session['rows']}
+        for key in ('a','b'):
+            self.assertEqual(rows[key]['origin'],'untranslated');self.assertIn('改動了數值',rows[key]['issue'])
+        self.assertEqual((session['ai_translation'],ai.pending_rows(session)),(0,[]))
+
+
 if __name__=='__main__':unittest.main()
