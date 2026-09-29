@@ -75,12 +75,12 @@ def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_roo
         source = contained(staged, row['file'])
         key = str(target).casefold()
         if key in seen:
-            raise ValueError('Duplicate deployment destination')
+            raise ValueError(f'同一個檔案被排了兩次寫入，已停止，沒有修改任何檔案：{row["file"]}')
         seen.add(key)
         if not source.is_file() or file_hash(source) != row['after']:
-            raise ValueError(f'Staged content changed: {row["file"]}')
+            raise ValueError(f'準備寫入的內容在檢查後被改動，已停止：{row["file"]}')
         if 'before' not in row or file_hash(target) != row['before']:
-            raise ValueError(f'Instance content changed: {row["file"]}')
+            raise ValueError(f'整合包裡的檔案在翻譯後被改動（可能是遊戲或啟動器更新），已停止，請重新翻譯：{row["file"]}')
         paths.append((row, source, target))
 
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '-' + uuid.uuid4().hex[:8]
@@ -106,18 +106,18 @@ def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_roo
             saved.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, saved)
             if file_hash(saved) != row['before']:
-                raise RuntimeError(f'Backup verification failed: {row["file"]}')
+                raise RuntimeError(f'備份檢查失敗，已停止，沒有修改任何檔案：{row["file"]}')
     journal['status'] = 'backed_up'
     save()
     applied = []
     try:
         for row, source, target in paths:
             if file_hash(source) != row['after'] or file_hash(target) != row['before']:
-                raise RuntimeError(f'File changed during deployment: {row["file"]}')
+                raise RuntimeError(f'寫入途中檔案被其他程式改動，已還原本批修改：{row["file"]}')
             atomic_copy(source, target)
             applied.append((row, target))
             if file_hash(target) != row['after']:
-                raise RuntimeError(f'Installed hash mismatch: {row["file"]}')
+                raise RuntimeError(f'寫入後檢查不符，已還原本批修改：{row["file"]}')
         journal['status'] = 'installed'
         save()
     except Exception as exc:

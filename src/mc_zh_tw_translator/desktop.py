@@ -514,6 +514,7 @@ class MainWindow(QMainWindow):
         if index==2:self.refresh_backups()
         if index==5:self.refresh_terms()
         if index==6 and self.catalog is None:self.refresh_catalog()
+        elif index==6:self.mark_catalog_seen()
 
     def make_shared(self):
         box=self.page('現成翻譯','已經翻好的整合包，選一個按「安裝翻譯」就完成。只含翻譯文字，不含模組檔；安裝前會先備份。')
@@ -522,6 +523,24 @@ class MainWindow(QMainWindow):
         self.catalog_box=QVBoxLayout();self.catalog_box.setSpacing(12);box.addLayout(self.catalog_box)
         box.addStretch()
         self.catalog=None;self.pack_buttons=[]
+
+    @staticmethod
+    def catalog_key(pack):return f"{pack['projectID'] or pack['name']}:{pack['fileID']}:{pack['sha256'][:12]}"
+
+    def seen_catalog(self):
+        value=self.settings.value('seen_catalog',[]) or []
+        return set([value] if isinstance(value,str) else value)
+
+    def mark_catalog_seen(self):
+        if not self.catalog:return
+        self.settings.setValue('seen_catalog',sorted(self.seen_catalog()|{self.catalog_key(p) for p in self.catalog}))
+        self.update_catalog_badge(include_new=False)
+
+    def update_catalog_badge(self,include_new=True):
+        updates=sum(p['status']=='update' for p in self.catalog or [])
+        fresh=sum(bool(p.get('new')) and p['status']!='applied' for p in self.catalog or []) if include_new else 0
+        parts=([f'{fresh} 個新'] if fresh else [])+([f'{updates} 個更新'] if updates else [])
+        self.navs[6].setText('現成翻譯'+(f"（{'、'.join(parts)}）" if parts else ''))
 
     def clear_catalog(self):
         self.pack_buttons=[]
@@ -547,8 +566,15 @@ class MainWindow(QMainWindow):
 
     def catalog_loaded(self,packs):
         self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home))
-        updates=sum(p['status']=='update' for p in self.catalog)
-        self.navs[6].setText(f'現成翻譯（{updates} 個更新）' if updates else '現成翻譯')
+        # New = published translations this user has not seen yet; shown until the page is opened.
+        seen=self.seen_catalog()
+        for pack in self.catalog:pack['new']=self.catalog_key(pack) not in seen
+        fresh=[p for p in self.catalog if p['new'] and p['status']!='applied']
+        mine=[p for p in fresh if p['status'] in ('exact','update')]
+        if mine and self.pages.currentIndex()!=6:
+            self.notify_finished('有新的現成翻譯',f"你電腦上的「{mine[0]['name']}」有可以安裝的翻譯"+(f"，另有 {len(mine)-1} 個" if len(mine)>1 else '')+'。')
+        self.update_catalog_badge()
+        if self.pages.currentIndex()==6:self.mark_catalog_seen()
         if not self.catalog:
             self.catalog_message('目前還沒有現成翻譯','有新的整合包翻譯發布時，會出現在這裡。');return
         self.clear_catalog()
@@ -563,6 +589,8 @@ class MainWindow(QMainWindow):
                  'not_installed':[('用 CurseForge 安裝整合包',True,self.install_with_curseforge)]}
         for pack in self.catalog:
             f,b=card();top=QHBoxLayout();name=label(pack['name'],'section');name.setWordWrap(True);top.addWidget(name,1)
+            if pack.get('new'):
+                tag=label('','pill');set_pill(tag,'新','progress');top.addWidget(tag,0,Qt.AlignVCenter)
             pill=label('','pill');set_pill(pill,*states[pack['status']]);top.addWidget(pill,0,Qt.AlignVCenter);b.addLayout(top)
             # The modpack's own version and the translation's revision are different things.
             modpack='　·　'.join(x for x in ('整合包版本 '+(pack['version'] or '未標示')+(f"（{pack['modpackDate']} 發布）" if pack['modpackDate'] else ''),
@@ -1200,7 +1228,8 @@ class MainWindow(QMainWindow):
                 'blocked':'此批次無法繼續，請查看下方原因。','installed':'已直接套用到模組包，原檔已備份。','restored':'這一批已還原。'}
         badges={'installed':('已套用','done'),'blocked':('需要處理','blocked'),'apply_failed':('套用未完成','blocked'),'awaiting_game':('等待關閉遊戲','progress'),
                 'cancelled':('已停止','todo'),'restored':('已還原','todo'),'scanning':('處理中','progress'),'references':('處理中','progress'),'matching':('處理中','progress')}
-        set_pill(self.report_state,*badges.get(self.session['status'],('待套用','todo')))
+        partial=self.session['status']=='installed' and self.unapplied_count()
+        set_pill(self.report_state,*(('部分套用','progress') if partial else badges.get(self.session['status'],('待套用','todo'))))
         message=stages.get(self.session['status'],'本次已產生的譯文與待處理項目如下。')
         pending=self.unapplied_count()
         if pending and self.session['status'] in ('needs_review','ready_to_apply','installed'):
@@ -1261,8 +1290,15 @@ class MainWindow(QMainWindow):
                                 '不需要逐筆確認；有疑點的會列在「建議確認」。請先關閉此模組包的遊戲。是否繼續？')!=QMessageBox.Yes:return
         self.session['set_language']=self.set_language.isChecked()
         def operation(w):
+            w.progress.emit(0,'整理譯文',f'統一譯名並確認 {count:,} 筆譯文，套用前不會修改任何檔案')
             jobs.unify_suggested_terms(self.session);jobs.auto_confirm_safe(self.session)
             return jobs.apply_session(self.session,self.home,w.progress.emit)
+        # Make the start page describe this job right away: which modpack, how many rows, what is happening.
+        self.path.setText(self.session['instance'])
+        self.step.setText(f"正在把 {count:,} 筆譯文套用到「{Path(self.session['instance']).name}」")
+        self.detail.setText('先整理譯文，再確認遊戲已關閉、備份原檔、寫入並檢查；請不要開啟遊戲。')
+        self.stats[0].setText(f'{count:,}');self.stats[1].setText(f"{sum(r['origin']=='untranslated' and r['supported'] for r in self.session['rows']):,}")
+        self.stats[2].setText(f"{self.session.get('installed_count',0):,}")
         self.navigate(0);self.run_worker('apply',operation,self.apply_done)
 
     def apply_done(self,result):

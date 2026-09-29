@@ -1152,7 +1152,9 @@ def apply_session(session, home, notify):
     if not selected:raise ValueError('這一批沒有尚未套用的譯文。')
     if session.get('status')=='blocked':raise ValueError('此批次預檢未通過，不能套用。')
     if session.get('status')=='restored':raise ValueError('這一批已還原，請重新翻譯建立新的一批。')
+    notify(1,'確認遊戲已關閉',f'準備把 {len(selected):,} 筆譯文寫入 {instance.name}')
     ensure_game_closed(instance)
+    notify(3,'檢查原檔是否變動','比對掃描時記錄的檔案雜湊')
     # A batch may be applied in parts (e.g. an older version wrote only confirmed rows). Files this batch
     # already wrote are accepted at the hash that earlier write left; anything else must be unchanged.
     ours={}
@@ -1178,13 +1180,19 @@ def apply_session(session, home, notify):
         notify(int(70*i/len(changes)),'驗證並準備套用',path)
         src=contained(instance,path); dst=contained(staged,path)
         before=file_hash(src)
+        # A KubeJS language file can receive both the modpack's own KubeJS rows and embedded-library rows
+        # staged by build_pack; build on that staged file so one merged file is written, not two.
+        merged=dst.is_file() and any(r['file']==path for r in records)
+        try:on_disk=parse(src.read_bytes()) if merged and src.exists() and path.endswith('.json') else {}
+        except ValueError:on_disk={}
         by_entry=collections.defaultdict(list)
         for entry,row in edits:by_entry[entry].append(row)
         z=zipfile.ZipFile(src) if any(entry is not None for entry in by_entry) else None
         try:
             modified={}
             for entry,rows in by_entry.items():
-                raw=z.read(entry) if z and entry in z.namelist() else src.read_bytes() if not z and src.exists() else None
+                raw=(z.read(entry) if z and entry in z.namelist() else dst.read_bytes() if merged
+                     else src.read_bytes() if not z and src.exists() else None)
                 name=entry or path
                 is_text=rows[0]['kind']=='book' and rows[0]['key']=='text'
                 if is_text:
@@ -1202,7 +1210,8 @@ def apply_session(session, home, notify):
                         data=parse(z.read(sourcepath) if z else contained(instance,sourcepath).read_bytes())
                     for r in rows:
                         if r['kind']=='language':
-                            if data.get(r['key'])!=r['current']:
+                            # Compare with the file as it is on disk, not with library text merged in above.
+                            if (on_disk if merged else data).get(r['key'])!=r['current']:
                                 raise ValueError('原檔已變動，請重新掃描：'+path+' / '+r['key'])
                             data[r['key']]=r['proposed']
                         else:
@@ -1217,12 +1226,14 @@ def apply_session(session, home, notify):
             else:dst.write_bytes(modified[None])
         finally:
             if z:z.close()
-        records.append(dict(file=path,before=before,after=file_hash(dst),reviewed=True,verified=True))
+        if merged:records=[dict(r,after=file_hash(dst)) if r['file']==path else r for r in records]
+        else:records.append(dict(file=path,before=before,after=file_hash(dst),reviewed=True,verified=True))
     if session.get('set_language'):
         record=set_language_record(instance,staged)
         if record:records.append(record)
     jars=[staged/r['file'] for r in records if r['file'].endswith('.jar')]
     if jars:
+        notify(72,'檢查模組檔完整性',f'用 Java 檢查 {len(jars):,} 個修改過的模組檔，可能需要一兩分鐘')
         vr=VerifyResult();check_java_zipfs(jars,vr)
         if not vr.ok:raise ValueError('Java 驗證未通過：'+'; '.join(vr.errors))
     notify(80,'備份與套用','先保存所有原檔，再寫入已校對文字')

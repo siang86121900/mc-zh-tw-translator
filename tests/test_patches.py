@@ -180,6 +180,26 @@ class PatchTests(unittest.TestCase):
         self.assertTrue((self.translator/'kubejs/assets/demo/lang/zh_tw.json').exists())
         with self.assertRaises(ValueError):apply_session(done,self.home,lambda *_:None)  # nothing left
 
+    def test_kubejs_file_shared_by_modpack_and_embedded_library_is_written_once(self,_):
+        # Tensura: kubejs/assets/manascore/lang has the modpack's own text, and manascore is also a jar-in-jar.
+        inner=io.BytesIO()
+        with zipfile.ZipFile(inner,'w') as z:
+            z.writestr('assets/lib/lang/en_us.json',json.dumps({'lib.a':'Library'}))
+            z.writestr('assets/lib/lang/zh_cn.json',json.dumps({'lib.a':'函数库'}))
+            z.writestr('assets/lib/lang/zh_tw.json',json.dumps({'lib.own':'自帶'}))
+        with zipfile.ZipFile(self.translator/'mods/host.jar','w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="host"\n')
+            z.writestr('META-INF/jarjar/lib.jar',inner.getvalue())
+        (self.translator/'mods/kubejs-neoforge.jar').write_bytes(b'')
+        lang=self.translator/'kubejs/assets/lib/lang'
+        lang.mkdir(parents=True)
+        (lang/'en_us.json').write_text(json.dumps({'lib.pack':'Pack text'}),encoding='utf-8')
+        (lang/'zh_cn.json').write_text(json.dumps({'lib.pack':'整合包文字'}),encoding='utf-8')
+        done=self.translate()
+        self.assertEqual(done['status'],'installed')
+        merged=json.loads((lang/'zh_tw.json').read_text(encoding='utf-8'))
+        self.assertEqual((merged['lib.a'],merged['lib.pack']),('函式庫','整合包文字'))
+
     def test_modpack_update_after_translation_is_noticed(self,_):
         from mc_zh_tw_translator import desktop_jobs as jobs
         self.translate()
