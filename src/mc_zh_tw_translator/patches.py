@@ -76,11 +76,12 @@ def allowed_entry(name: str) -> bool:
 
 def instance_identity(instance: Path) -> dict:
     """Which modpack and version a folder holds, from CurseForge's files when present."""
-    identity=dict(name=instance.name,projectID=0,fileID=0,gameVersion='',version='')
+    identity=dict(name=instance.name,projectID=0,fileID=0,gameVersion='',version='',date='')
     try:
         x=json.loads((instance/'minecraftinstance.json').read_text(encoding='utf-8-sig'))
         identity.update(name=x.get('name') or instance.name,projectID=int(x.get('projectID') or 0),
-                        fileID=int(x.get('fileID') or 0),gameVersion=x.get('gameVersion') or '')
+                        fileID=int(x.get('fileID') or 0),gameVersion=x.get('gameVersion') or '',
+                        date=str(x.get('fileDate') or '')[:10])  # release date of the installed modpack version
     except (OSError,ValueError,TypeError):pass
     try:
         m=json.loads((instance/'manifest.json').read_text(encoding='utf-8-sig'))
@@ -339,6 +340,7 @@ def fetch_catalog(session=None):
             packs.append(dict(name=str(x['name']),projectID=int(x.get('projectID') or 0),fileID=int(x.get('fileID') or 0),
                               version=str(x.get('version') or ''),gameVersion=str(x.get('gameVersion') or ''),
                               translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),
+                              modpackDate=str(x.get('modpackDate') or '')[:10],revision=max(1,int(x.get('revision') or 1)),
                               notes=str(x.get('notes') or ''),url=x['url'],sha256=x['sha256'],size=int(x['size'])))
         except (KeyError,TypeError,ValueError):continue
     return packs

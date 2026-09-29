@@ -492,91 +492,89 @@ class MainWindow(QMainWindow):
         if index==6 and self.catalog is None:self.refresh_catalog()
 
     def make_shared(self):
-        box=self.page('現成翻譯','套用別人翻好的整合包，或把你翻好的分享出去。只包含翻譯文字，不含模組檔。')
-        f,b=card();head=QHBoxLayout();head.addWidget(label('可下載的翻譯','section'));head.addStretch()
-        self.catalog_refresh=button('重新整理',self.refresh_catalog);head.addWidget(self.catalog_refresh);b.addLayout(head)
-        b.addWidget(label('會自動比對你電腦上的 CurseForge 整合包。版本相同時可直接套用；版本不同時只套用檔案完全相同的部分，其餘略過。','sub'))
-        self.catalog_list=QListWidget();self.catalog_list.setSpacing(2);self.catalog_list.setMinimumHeight(200);b.addWidget(self.catalog_list,1)
-        self.catalog_state=label('','sub');b.addWidget(self.catalog_state)
-        row=QHBoxLayout();self.patch_apply_btn=button('安裝翻譯',self.apply_catalog_patch,True)
-        self.cf_install_btn=button('用 CurseForge 安裝整合包',self.install_with_curseforge)
-        row.addWidget(self.patch_apply_btn);row.addWidget(self.cf_install_btn);row.addStretch();b.addLayout(row);box.addWidget(f,1)
-        f,b=card();b.addWidget(label('從檔案套用','section'))
-        b.addWidget(label('朋友直接傳給你的翻譯補丁（.zip）。套用前會先備份，之後可在「備份與還原」復原。','sub'))
-        self.patch_file_btn=button('選擇翻譯補丁並套用',self.apply_patch_file);b.addWidget(self.patch_file_btn,alignment=Qt.AlignLeft);box.addWidget(f)
-        f,b=card();b.addWidget(label('分享我的翻譯','section'))
-        b.addWidget(label('把「開始翻譯」選取的整合包目前已套用的翻譯打包成補丁，朋友用這個程式的「從檔案套用」即可。'
-                          '補丁含 CFPA、ModsTranslationPack 等社群譯文，須依 CC BY-NC-SA 4.0 免費分享並保留來源說明，不得販售。','sub'))
-        self.patch_export_btn=button('匯出翻譯補丁',self.export_patch_job);b.addWidget(self.patch_export_btn,alignment=Qt.AlignLeft)
-        self.patch_status=label('','sub');b.addWidget(self.patch_status);box.addWidget(f)
-        self.catalog=None
+        box=self.page('現成翻譯','已經翻好的整合包，選一個按「安裝翻譯」就完成。只含翻譯文字，不含模組檔；安裝前會先備份。')
+        head=QHBoxLayout();self.patch_status=label('','sub');head.addWidget(self.patch_status,1)
+        self.catalog_refresh=button('重新整理',self.refresh_catalog);head.addWidget(self.catalog_refresh,0,Qt.AlignTop);box.addLayout(head)
+        self.catalog_box=QVBoxLayout();self.catalog_box.setSpacing(12);box.addLayout(self.catalog_box)
+        box.addStretch()
+        self.catalog=None;self.pack_buttons=[]
+
+    def clear_catalog(self):
+        self.pack_buttons=[]
+        while self.catalog_box.count():
+            item=self.catalog_box.takeAt(0)
+            if item.widget():item.widget().deleteLater()
+
+    def catalog_message(self,title,text):
+        self.clear_catalog();f,b=card();b.setContentsMargins(24,28,24,28)
+        t=label(title,'section');t.setAlignment(Qt.AlignCenter);b.addWidget(t)
+        if text:
+            sub=label(text,'sub');sub.setAlignment(Qt.AlignCenter);b.addWidget(sub)
+        self.catalog_box.addWidget(f)
 
     def refresh_catalog(self):
-        self.catalog=[];self.catalog_list.clear();self.catalog_state.setText('正在讀取可下載的翻譯…')
+        self.catalog=[];self.catalog_message('正在讀取現成翻譯…','')
         self.catalog_refresh.setEnabled(False)
         worker=Worker(lambda w:patches.fetch_catalog())
         worker.result.connect(self.catalog_loaded)
-        worker.failed.connect(lambda text:self.catalog_state.setText('暫時無法連線讀取清單，可稍後按「重新整理」，或用「從檔案套用」。'))
+        worker.failed.connect(lambda text:self.catalog_message('暫時無法連線','請確認網路後按「重新整理」。'))
         worker.finished.connect(lambda w=worker:(self.catalog_refresh.setEnabled(True),self.background.remove(w) if w in self.background else None,w.deleteLater()))
         self.background.append(worker);worker.start()
 
     def catalog_loaded(self,packs):
-        self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home));self.catalog_list.clear()
-        states={'update':('翻譯有更新','progress'),'exact':('可安裝翻譯','progress'),'applied':('已是最新','done'),
-                'other_version':('整合包版本不同','todo'),'not_installed':('未安裝整合包','todo')}
+        self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home))
         updates=sum(p['status']=='update' for p in self.catalog)
         self.navs[6].setText(f'現成翻譯（{updates} 個更新）' if updates else '現成翻譯')
+        if not self.catalog:
+            self.catalog_message('目前還沒有現成翻譯','有新的整合包翻譯發布時，會出現在這裡。');return
+        self.clear_catalog()
+        states={'update':('翻譯有更新','progress'),'exact':('可安裝','progress'),'applied':('已是最新','done'),
+                'other_version':('整合包版本不同','todo'),'not_installed':('未安裝整合包','todo')}
+        notes={'update':'你安裝後這份翻譯又更新了。',
+               'other_version':'你的整合包版本和這份翻譯不同，只會翻譯相同的模組；建議先在 CurseForge 更新整合包。',
+               'not_installed':'你的電腦還沒有這個整合包，先用 CurseForge 安裝，裝好後回來按「重新整理」。'}
+        actions={'update':[('更新翻譯',True,self.apply_catalog_patch)],'exact':[('安裝翻譯',True,self.apply_catalog_patch)],
+                 'applied':[('重新安裝',False,self.apply_catalog_patch)],
+                 'other_version':[('仍要安裝',False,self.apply_catalog_patch),('用 CurseForge 更新整合包',False,self.install_with_curseforge)],
+                 'not_installed':[('用 CurseForge 安裝整合包',True,self.install_with_curseforge)]}
         for pack in self.catalog:
-            row=QWidget();line=QHBoxLayout(row);line.setContentsMargins(14,10,14,10);text=QVBoxLayout();text.setSpacing(2)
-            text.addWidget(label(pack['name'],'section'))
-            detail='　·　'.join(x for x in (pack['version'] and '版本 '+pack['version'],pack['gameVersion'] and 'Minecraft '+pack['gameVersion'],
-                                             pack['translator'] and '翻譯：'+pack['translator'],pack['updated'] and '更新 '+pack['updated'][:10]) if x)
-            text.addWidget(label(detail,'sub'))
-            if pack['notes']:text.addWidget(label(pack['notes'],'sub'))
-            if pack['status']=='other_version':
-                text.addWidget(label('你安裝的整合包版本和這份翻譯不同，套用時只會翻譯相同的模組；也可以先在 CurseForge 更新整合包。','sub'))
-            elif pack['status']=='update':
-                text.addWidget(label('這份翻譯在你套用後又更新了，按「安裝翻譯」即可更新。','sub'))
-            elif pack['status']=='not_installed':
-                text.addWidget(label('先按「用 CurseForge 安裝整合包」，裝好後回來按「重新整理」再安裝翻譯。','sub'))
-            if pack['status'] in ('exact','applied','update') and not pack['latest']:
-                text.addWidget(label(f"整合包已有新版本 {pack['newest_version']} 的翻譯；在 CurseForge 更新整合包後即可安裝。",'sub'))
-            line.addLayout(text,1);pill=label('','pill');set_pill(pill,*states[pack['status']]);line.addWidget(pill,0,Qt.AlignVCenter)
-            row.setAttribute(Qt.WA_TransparentForMouseEvents)
-            item=QListWidgetItem();item.setSizeHint(row.sizeHint().expandedTo(QSize(0,64)));item.setData(Qt.UserRole,pack)
-            self.catalog_list.addItem(item);self.catalog_list.setItemWidget(item,row)
-        if self.catalog_list.count():self.catalog_list.setCurrentRow(0)
-        self.catalog_state.setText('' if self.catalog else '目前還沒有公開的現成翻譯。朋友傳給你的補丁，可用下方「從檔案套用」。')
-
-    def selected_pack(self):
-        item=self.catalog_list.currentItem()
-        return item.data(Qt.UserRole) if item else None
+            f,b=card();top=QHBoxLayout();name=label(pack['name'],'section');name.setWordWrap(True);top.addWidget(name,1)
+            pill=label('','pill');set_pill(pill,*states[pack['status']]);top.addWidget(pill,0,Qt.AlignVCenter);b.addLayout(top)
+            # The modpack's own version and the translation's revision are different things.
+            modpack='　·　'.join(x for x in ('整合包版本 '+(pack['version'] or '未標示')+(f"（{pack['modpackDate']} 發布）" if pack['modpackDate'] else ''),
+                                              pack['gameVersion'] and 'Minecraft '+pack['gameVersion']) if x)
+            translation='　·　'.join(x for x in (f"翻譯第 {pack['revision']} 版",pack['updated'] and pack['updated'][:10]+' 更新',
+                                                  pack['translator'] and '翻譯：'+pack['translator']) if x)
+            b.addWidget(label(modpack,'muted'));b.addWidget(label(translation,'sub'))
+            newer=(f"整合包已有新版本 {pack['newest_version']} 的翻譯，在 CurseForge 更新整合包後即可安裝。"
+                   if pack['status'] in ('exact','applied','update') and not pack['latest'] else '')
+            for text in (pack['notes'],notes.get(pack['status'],''),newer):
+                if text:b.addWidget(label(text,'sub'))
+            row=QHBoxLayout()
+            for text,primary,fn in actions[pack['status']]:
+                btn=button(text,lambda checked=False,p=pack,fn=fn:fn(p),primary);btn.setEnabled(not self.busy)
+                self.pack_buttons.append(btn);row.addWidget(btn)
+            row.addStretch();b.addLayout(row);self.catalog_box.addWidget(f)
 
     def choose_patch_target(self,projectID,fileID,title):
         """Pick the instance to patch: CurseForge instances of the same modpack first, then any known folder."""
         found=jobs.curseforge_instances()
         same=[x for x in found if projectID and x['projectID']==projectID]
         same.sort(key=lambda x:x['fileID']!=fileID)
-        others=[(name,path) for launcher,name,path in jobs.discover_instances([self.path.text()]) if not any(Path(path)==x['path'] for x in same)]
-        options=[(x['name']+('' if x['fileID']==fileID else '（版本不同）'),x['path']) for x in same]+others
-        if not options:QMessageBox.information(self,title,'找不到整合包。請先在 CurseForge 安裝同一個整合包，或在「開始翻譯」選擇資料夾。');return None
-        if len(same)==1 and same[0]['fileID']==fileID:return same[0]['path']
+        options=[(x['name']+('' if x['fileID']==fileID else '（整合包版本不同）'),x['path']) for x in same]
+        if not options:QMessageBox.information(self,title,'找不到這個整合包。請先用 CurseForge 安裝同一個整合包。');return None
+        if len(same)==1:return same[0]['path']
         from PySide6.QtWidgets import QInputDialog
-        name,ok=QInputDialog.getItem(self,title,'要套用到哪個整合包？',[n for n,_ in options],0,False)
+        name,ok=QInputDialog.getItem(self,title,'要安裝到哪個整合包？',[n for n,_ in options],0,False)
         return dict(options).get(name) if ok else None
 
     def confirm_patch(self,target,name,other_version):
-        warn='\n\n版本和翻譯時不同：只會套用檔案完全相同的部分，其餘略過（不會覆蓋）。' if other_version else ''
+        warn='\n\n整合包版本和翻譯時不同：只會翻譯檔案完全相同的模組，其餘略過（不會覆蓋）。' if other_version else ''
         language='，並把遊戲語言設為繁體中文' if self.set_language.isChecked() else ''
-        return QMessageBox.question(self,'套用翻譯',f'將把「{name}」的翻譯套用到{language}：\n{target}\n\n會先備份要修改的原檔，之後可在「備份與還原」復原。請先關閉這個整合包的遊戲。{warn}\n\n是否繼續？')==QMessageBox.Yes
+        return QMessageBox.question(self,'安裝翻譯',f'將把「{name}」的翻譯安裝到{language}：\n{target}\n\n會先備份要修改的原檔，之後可在「備份與還原」復原。請先關閉這個整合包的遊戲。{warn}\n\n是否繼續？')==QMessageBox.Yes
 
-    def apply_catalog_patch(self):
-        pack=self.selected_pack()
-        if not pack:return
-        if pack['status']=='not_installed':
-            if QMessageBox.question(self,'尚未安裝整合包',f"你的電腦還沒有「{pack['name']}」。要先用 CurseForge 安裝嗎？")==QMessageBox.Yes:self.install_with_curseforge()
-            return
-        target=self.choose_patch_target(pack['projectID'],pack['fileID'],'套用翻譯')
+    def apply_catalog_patch(self,pack):
+        target=self.choose_patch_target(pack['projectID'],pack['fileID'],'安裝翻譯')
         if not target:return
         identity=patches.instance_identity(Path(target))
         if not self.confirm_patch(target,pack['name'],identity['fileID']!=pack['fileID']):return
@@ -586,54 +584,23 @@ class MainWindow(QMainWindow):
             return patches.apply_patch(Path(target),path,self.home,w.progress.emit,set_language=language)
         self.run_worker('patch_apply',operation,self.patch_applied)
 
-    def apply_patch_file(self):
-        file,_=QFileDialog.getOpenFileName(self,'選擇翻譯補丁',str(Path.home()/'Downloads'),'翻譯補丁 (*.zip)')
-        if not file:return
-        try:
-            z,manifest=patches.read_patch(Path(file));z.close()
-        except (ValueError,OSError,KeyError,zipfile.BadZipFile) as exc:
-            QMessageBox.warning(self,'無法讀取補丁',str(exc) or '檔案不是有效的翻譯補丁。');return
-        pack=manifest.get('modpack') or {}
-        target=self.choose_patch_target(pack.get('projectID',0),pack.get('fileID',0),'套用翻譯補丁')
-        if not target:return
-        identity=patches.instance_identity(Path(target))
-        other=bool(pack.get('fileID')) and identity['fileID']!=pack.get('fileID')
-        if not self.confirm_patch(target,pack.get('name') or Path(file).stem,other):return
-        language=self.set_language.isChecked()
-        self.run_worker('patch_apply',lambda w:patches.apply_patch(Path(target),Path(file),self.home,w.progress.emit,set_language=language),self.patch_applied)
-
     def patch_applied(self,result):
-        self.refresh_backups()
-        if self.catalog is not None:self.refresh_catalog()
-        lines=[f"已套用 {len(result['applied']):,} 個檔案。" if result['applied'] else '沒有需要套用的檔案。']
+        self.refresh_backups();self.refresh_catalog()
+        lines=[f"已翻譯 {len(result['applied']):,} 個檔案。" if result['applied'] else '沒有需要更新的檔案。']
         if result['already']:lines.append(f"{len(result['already']):,} 個檔案先前已翻譯。")
         if result['skipped']:
             lines.append(f"略過 {len(result['skipped']):,} 個和翻譯時版本不同的檔案（未修改）：")
             lines+=['・'+s['file'] for s in result['skipped'][:8]]+(['…'] if len(result['skipped'])>8 else [])
         if result['backup']:lines.append('原檔已備份，可在「備份與還原」復原。')
         lines.append('遊戲語言已設為繁體中文（台灣）。' if result['language_set'] else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
-        self.patch_status.setText('');self.notify_finished('翻譯已套用',lines[0])
-        QMessageBox.information(self,'翻譯已套用','\n'.join(lines))
+        self.patch_status.setText('');self.notify_finished('翻譯已安裝',lines[0])
+        QMessageBox.information(self,'翻譯已安裝','\n'.join(lines))
 
-    def install_with_curseforge(self):
-        pack=self.selected_pack()
-        if not pack or not pack['projectID']:return
+    def install_with_curseforge(self,pack):
+        if not pack['projectID']:return
         QDesktopServices.openUrl(QUrl(patches.curseforge_install_url(pack)))
-        QMessageBox.information(self,'用 CurseForge 安裝',f"已請 CurseForge 安裝「{pack['name']}」。\n\n如果沒有反應，請在 CurseForge 搜尋這個整合包，並選擇版本 {pack['version'] or '（同上）'} 安裝。"
-                                '\n安裝完成後回到這裡，按「重新整理」再「安裝翻譯」。')
-
-    def export_patch_job(self):
-        instance=self.instance_path()
-        if not str(instance) or str(instance)=='.' or not jobs.is_instance(instance):
-            QMessageBox.information(self,'先選擇整合包','請先在「開始翻譯」選擇已翻譯並套用的整合包。');return
-        self.run_worker('patch_export',lambda w:patches.export_patch(instance,self.home,w.progress.emit),self.patch_exported)
-
-    def patch_exported(self,result):
-        skipped=f"\n\n略過 {len(result['skipped'])} 個套用後又修改或無法分享的檔案。" if result['skipped'] else ''
-        self.patch_status.setText('已匯出：'+result['path'])
-        QMessageBox.information(self,'已匯出翻譯補丁',f"包含 {result['files']:,} 個翻譯檔（{result['size']/1048576:.1f} MB）。{skipped}\n\n"
-                                '把這個 zip 傳給朋友，對方用「現成翻譯 → 選擇翻譯補丁並套用」即可。')
-        open_path(Path(result['path']).parent)
+        QMessageBox.information(self,'用 CurseForge 安裝',f"已請 CurseForge 安裝「{pack['name']}」整合包版本 {pack['version'] or ''}。\n\n如果沒有反應，請在 CurseForge 搜尋這個整合包並安裝同一個版本。"
+                                '\n裝好後回到這裡，按「重新整理」再「安裝翻譯」。')
 
     def make_terms(self):
         box=self.page('譯名與用詞','固定專有名詞的譯法，並統一不同模組間翻得不一樣的詞。')
@@ -882,7 +849,7 @@ class MainWindow(QMainWindow):
         self.busy=True;self.mode=mode
         if mode in ('plan','full_translate','apply','ai_translate'):self.live_session=True;self.set_start_expanded(True)
         self.started_at=self.last_activity=time.monotonic()
-        for b in (self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai,self.patch_apply_btn,self.patch_file_btn,self.patch_export_btn):b.setEnabled(False)
+        for b in (self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai,*self.pack_buttons):b.setEnabled(False)
         if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
         self.history.setEnabled(False);self.cancel.setEnabled(mode in ('plan','full_translate','ai_translate','ai_login','ai_install'));self.ai_stop_btn.setEnabled(mode in ('ai_translate','ai_login','ai_install'))
         self.worker=Worker(operation)
@@ -898,7 +865,7 @@ class MainWindow(QMainWindow):
             QApplication.exit(0);return
         self.progress.setRange(0,100)
         self.taskbar.update(self,state=TaskbarProgress.NOPROGRESS);self.setWindowTitle('模組包中文化 · MC Translator')
-        for b in (self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.patch_apply_btn,self.patch_file_btn,self.patch_export_btn):b.setEnabled(True)
+        for b in (self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,*self.pack_buttons):b.setEnabled(True)
         self.history.setEnabled(True);self.cancel.setEnabled(False);self.ai_stop_btn.setEnabled(False)
         self.install_btn.setEnabled(bool(self.update_info and self.update_info.get('status')=='available'))
         self.ai_progress.hide();self.update_ai_controls();self.update_ai_button()

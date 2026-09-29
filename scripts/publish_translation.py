@@ -9,6 +9,7 @@ translation. Publishing the same modpack version again replaces that entry.
 
 Usage (publishing is public; only run it when the owner asked to publish this patch):
     python scripts/publish_translation.py <patch.zip> --translator 名稱 [--notes 說明] [--dry-run]
+    python scripts/publish_translation.py <modpack folder> --home <MCTranslatorData> --translator 名稱
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
-from mc_zh_tw_translator.patches import read_patch  # noqa: E402
+from mc_zh_tw_translator.patches import export_patch, read_patch  # noqa: E402
 from mc_zh_tw_translator.updater import REPOSITORY  # noqa: E402
 
 BRANCH = 'translations'
@@ -36,11 +37,18 @@ def git(*args, cwd):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('patch', type=Path)
+    parser.add_argument('patch', type=Path, help='exported patch zip, or a modpack folder to export first')
+    parser.add_argument('--home', type=Path, help='MCTranslatorData folder holding the backups (with a modpack folder)')
     parser.add_argument('--translator', required=True)
     parser.add_argument('--notes', default='')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
+    if args.patch.is_dir():
+        if not args.home:sys.exit('給整合包資料夾時，請用 --home 指定 MCTranslatorData 資料夾（含套用紀錄）。')
+        exported = export_patch(args.patch, args.home)
+        for s in exported['skipped']:print('略過：', s['file'], s['reason'])
+        args.patch = Path(exported['path'])
+        print('已匯出：', args.patch)
     z, manifest = read_patch(args.patch)
     z.close()
     pack = manifest['modpack']
@@ -70,8 +78,11 @@ def main():
                 old_file = work/old['url'][len(RAW):]
                 if old['url'].startswith(RAW) and old_file.exists():
                     git('rm', '--quiet', old['url'][len(RAW):], cwd=work)
+            # version/modpackDate describe the modpack itself; revision counts re-publishes of its translation.
             index['packs'].append(dict(name=pack['name'], projectID=pack['projectID'], fileID=pack['fileID'],
-                                       version=pack.get('version', ''), gameVersion=pack.get('gameVersion', ''),
+                                       version=pack.get('version', ''), modpackDate=pack.get('date', ''),
+                                       revision=max([int(p.get('revision') or 1) for p in replaced] or [0])+1,
+                                       gameVersion=pack.get('gameVersion', ''),
                                        translator=args.translator, updated=date.today().isoformat(), notes=args.notes,
                                        url=RAW+relative, sha256=digest, size=len(data)))
             index['packs'].sort(key=lambda p: (p['name'].casefold(), p['updated']))
