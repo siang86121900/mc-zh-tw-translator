@@ -197,6 +197,27 @@ class DesktopUiTests(unittest.TestCase):
                     if quit_app.called:break
                 quit_app.assert_called_once()
 
+    def test_report_applies_checked_rows_without_row_by_row_confirmation(self):
+        with tempfile.TemporaryDirectory() as d:
+            home=Path(d);report=home/'output/demo/報告/b';report.mkdir(parents=True)
+            row=lambda key,zh,**kw:dict(dict(source='mods/a.jar!/assets/a/lang/en_us.json',key=key,en='Hello %s',proposed=zh,origin='same_source_zh_cn',
+                                         supported=True,reviewed=False,changed=True,current=None,kind='language'),**kw)
+            rows=[row('a.one','你好 %s'),row('a.two','你好',),row('a.three','哈囉 %s',reviewed=True,review_method='user_confirmed_in_ui')]
+            (report/'session.json').write_text(json.dumps(dict(instance=d,report=str(report),status='needs_review',errors=[],source_counts={},rows=rows)),encoding='utf-8')
+            window=MainWindow(home);self.assertIn('2 筆',window.apply_btn.text())  # '你好' lost its %s, so it is not counted
+            captured={}
+            def fake_apply(session,home,notify):captured.update({r['key']:(r['reviewed'],r.get('review_method')) for r in session['rows']});return dict(session,status='installed')
+            with patch.object(QMessageBox,'question',return_value=QMessageBox.Yes),patch.object(QMessageBox,'information'),\
+                 patch('mc_zh_tw_translator.desktop_jobs.apply_session',side_effect=fake_apply):
+                window.apply_job()
+                for _ in range(200):
+                    self.app.processEvents();time.sleep(.01)
+                    if not window.busy:break
+            self.assertEqual(captured['a.one'],(True,'auto_validated_one_click'))
+            self.assertEqual(captured['a.two'][0],False)
+            self.assertEqual(captured['a.three'],(True,'user_confirmed_in_ui'))
+            window.close()
+
     def test_shared_page_lists_catalog_with_install_status(self):
         with tempfile.TemporaryDirectory() as d:
             pack=dict(name='Demo',projectID=7,fileID=8,version='1.0',gameVersion='1.21.1',translator='我',updated='2026-09-29',

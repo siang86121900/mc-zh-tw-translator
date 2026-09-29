@@ -465,7 +465,7 @@ class MainWindow(QMainWindow):
         self.page_size.setCurrentIndex(max(0,self.page_size.findData(saved)))
         self.page_size.currentIndexChanged.connect(lambda *_:(self.settings.setValue('page_size',self.page_size.currentData()),self.reset_table()))
         nav.addWidget(self.prev);nav.addWidget(self.next);nav.addWidget(self.page_label);nav.addStretch();nav.addWidget(self.page_size);box.addLayout(nav)
-        actions=QHBoxLayout();self.review_btn=button('查看並校對',self.review_current);self.apply_btn=button('備份並套用已確認譯文',self.apply_job,True)
+        actions=QHBoxLayout();self.review_btn=button('查看並校對',self.review_current);self.apply_btn=button('備份並套用譯文',self.apply_job,True)
         self.ai_run_btn=button('AI 補翻缺漏',self.ai_supplement)
         actions.addWidget(self.review_btn);actions.addWidget(self.ai_run_btn);actions.addStretch();actions.addWidget(self.apply_btn);box.addLayout(actions)
         box.addWidget(label('「一鍵完整翻譯並套用」已直接套用所有通過檢查的譯文。「建議確認」只列 AI 補譯、版本不同的參考譯文和自動統一的譯名，雙擊可修正；按「確認這筆」後會記住，下次翻譯自動使用。','sub'))
@@ -1092,11 +1092,11 @@ class MainWindow(QMainWindow):
         if self.session['status'] in ('awaiting_game','apply_failed','ready_to_apply') or (pending and self.session['status']=='needs_review'):
             verb='重試套用' if self.session['status'] in ('awaiting_game','apply_failed') else '套用這批譯文'
             self.apply_btn.setText(f'{verb}（{pending:,} 筆，不重新翻譯）' if pending else '重試套用（不重新翻譯）')
-        else:self.apply_btn.setText('備份並套用已確認譯文')
+        else:self.apply_btn.setText('備份並套用譯文')
 
     def unapplied_count(self):
-        if not self.session or self.session.get('is_preview'):return 0
-        return sum(bool(r.get('reviewed') and r.get('changed') and r.get('supported') and not r.get('installed')) for r in self.session['rows'])
+        if not self.session or self.session.get('is_preview') or self.session.get('status') in ('installed','restored'):return 0
+        return jobs.applicable_count(self.session)
 
     def refresh_history(self):
         current=self.session['report'] if self.session else None
@@ -1228,12 +1228,18 @@ class MainWindow(QMainWindow):
 
     def apply_job(self):
         if not self.session:return
-        count=sum(bool(r.get('reviewed') and r.get('changed') and r.get('supported') and not r.get('installed')) for r in self.session['rows'])
-        if not count:QMessageBox.information(self,'先校對譯文','請在報告中雙擊譯文，核對後按「確認這筆」。');return
+        # No row-by-row confirmation needed: everything that passes the automatic checks is applied,
+        # the same as one-click; doubtful rows stay listed under 建議確認.
+        count=jobs.applicable_count(self.session)
+        if not count:QMessageBox.information(self,'沒有可套用的譯文','這批沒有尚未套用、且通過檢查的譯文。');return
         language='，並把遊戲語言設為繁體中文' if self.set_language.isChecked() else ''
-        if QMessageBox.question(self,'備份並套用',f'將備份原檔，並套用 {count:,} 筆已確認譯文{language}到：\n{self.session["instance"]}\n\n請先關閉此模組包的遊戲。是否繼續？')!=QMessageBox.Yes:return
+        if QMessageBox.question(self,'備份並套用',f'將備份原檔，並套用 {count:,} 筆通過檢查的譯文{language}到：\n{self.session["instance"]}\n\n'
+                                '不需要逐筆確認；有疑點的會列在「建議確認」。請先關閉此模組包的遊戲。是否繼續？')!=QMessageBox.Yes:return
         self.session['set_language']=self.set_language.isChecked()
-        self.navigate(0);self.run_worker('apply',lambda w:jobs.apply_session(self.session,self.home,w.progress.emit),self.apply_done)
+        def operation(w):
+            jobs.unify_suggested_terms(self.session);jobs.auto_confirm_safe(self.session)
+            return jobs.apply_session(self.session,self.home,w.progress.emit)
+        self.navigate(0);self.run_worker('apply',operation,self.apply_done)
 
     def apply_done(self,result):
         self.check_outdated()

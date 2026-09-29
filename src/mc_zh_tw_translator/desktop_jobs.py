@@ -319,7 +319,7 @@ def report_overview(session):
     reasons=[]
     missing=sum(r['origin']=='untranslated' and r['supported'] for r in rows)
     if missing:reasons.append((missing,'找不到中文來源'+('（可用 AI 補翻）' if not session.get('ai_translation') else '')))
-    waiting=sum(bool(r.get('reviewed') and r.get('changed') and r.get('supported') and not r.get('installed')) for r in rows)
+    waiting=0 if session.get('status') in ('installed','restored') else applicable_count(session)
     if waiting:reasons.append((waiting,'已翻好但還沒寫入（'+('關閉遊戲後重試套用' if session.get('status') in ('awaiting_game','apply_failed') else '尚未套用')+'）'))
     if session.get('nested_skipped'):reasons.append((session['nested_skipped'],'內嵌函式庫需要 KubeJS 才能套用'))
     # Program/config strings are candidates, not known gaps; they are reported beside, not inside, 未套用.
@@ -837,6 +837,13 @@ def full_translation(instance, home, model, notify, cancelled=lambda:False, chec
     return result
 
 
+def applicable_count(session):
+    """Rows the report can apply now: confirmed ones plus everything that passes the automatic checks."""
+    return sum(bool(r.get('supported') and r.get('changed') and not r.get('installed') and r.get('origin')!='untranslated'
+                    and (r.get('reviewed') or validate_text(r.get('en') or r.get('zh_cn') or r.get('current') or '',r.get('proposed','')))
+                    ) for r in session.get('rows',[]))
+
+
 def auto_confirm_safe(session):
     """Approve validated player-text candidates for the one-click workflow.
 
@@ -847,7 +854,7 @@ def auto_confirm_safe(session):
     count = 0
     for row in session.get('rows', []):
         if (row.get('supported') and row.get('changed') and row.get('origin') != 'untranslated'
-                and not row.get('installed') and validate_text(
+                and not row.get('installed') and not row.get('reviewed') and validate_text(
                     row.get('en') or row.get('zh_cn') or row.get('current') or '', row.get('proposed', ''))):
             row['reviewed'] = True
             row['review_method'] = 'auto_validated_one_click'
