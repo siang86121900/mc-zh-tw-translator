@@ -135,7 +135,7 @@ class FolderChoiceTests(Base):
     def test_wrong_folders_say_what_to_pick_instead(self):
         root=Path(self.temp.name)
         folder,note=jobs.resolve_instance(str(root))  # the only modpack inside is an obvious choice
-        self.assertEqual(folder,self.instance);self.assertIn('唯一的模組包',note)
+        self.assertEqual(folder,self.instance.resolve());self.assertIn('唯一的模組包',note)
         (root/'second/.minecraft/mods').mkdir(parents=True)
         with self.assertRaisesRegex(ValueError,'有 2 個模組包'):jobs.resolve_instance(str(root))
         with self.assertRaisesRegex(ValueError,'找不到這個資料夾'):jobs.resolve_instance(str(root/'gone'))
