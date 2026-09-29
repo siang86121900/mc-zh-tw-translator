@@ -374,7 +374,7 @@ class MainWindow(QMainWindow):
         self.instance_box.activated.connect(self.pick_instance)
         self.choose=button('選擇資料夾',self.choose_folder);row.addWidget(self.instance_box,1);row.addWidget(self.choose);b.addLayout(row)
         # Reference sources translate first; AI only fills what is still missing, and only when opted in.
-        ai_row=QHBoxLayout();self.use_ai=QCheckBox('參考來源缺漏時，用 AI 補翻')
+        ai_row=QHBoxLayout();self.use_ai=QCheckBox('用 AI 補翻缺漏，並核對有疑點的譯文')
         self.use_ai.setChecked(str(self.settings.value('use_ai','true')).lower()=='true')
         self.use_ai.toggled.connect(lambda value:(self.settings.setValue('use_ai','true' if value else 'false'),self.update_ai_controls()))
         self.ai_connect_link=button('連接 AI 帳號',lambda:self.navigate(4));self.ai_connect_link.setObjectName('link')
@@ -479,8 +479,15 @@ class MainWindow(QMainWindow):
         self.page_size.currentIndexChanged.connect(lambda *_:(self.settings.setValue('page_size',self.page_size.currentData()),self.reset_table()))
         nav.addWidget(self.prev);nav.addWidget(self.next);nav.addWidget(self.page_label);nav.addStretch();nav.addWidget(self.page_size);box.addLayout(nav)
         actions=QHBoxLayout();self.review_btn=button('查看並校對',self.review_current);self.apply_btn=button('備份並套用譯文',self.apply_job,True)
-        self.ai_run_btn=button('AI 補翻缺漏',self.ai_supplement)
-        actions.addWidget(self.review_btn);actions.addWidget(self.ai_run_btn);actions.addStretch();actions.addWidget(self.apply_btn);box.addLayout(actions)
+        self.ai_run_btn=button('AI 補翻缺漏',self.ai_supplement);self.ai_check_btn=button('AI 核對疑點',self.ai_review)
+        actions.addWidget(self.review_btn);actions.addStretch();actions.addWidget(self.apply_btn);box.addLayout(actions)
+        # One short row per kind of action, so a narrow window never has to cut a button off.
+        helpers=QHBoxLayout();helpers.addWidget(self.ai_run_btn);helpers.addWidget(self.ai_check_btn);helpers.addStretch();box.addLayout(helpers)
+        # Confirming many rows at once: what is listed now (after filters and search), and a way back.
+        confirm=QHBoxLayout();self.confirm_all_btn=button('確認目前列出的全部',self.confirm_listed)
+        self.confirm_all_btn.setToolTip('把目前列出的譯文記成「你確認的」。之後翻譯任何整合包，同一個模組的同一句會優先用它。')
+        self.undo_confirm_btn=button('取消上次整批確認',self.undo_confirm_listed);self.undo_confirm_btn.setObjectName('link')
+        confirm.addWidget(self.confirm_all_btn);confirm.addWidget(self.undo_confirm_btn);confirm.addStretch();box.addLayout(confirm)
         box.addWidget(label('「一鍵完整翻譯並套用」已直接套用所有通過檢查的譯文。「建議確認」只列 AI 補譯、版本不同的參考譯文和自動統一的譯名，雙擊可修正；按「確認這筆」後會記住，下次翻譯自動使用。','sub'))
 
     def make_backups(self):
@@ -816,7 +823,7 @@ class MainWindow(QMainWindow):
         self.use_ai.setEnabled(not self.busy);self.ai_connect_link.setVisible(not connected)
         if not self.use_ai.isChecked():hint='不使用 AI：參考來源缺漏的文字會留在報告，之後可在報告頁補翻。'
         elif usable:
-            hint=f'會先用模組包中文與參考庫翻譯，只把剩下的缺漏交給「{model.get("displayName") or model["model"]}」；消耗你原本的 Codex 額度。'
+            hint=f'會先用模組包中文與參考庫翻譯，只把剩下的缺漏和有疑點的譯文交給「{model.get("displayName") or model["model"]}」；消耗你原本的 Codex 額度。'
         elif connected and warning:hint='AI 暫不可用（'+warning.rstrip('。')+'），這次只用參考來源翻譯；額度恢復後會自動補翻。'
         elif connected:hint='請到「AI 帳號與模型」選擇補翻模型；在那之前只用參考來源翻譯。'
         else:hint='尚未連接 AI，這次只用參考來源翻譯，缺漏留在報告。連接後會自動補翻。'
@@ -938,11 +945,8 @@ class MainWindow(QMainWindow):
     def ai_supplement(self):
         if not self.session:
             QMessageBox.information(self,'先掃描模組包','請先開始翻譯並完成參考來源比對。');return
-        model=self.ai_models.currentData()
-        if not self.ai_info or not self.ai_info.get('account') or not model:
-            self.navigate(4);QMessageBox.information(self,'先連接帳號','請登入 ChatGPT、確認額度並選擇補翻模型。');return
-        if self.ai_info.get('warning'):
-            QMessageBox.warning(self,'暫不補翻',self.ai_info['warning']+'\n可按重新整理再次確認。');return
+        model=self.ai_ready()
+        if not model:return
         count=len(ai.pending_rows(self.session))
         if not count:QMessageBox.information(self,'沒有可補翻缺漏','已完成的 AI 候選不會重送；待查程式與設定不會交給 AI 直接修改。');return
         if QMessageBox.question(self,'使用原方案額度補翻？',f'模型：{model["model"]}\n待補翻：{count} 筆（分批處理）\n\n'+ai.NOTICE+'\n\n'+ai.PRIVACY)!=QMessageBox.Yes:return
@@ -952,6 +956,65 @@ class MainWindow(QMainWindow):
         self.job_done(result);self.ai_status.setText(result['ai_message']);self.navigate(1)
         self.notify_finished('AI 補翻已結束',result['ai_message'])
         if result.get('ai_status')=='paused':QMessageBox.information(self,'AI 補翻已暫停',result['ai_message'])
+
+    def ai_ready(self):
+        """The chosen model when AI can be used now; otherwise says why and returns None."""
+        model=self.ai_models.currentData()
+        if not self.ai_info or not self.ai_info.get('account') or not model:
+            self.navigate(4);QMessageBox.information(self,'先連接帳號','請登入 ChatGPT、確認額度並選擇補翻模型。');return None
+        if self.ai_info.get('warning'):
+            QMessageBox.warning(self,'AI 暫時不能用',self.ai_info['warning']+'\n可按重新整理再次確認。');return None
+        return model
+
+    def ai_review(self):
+        if not self.session or self.session.get('is_preview'):return
+        count=len(ai.doubt_rows(self.session))
+        if not count:QMessageBox.information(self,'沒有需要核對的疑點','數值不同或版本不同的譯文都已經核對過，或這一批沒有這類疑點。');return
+        model=self.ai_ready()
+        if not model:return
+        if QMessageBox.question(self,'使用原方案額度核對？',f'模型：{model["model"]}\n要核對：{count:,} 筆（數值和原文不同、版本不同的參考譯文）\n\n'
+                                'AI 會對照英文原文逐筆判斷：正確的保留原來源並記下已核對；有錯的改寫成 AI 補譯，'
+                                '改寫的部分要再按「備份並套用譯文」才會寫入遊戲。\n\n'+ai.NOTICE+'\n\n'+ai.PRIVACY)!=QMessageBox.Yes:return
+        self.run_worker('ai_translate',lambda w:ai.review(self.session,self.home,model['model'],w.progress.emit,lambda:w.cancelled,checkpoint=w.publish),self.ai_review_done)
+
+    def ai_review_done(self,result):
+        self.job_done(result);self.ai_status.setText(result['ai_review_message']);self.navigate(1)
+        self.notify_finished('AI 核對已結束',result['ai_review_message'])
+        QMessageBox.information(self,'AI 核對結果',result['ai_review_message'])
+
+    def confirmable(self,row):
+        return bool(row.get('supported') and row.get('kind')=='language' and row.get('origin') not in ('untranslated','keep_original','not_display','pending')
+                    and not str(row.get('review_method') or '').startswith('user_confirmed') and row_module(row)
+                    and jobs.usable(row.get('en') or row.get('zh_cn') or row.get('current') or '',row.get('proposed')))
+
+    def confirm_listed(self):
+        if self.busy or not self.session or self.session.get('is_preview'):return
+        rows=[r for r in getattr(self,'listed_rows',[]) if self.confirmable(r)]
+        if not rows:QMessageBox.information(self,'沒有可確認的譯文','目前列出的內容沒有尚未確認的譯文。');return
+        mods=len({row_module(r) for r in rows})
+        wide=('\n\n這次範圍很大。整批確認後，這些譯文的順位會高於社群參考庫；'
+              '建議先用上方的篩選或搜尋縮小到一個模組，看過再確認。' if len(rows)>500 or mods>3 else '')
+        if QMessageBox.question(self,'確認目前列出的全部',f'把目前列出的 {len(rows):,} 筆譯文（{mods:,} 個模組）記成「你確認的」？\n\n'
+                                '之後翻譯任何整合包，遇到同一個模組的同一句會優先使用，也不再列入「建議確認」。'
+                                '確認錯了可以按「取消上次整批確認」。'+wide)!=QMessageBox.Yes:return
+        batch=Path(self.session['report']).name+'-'+time.strftime('%H%M%S')
+        jobs.TranslationMemory(self.home).remember_many(
+            [(row_module(r),r['key'],r.get('en') or r.get('zh_cn') or r.get('current') or '',r['proposed'],r['source']) for r in rows],batch)
+        for r in rows:r.update(reviewed=True,review_method='user_confirmed_batch',confirmed_batch=batch)
+        self.settings.setValue('last_confirm_batch',batch)
+        jobs.write_json(Path(self.session['report'])/'session.json',self.session);self.fill_table()
+        QMessageBox.information(self,'已確認',f'已確認 {len(rows):,} 筆。還沒寫入遊戲的部分，按「備份並套用譯文」即可。')
+
+    def undo_confirm_listed(self):
+        batch=str(self.settings.value('last_confirm_batch','') or '')
+        if self.busy or not batch:return
+        if QMessageBox.question(self,'取消上次整批確認','上次整批確認的譯文會變回「未確認」，之後翻譯不再優先使用它們。已經寫入遊戲的文字不會改變。是否繼續？')!=QMessageBox.Yes:return
+        count=jobs.TranslationMemory(self.home).forget_batch(batch)
+        for r in (self.session or {}).get('rows',[]):
+            if r.get('confirmed_batch')==batch:r.update(review_method=None,confirmed_batch=None,reviewed=bool(r.get('installed')))
+        self.settings.setValue('last_confirm_batch','')
+        if self.session and not self.session.get('is_preview'):jobs.write_json(Path(self.session['report'])/'session.json',self.session)
+        self.fill_table();QMessageBox.information(self,'已取消',f'已取消 {count:,} 筆的確認。')
 
     def choose_folder(self):
         path=QFileDialog.getExistingDirectory(self,'選擇模組包根資料夾',self.path.text() or str(Path.home()))
@@ -971,7 +1034,7 @@ class MainWindow(QMainWindow):
         self.busy=True;self.mode=mode
         if mode in ('plan','full_translate','apply','ai_translate'):self.live_session=True;self.set_start_expanded(True)
         self.started_at=self.last_activity=time.monotonic()
-        for b in (self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai,*self.pack_buttons):b.setEnabled(False)
+        for b in (self.ai_check_btn,self.confirm_all_btn,self.undo_confirm_btn,self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai,*self.pack_buttons):b.setEnabled(False)
         if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
         self.history.setEnabled(False);self.cancel.setEnabled(mode in ('plan','full_translate','ai_translate','ai_login','ai_install'));self.ai_stop_btn.setEnabled(mode in ('ai_translate','ai_login','ai_install'))
         self.worker=Worker(operation)
@@ -987,7 +1050,7 @@ class MainWindow(QMainWindow):
             QApplication.exit(0);return
         self.progress.setRange(0,100)
         self.taskbar.update(self,state=TaskbarProgress.NOPROGRESS);self.setWindowTitle('模組包中文化 · MC Translator')
-        for b in (self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,*self.pack_buttons):b.setEnabled(True)
+        for b in (self.confirm_all_btn,self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,*self.pack_buttons):b.setEnabled(True)
         self.history.setEnabled(True);self.cancel.setEnabled(False);self.ai_stop_btn.setEnabled(False)
         self.install_btn.setEnabled(bool(self.update_info and self.update_info.get('status')=='available'))
         self.ai_progress.hide();self.update_ai_controls();self.update_ai_button()
@@ -1131,7 +1194,8 @@ class MainWindow(QMainWindow):
         usable=self.ai_connected_now() and not (self.ai_info or {}).get('warning')
         model=self.ai_models.currentData() if usable and self.use_ai.isChecked() else None
         if model:
-            ai_line=('參考來源缺漏的文字會交給模型「'+model['model']+'」補翻，消耗你原本 ChatGPT 的 Codex 額度。\n'+ai.PRIVACY)
+            ai_line=('參考來源缺漏的文字會交給模型「'+model['model']+'」補翻，數值或版本有疑點的譯文也會請它對照英文核對；'
+                     '消耗你原本 ChatGPT 的 Codex 額度。\n'+ai.PRIVACY)
         elif self.use_ai.isChecked() and self.ai_connected_now():
             ai_line='AI 目前無法使用（'+((self.ai_info or {}).get('warning') or '尚未選擇模型')+'），這次只使用參考來源；缺漏會留在報告。'
         else:
@@ -1150,6 +1214,7 @@ class MainWindow(QMainWindow):
 
     def full_translation_done(self,result):
         self.job_done(result);self.navigate(1);self.check_outdated()
+        if result.get('ai_review_message'):self.ai_status.setText(result['ai_review_message'])
         applied=result.get('installed_count',0)
         leftovers=sum(r.get('origin')=='untranslated' and bool(r.get('supported')) for r in result.get('rows',[]))
         self.notify_finished('翻譯完成' if result['status']=='installed' else '翻譯已停止，需要處理',
@@ -1230,6 +1295,13 @@ class MainWindow(QMainWindow):
         count=len(ai.pending_rows(self.session)) if self.session and not self.session.get('is_preview') else 0
         self.ai_run_btn.setText(f'AI 補翻缺漏（{count:,} 筆）' if count else 'AI 補翻缺漏')
         self.ai_run_btn.setEnabled(bool(count) and not self.busy)
+        doubts=len(ai.doubt_rows(self.session)) if self.session and not self.session.get('is_preview') else 0
+        self.ai_check_btn.setText(f'AI 核對疑點（{doubts:,} 筆）' if doubts else 'AI 核對疑點')
+        self.ai_check_btn.setEnabled(bool(doubts) and not self.busy)
+        listed=sum(self.confirmable(r) for r in getattr(self,'listed_rows',[])) if self.session and not self.session.get('is_preview') else 0
+        self.confirm_all_btn.setText(f'確認目前列出的全部（{listed:,} 筆）' if listed else '確認目前列出的全部')
+        self.confirm_all_btn.setEnabled(bool(listed) and not self.busy)
+        self.undo_confirm_btn.setVisible(bool(self.settings.value('last_confirm_batch','')));self.undo_confirm_btn.setEnabled(not self.busy)
 
     def fill_table(self):
         if not self.session:
@@ -1250,6 +1322,7 @@ class MainWindow(QMainWindow):
             if mode=='translated':return category in jobs.TRANSLATED_CATEGORIES
             return category==mode
         filtered=[r for r,c in zip(rows,categories) if match(r,c)];pages=max(1,(len(filtered)+size-1)//size)
+        self.listed_rows=filtered
         self.page_index=min(self.page_index,pages-1)
         self.visible_rows=filtered[self.page_index*size:(self.page_index+1)*size]
         tokens=THEMES['dark' if self.dark_theme else 'light']
@@ -1263,7 +1336,11 @@ class MainWindow(QMainWindow):
                 if j==0:
                     outer=r['source'].split('!/')[0]
                     shown=jobs.mod_display_name(self.session.get('instance'),outer) if outer.startswith('mods/') and self.session.get('instance') else ''
-                    item.setToolTip('\n'.join(x for x in (shown and '模組：'+shown,r['key'],r['source'],r.get('issue') or '') if x))
+                    checked=r.get('ai_review') or {}
+                    seen={'ok':'AI 已對照英文核對：無誤','fixed':'AI 核對後改寫','rejected':'AI 核對：'+str(checked.get('note') or ''),
+                          'skipped':'AI 未核對：'+str(checked.get('note') or '')}.get(checked.get('verdict'),'')
+                    mine='你已確認' if str(r.get('review_method') or '').startswith('user_confirmed') else ''
+                    item.setToolTip('\n'.join(x for x in (shown and '模組：'+shown,r['key'],r['source'],r.get('issue') or '',seen,mine) if x))
                 else:item.setToolTip(str(text))
                 if j==0:item.setData(MODULE_ROLE,jobs.module_label(self.session.get('instance'),r))
                 if j==3:
@@ -1319,6 +1396,9 @@ class MainWindow(QMainWindow):
         if o['rechecked']:notes.append('套用後已重新掃描整合包確認寫入')
         if o['context']:notes.append(f"另有 {o['context']:,} 筆程式或設定裡的文字，需確認是否顯示在遊戲中（見「待查程式與設定」）")
         if o['renamed']:notes.append(f"{o['renamed']:,} 筆是整合包改過名稱的文字，只採用符合新名稱的來源")
+        if self.session.get('ai_checked'):notes.append(f"AI 對照英文核對過 {self.session['ai_checked']:,} 筆有疑點的譯文，判斷無誤")
+        reused=sum(bool(r.get('ai_reused')) for r in self.session.get('rows',[]))
+        if reused:notes.append(f'{reused:,} 筆沿用先前 AI 翻過的同一句，沒有再消耗額度')
         notes.append('外部翻譯 API 未使用（0 筆）')
         self.report_counts.setText('　·　'.join(notes))
 

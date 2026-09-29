@@ -215,9 +215,49 @@ class TranslationMemory:
         entry=self.entries.get(self.ident(namespace,key,original)) if namespace and original else None
         return entry['text'] if entry else None
     def remember(self,namespace,key,original,text,source):
-        self.entries[self.ident(namespace,key,original)]=dict(text=text,original=original,source=source,
-                                                              confirmed_at=datetime.now().isoformat(timespec='seconds'))
+        self.remember_many([(namespace,key,original,text,source)])
+    def remember_many(self,items,batch=None):
+        """items: (namespace, key, original, text, source); `batch` names a confirm-all so it can be undone."""
+        now=datetime.now().isoformat(timespec='seconds')
+        for namespace,key,original,text,source in items:
+            ident=self.ident(namespace,key,original);entry=dict(text=text,original=original,source=source,confirmed_at=now)
+            if batch:
+                entry['batch']=batch
+                if ident in self.entries:entry['before']=self.entries[ident]  # what undo puts back
+            self.entries[ident]=entry
         write_json(self.path,dict(format=1,entries=self.entries))
+    def forget_batch(self,batch):
+        """Undo one confirm-all: its entries go, and entries it replaced come back."""
+        count=0
+        for ident,entry in list(self.entries.items()):
+            if entry.get('batch')==batch:
+                count+=1
+                if entry.get('before'):self.entries[ident]=entry['before']
+                else:del self.entries[ident]
+        if count:write_json(self.path,dict(format=1,entries=self.entries))
+        return count
+
+
+class AiMemory:
+    """AI translations made earlier, reused for the same mod, key and English text in any modpack.
+
+    It saves quota and keeps wording the same between modpacks. Reused text stays labelled as AI
+    translation and ranks last, so every other source and everything the user confirmed come first.
+    """
+    def __init__(self, home):
+        self.path=Path(home)/'ai_memory.json'
+        try:self.entries=json.loads(self.path.read_text(encoding='utf-8')).get('entries',{})
+        except (OSError,ValueError,AttributeError):self.entries={}
+    def lookup(self,namespace,key,original):
+        entry=self.entries.get(TranslationMemory.ident(namespace,key,original)) if namespace and original else None
+        return entry if isinstance(entry,dict) and isinstance(entry.get('text'),str) else None
+    def remember_many(self,rows,model):
+        for r in rows:
+            m=re.search(r'assets/([^/]+)/',r.get('source',''));original=r.get('en') or r.get('zh_cn') or ''
+            if m and original and r.get('kind')=='language':
+                self.entries[TranslationMemory.ident(m[1],r['key'],original)]=dict(
+                    text=r['proposed'],original=original,model=model,made_at=datetime.now().isoformat(timespec='seconds'))
+        if rows:write_json(self.path,dict(format=1,entries=self.entries))
 
 
 class UserGlossary:
@@ -349,6 +389,8 @@ def needs_check(row):
     Ordinary simplified-to-traditional conversions are not listed; there are tens of thousands and they
     come from the mod's own Chinese text.
     """
+    if str(row.get('review_method') or '').startswith('user_confirmed'):return False  # the user has looked at it
+    if (row.get('ai_review') or {}).get('verdict')=='ok':return False  # AI read it against the English and agreed
     return bool(row.get('supported') and (row.get('changed') or row.get('recovered')) and (
         row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None or row.get('number_doubt')
         or str(row.get('issue') or '').startswith('既有繁中')))
@@ -725,7 +767,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         m=re.match(r'instance!/kubejs/assets/([^/]+)/lang/',r['source'])
         if m and r['kind']=='language' and isinstance(r['current'],str):kubejs_tw[(m[1],r['key'])]=r['current']
     counts=collections.Counter()
-    memory=TranslationMemory(home);user_terms=UserGlossary(home);provenance=Provenance(home,instance);special=collections.Counter()
+    memory=TranslationMemory(home);ai_memory=AiMemory(home);user_terms=UserGlossary(home);provenance=Provenance(home,instance);special=collections.Counter()
     # The mods' own English, to notice strings a modpack renamed through KubeJS or resource packs.
     name_terms={}  # English name -> (trust rank, Chinese); given to AI so sentences use the same names
     mod_en={}
@@ -808,6 +850,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if existing is None and isinstance(r['current'],str):
             # A zh_tw that still contains simplified characters is only a last-resort candidate.
             options.append(('existing_zh_tw',to_taiwan(r['current']),r['source']+'（原含簡體，已轉繁）'))
+        earlier=ai_memory.lookup(ns,r['key'],original) if isinstance(r['en'],str) else None
+        if earlier:options.append(('ai_memory',earlier['text'],'ai_memory.json'))
         renamed=(not r['source'].startswith('mods/') and isinstance(r['en'],str)
                  and mod_en.get((ns,r['key'])) not in (None,r['en']))
         if renamed:
@@ -833,10 +877,14 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             if not ready[-1][0]:break
         if ready:
             _,origin,value,evidence,doubt=min(ready,key=lambda x:x[0])  # the first that does not wait, else the first
+        reused=origin=='ai_memory'
+        if reused:origin='ai_translation';evidence='ChatGPT/Codex: '+str(earlier.get('model') or '')+'（沿用先前的補譯）'
+        if ready:
             issue=('' if origin in ('existing_zh_tw','translation_memory','user_glossary','official_vanilla','instance_resourcepack')
                    or (origin=='reference_pack_or_cfpa' and evidence in ('reference:tw','reference:para'))
                    else '參考譯文對應的英文與目前版本不同，需核對' if origin=='stale_reference'
                    else '跨版本參考：來自其他 Minecraft 版本的 CFPA，需核對版本差異' if origin=='cross_version_reference'
+                   else 'AI 補譯（沿用先前翻過的同一句），尚未人工校對。' if reused
                    else '簡中轉繁：需校對台灣用語、版本語意與名稱')
         extra={}
         prior=provenance.lookup(r) if origin=='existing_zh_tw' and value==r['current'] else None
@@ -859,6 +907,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         changed=value!=r['current'] and origin!='untranslated' and (origin!='keep_original' or bool(issue))
         if doubt and changed and not extra:issue=(issue+'；' if issue else '')+doubt
         if '數值和原文不同' in (issue or ''):extra['number_doubt']=True  # also kept by text applied earlier
+        if reused:extra.update(ai_model=earlier.get('model'),ai_reused=True)
         counts[origin]+=1
         if (NAME_KEY.match(r['key']) and isinstance(r['en'],str) and 2<len(r['en'].strip())<=40 and HAN.search(value)
                 and origin not in ('untranslated','keep_original','ai_translation')):
@@ -897,6 +946,9 @@ def full_translation(instance, home, model, notify, cancelled=lambda:False, chec
                 result=ai.supplement(result,home,model,notify,cancelled,checkpoint=checkpoint)
             else:
                 result.update(ai_status='skipped',ai_message='沒有需要 AI 補翻的語系缺漏。')
+            # Doubts are checked only when the account got through the gaps; a paused account stays paused.
+            if result.get('ai_status')!='paused' and not cancelled() and ai.doubt_rows(result):
+                result=ai.review(result,home,model,notify,cancelled,checkpoint=checkpoint)
         else:
             result.update(ai_status='skipped',ai_message='未連接 AI；缺少中文來源的文字保留原文。')
         if cancelled():
@@ -1255,6 +1307,18 @@ def interrupted_batches(home, instance=None):
     return found
 
 
+def changed_sources(session):
+    """The first scanned file that no longer matches the scan and was not written by this batch itself, else ''."""
+    ours={}
+    for earlier in session.get('backups') or ([session['backup']] if session.get('backup') else []):
+        try:ours.update({f['file']:f['after'] for f in json.loads((Path(earlier)/'_備份紀錄/manifest.json').read_text(encoding='utf-8'))['files']})
+        except (OSError,ValueError,KeyError):pass
+    for name,expected in session.get('source_hashes',{}).items():
+        now=file_hash(contained(Path(session['instance']),name))
+        if now!=expected and now!=ours.get(name):return name
+    return ''
+
+
 def changed_since_scan(home, instance, what):
     """Why a file no longer matches the scan, as the error to raise: a write that was cut short, or a later change."""
     if interrupted_batches(home,instance):
@@ -1289,13 +1353,8 @@ def stage_and_apply(session, home, notify, work):
     notify(3,'檢查原檔是否變動','比對掃描時記錄的檔案雜湊')
     # A batch may be applied in parts (e.g. an older version wrote only confirmed rows). Files this batch
     # already wrote are accepted at the hash that earlier write left; anything else must be unchanged.
-    ours={}
-    for earlier in session.get('backups') or ([session['backup']] if session.get('backup') else []):
-        try:ours.update({f['file']:f['after'] for f in json.loads((Path(earlier)/'_備份紀錄/manifest.json').read_text(encoding='utf-8'))['files']})
-        except (OSError,ValueError,KeyError):pass
-    for name,expected in session.get('source_hashes',{}).items():
-        now=file_hash(contained(instance,name))
-        if now!=expected and now!=ours.get(name):raise changed_since_scan(home,instance,name)
+    changed=changed_sources(session)
+    if changed:raise changed_since_scan(home,instance,changed)
     changes=collections.defaultdict(list);pack_rows=[]
     for row in selected:
         original=row.get('en') or row.get('zh_cn') or row.get('current') or ''
