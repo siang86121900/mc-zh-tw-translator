@@ -81,7 +81,9 @@ python -m mc_zh_tw_translator verify 'tmp/pack/batch/mods' --input 'C:/path/inst
 - `fetch_catalog()` 讀 `https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/index.json`；404 視為尚無公開翻譯。補丁下載網址必須是本專案的 GitHub Release 附件，並驗 SHA-256 與大小。
 - CurseForge 整合包由 `%APPDATA%/CurseForge/agent/GameInstances/MinecraftGameInstance.json` 偵測（含自訂位置），整合包身分讀 `minecraftinstance.json`；「用 CurseForge 安裝」開啟 `curseforge://install?addonId=<projectID>&fileId=<fileID>`，無反應時請使用者手動搜尋。
 
-上架一個現成翻譯（需使用者授權）：
+套用補丁後在 `applied_patches.json` 記錄每個 instance 最後套用的補丁雜湊；目錄上同一整合包版本的補丁雜湊不同時顯示「翻譯有更新」。
+
+上架一個現成翻譯（需使用者授權）：`python scripts/publish_translation.py <補丁.zip> --translator 名稱 [--notes 說明] [--dry-run]`。它把補丁放到 `translations` 分支的 `packs/<projectID>/`、更新 `index.json`（同整合包同版本會取代）並推送。手動作法：
 
 1. 用程式匯出補丁，建立或更新預先發行版（prerelease）`translations` 並上傳 ZIP；預先發行版不會被 `releases/latest` 當成程式更新。
 2. 在 `translations` 分支的 `index.json` 加入：

@@ -119,4 +119,50 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(patches.fetch_catalog(Mock(get=Mock(return_value=missing))),[])
 
 
+    def test_catalog_picks_translation_for_installed_version(self,_):
+        base=dict(name='Demo',projectID=7,version='',gameVersion='',translator='',notes='',sha256='a'*64,size=1,
+                  url='https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/7/x.zip')
+        old=dict(base,fileID=1,version='1.0',updated='2026-01-01');new=dict(base,fileID=2,version='2.0',updated='2026-09-01')
+        mine=[dict(name='Demo',path=self.friend,projectID=7,fileID=1,gameVersion='')]
+        [row]=patches.match_catalog([old,new],mine)
+        self.assertEqual((row['version'],row['status'],row['latest'],row['versions']),('1.0','exact',False,2))
+        [row]=patches.match_catalog([old,new],[])
+        self.assertEqual((row['version'],row['status']),('2.0','not_installed'))
+        with self.assertRaises(ValueError):patches.patch_url('https://raw.githubusercontent.com/someone/else/translations/x.zip')
+
+
+    def test_catalog_offers_update_after_translation_is_republished(self,_):
+        self.translate()
+        out=patches.export_patch(self.translator,self.home)
+        friend_home=Path(self.temp.name)/'friend-app'
+        patches.apply_patch(self.friend,Path(out['path']),friend_home)
+        pack=dict(name='Demo Pack',projectID=123,fileID=456,version='1.0',gameVersion='',translator='',notes='',updated='2026-09-29',
+                  url='https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/123/a.zip',sha256=out['sha256'],size=out['size'])
+        mine=[dict(name='Demo Pack',path=self.friend,projectID=123,fileID=456,gameVersion='')]
+        applied=patches.applied_patches(friend_home)
+        self.assertEqual(patches.match_catalog([pack],mine,applied)[0]['status'],'applied')
+        self.assertEqual(patches.match_catalog([dict(pack,sha256='b'*64,updated='2026-10-01')],mine,applied)[0]['status'],'update')
+        self.assertEqual(patches.match_catalog([pack],mine,{})[0]['status'],'exact')
+
+
+class OneClickTests(unittest.TestCase):
+    def test_mainland_wording_in_mod_zh_tw_is_fixed_conservatively(self):
+        from mc_zh_tw_translator.desktop_jobs import taiwan_wording
+        self.assertEqual(taiwan_wording('傳送門激活物，請添加代碼'),'傳送門啟用物，請新增程式碼')
+        self.assertEqual(taiwan_wording('用戶端與用戶'),'用戶端與使用者')
+        self.assertEqual(taiwan_wording('設置を保存'),'設置を保存')  # Japanese untouched
+        self.assertEqual(taiwan_wording('您沒有適當的權限來編輯此項目。'),'您沒有適當的權限來編輯此項目。')
+
+    def test_inconsistent_names_are_unified_to_suggestion_and_flagged(self):
+        from mc_zh_tw_translator.desktop_jobs import unify_suggested_terms, needs_check
+        row=lambda zh,origin,evidence='':dict(source='mods/a.jar!/x',key='item.a.palm_log',en='Palm Log',proposed=zh,origin=origin,evidence=evidence,
+                                              supported=True,changed=True,current=None,kind='language',issue='')
+        rows=[row('棕櫚原木','reference_pack_or_cfpa','reference:tw'),row('棕榈木原木','same_source_zh_cn'),row('棕櫚木原木','same_source_zh_cn')]
+        session=dict(rows=rows)
+        self.assertEqual(unify_suggested_terms(session),2)
+        self.assertEqual({r['proposed'] for r in rows},{'棕櫚原木'})
+        self.assertEqual(rows[2]['unified_from'],'棕櫚木原木')
+        self.assertEqual([needs_check(r) for r in rows],[False,True,True])
+
+
 if __name__=='__main__':unittest.main()

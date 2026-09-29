@@ -240,7 +240,7 @@ def conflicting_terms(session, limit=500):
         ordered=sorted(counter.items(),key=lambda kv:(trust[key][kv[0]],-kv[1]))
         rows.append(dict(en=display[key],key_tail=key[1],variants=ordered,suggested=ordered[0][0]))
     rows.sort(key=lambda x:-sum(c for _,c in x['variants']))
-    return rows[:limit]
+    return rows[:limit] if limit else rows
 
 
 def apply_term(session, en, zh, key_tail=None):
@@ -254,6 +254,61 @@ def apply_term(session, en, zh, key_tail=None):
             if r.get('origin') not in ('user_glossary',):r['previous_origin']=r.get('origin')
             r.update(proposed=zh,origin='user_glossary',evidence='user_glossary.json',issue='',changed=zh!=r.get('current'),
                      reviewed=False,review_method=None);changed+=1
+    return changed
+
+
+UNCERTAIN_ORIGINS = ('ai_translation','stale_reference','cross_version_reference')
+
+
+def needs_check(row):
+    """Applied anyway, but worth a look: AI, other-version references, converted old zh_tw, unified names.
+
+    Ordinary simplified-to-traditional conversions are not listed; there are tens of thousands and they
+    come from the mod's own Chinese text.
+    """
+    return bool(row.get('supported') and row.get('changed') and (
+        row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None
+        or str(row.get('issue') or '').startswith('既有繁中')))
+
+
+# Unambiguous mainland words that some mods' "zh_tw" keeps after a character-only conversion.
+# A full OpenCC s2twp pass over traditional text is not used: it turns 用戶端 into 用使者端,
+# 項目 into 專案 and 權限 into 許可權.
+TW_WORDING = [(re.compile(a),b) for a,b in (
+    ('激活','啟用'),('添加','新增'),('代碼','程式碼'),('默認','預設'),('信息','資訊'),('啓','啟'),
+    ('視頻','影片'),('軟件','軟體'),('硬件','硬體'),('文件夾','資料夾'),('菜單','選單'),('鼠標','滑鼠'),
+    ('屏幕','螢幕'),('界面','介面'),('服務器','伺服器'),('數據','資料'),('加載','載入'),('兼容','相容'),
+    ('質量','品質'),('用戶(?!端)','使用者'),('網絡','網路'),('設置','設定'),('支持','支援'),('緩存','快取'),
+)]
+KANA = re.compile('[぀-ヿ]')
+
+
+def taiwan_wording(text):
+    if not isinstance(text,str) or KANA.search(text):return text
+    for pattern,replacement in TW_WORDING:text=pattern.sub(replacement,text)
+    return text
+
+
+def unify_suggested_terms(session):
+    """One-click: give every inconsistently named thing its suggested (most trusted) name.
+
+    Rows keep the provenance of the variant they adopt and record what they replaced; nothing is
+    written to the user's glossary, so the suggestion never overrides a later explicit choice.
+    """
+    changed=0
+    for item in conflicting_terms(session,limit=None):
+        en=item['en'].casefold();zh=item['suggested']
+        rows=[r for r in session['rows'] if isinstance(r.get('en'),str) and r['en'].strip().casefold()==en
+              and r.get('supported') and not r.get('installed') and NAME_KEY.match(r.get('key',''))
+              and r['key'].split('.',2)[-1]==item['key_tail'] and r.get('origin') not in ('untranslated','keep_original')]
+        model=next((r for r in rows if (r.get('proposed') or '').strip()==zh),None)
+        if not model:continue
+        for r in rows:
+            if (r.get('proposed') or '').strip()==zh or not validate_text(r['en'],zh):continue
+            r.update(unified_from=r.get('proposed'),proposed=zh,origin=model['origin'],evidence=model.get('evidence'),
+                     issue='已依其他模組統一譯名（原為「'+str(r.get('proposed'))+'」）',changed=zh!=r.get('current'))
+            changed+=1
+    session['terms_unified']=changed
     return changed
 
 
@@ -562,7 +617,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         options.append(('existing_zh_tw',existing,r['source']))
         if vanilla:
             options.append(('official_vanilla',vanilla['minecraft'].get(r['key']) if ns=='minecraft' else None,'Minecraft 官方 zh_tw'))
-            options.append(('official_vanilla',vanilla['__terms__'].get(original.strip().casefold()),'Minecraft 官方 zh_tw 譯名'))
+            # Whole-text official names only for name keys: a generic word such as "Red" may be a
+            # mod's own name (a dragon colour) and must not become the vanilla 紅色.
+            if NAME_KEY.match(r['key']):
+                options.append(('official_vanilla',vanilla['__terms__'].get(original.strip().casefold()),'Minecraft 官方 zh_tw 譯名'))
         options+=[('instance_zh_cn',v,p) for p,v in instance_cn.get((ns,r['key']),[]) if p!=r['source']]
         options+=[('instance_zh_cn',v,p) for p,v in instance_rp_cn.get((ns,r['key']),[]) if p!=r['source']]
         options.append(('same_source_zh_cn',r['zh_cn'],r['source']))
@@ -587,8 +645,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 break
         if origin=='existing_zh_tw' and existing is None:
             issue='既有繁中含簡體字，已轉為台灣繁體，請核對'
-        elif origin=='existing_zh_tw' and cc.convert(value)!=value:
-            issue='既有繁中用語可能與台灣用語不同，請核對'
+        elif origin=='existing_zh_tw' and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value)):
+            value=taiwan_wording(value);issue='既有繁中已把大陸用語改為台灣用語，請核對'
         reason=keep_original_reason(original,r['key'],ns) if origin=='untranslated' else ''
         if reason:
             # Parameters, key names and similar strings stay as-is; they are neither gaps nor AI work.
@@ -633,6 +691,7 @@ def full_translation(instance, home, model, notify, cancelled=lambda:False, chec
         elif result.get('ai_status')=='paused':
             result['status']='needs_review'
         else:
+            unify_suggested_terms(result)
             auto_confirm_safe(result)
             result['status']='ready_to_apply'
             write_json(Path(result['report'])/'session.json',result);checkpoint(result)

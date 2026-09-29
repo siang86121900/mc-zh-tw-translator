@@ -109,7 +109,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 '''
 
 # Table state colours reuse the four DESIGN.md status roles.
-STATE_ROLE={'已套用':'green','待套用':'primary','已確認':'primary','待校對':'orange','比對中':'text60','待查':'text60','無需翻譯':'text40'}
+STATE_ROLE={'已套用':'green','已套用・建議確認':'orange','待套用':'primary','已確認':'primary','待校對':'orange','比對中':'text60','待查':'text60','無需翻譯':'text40'}
 
 
 def stylesheet(theme):
@@ -431,7 +431,7 @@ class MainWindow(QMainWindow):
         self.report_sources=label('','sub');b.addWidget(self.report_sources)
         self.report_errors=label('','warn');self.report_errors.hide();b.addWidget(self.report_errors);box.addWidget(f)
         chips=QHBoxLayout();chips.setSpacing(6);self.chips={}
-        for mode,text in (('all','全部'),('missing','缺少中文來源'),('review','需要校對'),('ai','AI 補譯'),('context','待查程式與設定'),('done','已確認／已套用'),('keep','無需翻譯')):
+        for mode,text in (('all','全部'),('missing','缺少中文來源'),('review','建議確認'),('ai','AI 補譯'),('context','待查程式與設定'),('done','已確認／已套用'),('keep','無需翻譯')):
             chip=button(text,lambda checked=False,m=mode:self.set_filter(m));chip.setObjectName('chip');chip.setCheckable(True)
             chip.setChecked(mode==self.filter_mode);self.chips[mode]=chip;chips.addWidget(chip)
         chips.addStretch();box.addLayout(chips)
@@ -445,7 +445,7 @@ class MainWindow(QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows);self.table.setSelectionMode(QAbstractItemView.ExtendedSelection);self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().hide();self.table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch);self.table.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch)
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft|Qt.AlignVCenter);self.table.horizontalHeader().setHighlightSections(False)
-        self.table.setColumnWidth(2,110);self.table.setColumnWidth(3,96);self.table.cellDoubleClicked.connect(self.review_row);box.addWidget(self.table,1)
+        self.table.setColumnWidth(2,110);self.table.setColumnWidth(3,150);self.table.cellDoubleClicked.connect(self.review_row);box.addWidget(self.table,1)
         self.table.setItemDelegateForColumn(0,OriginalDelegate(self))
         nav=QHBoxLayout();self.prev=button('上一頁',lambda:self.turn_page(-1));self.next=button('下一頁',lambda:self.turn_page(1));self.page_label=label('0 筆','sub');self.page_label.setWordWrap(False)
         self.page_size=QComboBox();self.page_size.setToolTip('每頁顯示筆數')
@@ -457,7 +457,7 @@ class MainWindow(QMainWindow):
         actions=QHBoxLayout();self.review_btn=button('查看並校對',self.review_current);self.apply_btn=button('備份並套用已確認譯文',self.apply_job,True)
         self.ai_run_btn=button('AI 補翻缺漏',self.ai_supplement)
         actions.addWidget(self.review_btn);actions.addWidget(self.ai_run_btn);actions.addStretch();actions.addWidget(self.apply_btn);box.addLayout(actions)
-        box.addWidget(label('雙擊任一列可逐筆校對。參數（如 %s）、按鍵名稱、羅馬數字和尺寸等無需翻譯的文字不列為缺漏，也不會送給 AI。','sub'))
+        box.addWidget(label('「一鍵完整翻譯並套用」已直接套用所有通過檢查的譯文。「建議確認」只列 AI 補譯、版本不同的參考譯文和自動統一的譯名，雙擊可修正；按「確認這筆」後會記住，下次翻譯自動使用。','sub'))
 
     def make_backups(self):
         box=self.page('備份與還原','每次套用都保留原檔。還原前會檢查後續修改，避免蓋掉你的檔案。')
@@ -498,7 +498,7 @@ class MainWindow(QMainWindow):
         b.addWidget(label('會自動比對你電腦上的 CurseForge 整合包。版本相同時可直接套用；版本不同時只套用檔案完全相同的部分，其餘略過。','sub'))
         self.catalog_list=QListWidget();self.catalog_list.setSpacing(2);self.catalog_list.setMinimumHeight(200);b.addWidget(self.catalog_list,1)
         self.catalog_state=label('','sub');b.addWidget(self.catalog_state)
-        row=QHBoxLayout();self.patch_apply_btn=button('套用到我的整合包',self.apply_catalog_patch,True)
+        row=QHBoxLayout();self.patch_apply_btn=button('安裝翻譯',self.apply_catalog_patch,True)
         self.cf_install_btn=button('用 CurseForge 安裝整合包',self.install_with_curseforge)
         row.addWidget(self.patch_apply_btn);row.addWidget(self.cf_install_btn);row.addStretch();b.addLayout(row);box.addWidget(f,1)
         f,b=card();b.addWidget(label('從檔案套用','section'))
@@ -521,8 +521,11 @@ class MainWindow(QMainWindow):
         self.background.append(worker);worker.start()
 
     def catalog_loaded(self,packs):
-        self.catalog=patches.match_catalog(packs,jobs.curseforge_instances());self.catalog_list.clear()
-        states={'exact':('已安裝同版本','done'),'other_version':('版本不同','progress'),'not_installed':('尚未安裝','todo')}
+        self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home));self.catalog_list.clear()
+        states={'update':('翻譯有更新','progress'),'exact':('可安裝翻譯','progress'),'applied':('已是最新','done'),
+                'other_version':('整合包版本不同','todo'),'not_installed':('未安裝整合包','todo')}
+        updates=sum(p['status']=='update' for p in self.catalog)
+        self.navs[6].setText(f'現成翻譯（{updates} 個更新）' if updates else '現成翻譯')
         for pack in self.catalog:
             row=QWidget();line=QHBoxLayout(row);line.setContentsMargins(14,10,14,10);text=QVBoxLayout();text.setSpacing(2)
             text.addWidget(label(pack['name'],'section'))
@@ -530,6 +533,14 @@ class MainWindow(QMainWindow):
                                              pack['translator'] and '翻譯：'+pack['translator'],pack['updated'] and '更新 '+pack['updated'][:10]) if x)
             text.addWidget(label(detail,'sub'))
             if pack['notes']:text.addWidget(label(pack['notes'],'sub'))
+            if pack['status']=='other_version':
+                text.addWidget(label('你安裝的整合包版本和這份翻譯不同，套用時只會翻譯相同的模組；也可以先在 CurseForge 更新整合包。','sub'))
+            elif pack['status']=='update':
+                text.addWidget(label('這份翻譯在你套用後又更新了，按「安裝翻譯」即可更新。','sub'))
+            elif pack['status']=='not_installed':
+                text.addWidget(label('先按「用 CurseForge 安裝整合包」，裝好後回來按「重新整理」再安裝翻譯。','sub'))
+            if pack['status'] in ('exact','applied','update') and not pack['latest']:
+                text.addWidget(label(f"整合包已有新版本 {pack['newest_version']} 的翻譯；在 CurseForge 更新整合包後即可安裝。",'sub'))
             line.addLayout(text,1);pill=label('','pill');set_pill(pill,*states[pack['status']]);line.addWidget(pill,0,Qt.AlignVCenter)
             row.setAttribute(Qt.WA_TransparentForMouseEvents)
             item=QListWidgetItem();item.setSizeHint(row.sizeHint().expandedTo(QSize(0,64)));item.setData(Qt.UserRole,pack)
@@ -562,6 +573,9 @@ class MainWindow(QMainWindow):
     def apply_catalog_patch(self):
         pack=self.selected_pack()
         if not pack:return
+        if pack['status']=='not_installed':
+            if QMessageBox.question(self,'尚未安裝整合包',f"你的電腦還沒有「{pack['name']}」。要先用 CurseForge 安裝嗎？")==QMessageBox.Yes:self.install_with_curseforge()
+            return
         target=self.choose_patch_target(pack['projectID'],pack['fileID'],'套用翻譯')
         if not target:return
         identity=patches.instance_identity(Path(target))
@@ -590,6 +604,7 @@ class MainWindow(QMainWindow):
 
     def patch_applied(self,result):
         self.refresh_backups()
+        if self.catalog is not None:self.refresh_catalog()
         lines=[f"已套用 {len(result['applied']):,} 個檔案。" if result['applied'] else '沒有需要套用的檔案。']
         if result['already']:lines.append(f"{len(result['already']):,} 個檔案先前已翻譯。")
         if result['skipped']:
@@ -605,7 +620,7 @@ class MainWindow(QMainWindow):
         if not pack or not pack['projectID']:return
         QDesktopServices.openUrl(QUrl(patches.curseforge_install_url(pack)))
         QMessageBox.information(self,'用 CurseForge 安裝',f"已請 CurseForge 安裝「{pack['name']}」。\n\n如果沒有反應，請在 CurseForge 搜尋這個整合包，並選擇版本 {pack['version'] or '（同上）'} 安裝。"
-                                '\n安裝完成後回到這裡，按「重新整理」再「套用到我的整合包」。')
+                                '\n安裝完成後回到這裡，按「重新整理」再「安裝翻譯」。')
 
     def export_patch_job(self):
         instance=self.instance_path()
@@ -1086,7 +1101,7 @@ class MainWindow(QMainWindow):
         size=int(self.page_size.currentData() or 100)
         def match(r):
             if query and query not in (r['source']+' '+r['key']+' '+str(r.get('en') or r.get('current') or '')+' '+r['proposed']).casefold():return False
-            if mode=='review':return r['supported'] and r['changed'] and not r['reviewed']
+            if mode=='review':return jobs.needs_check(r) or (r['supported'] and r['changed'] and not r['reviewed'] and not r.get('installed'))
             if mode=='missing':return r['supported'] and r['origin']=='untranslated'
             if mode=='context':return not r['supported'] and r['origin']!='not_display'
             if mode=='done':return r['reviewed'] or r.get('installed')
@@ -1099,7 +1114,7 @@ class MainWindow(QMainWindow):
         tokens=THEMES['dark' if self.dark_theme else 'light']
         self.table.setUpdatesEnabled(False);self.table.setRowCount(len(self.visible_rows))
         for i,r in enumerate(self.visible_rows):
-            state=('已套用' if r.get('installed') else '待套用' if r.get('review_method')=='auto_validated_one_click' else '已確認' if r['reviewed']
+            state=(('已套用・建議確認' if jobs.needs_check(r) else '已套用') if r.get('installed') else '待套用' if r.get('review_method')=='auto_validated_one_click' else '已確認' if r['reviewed']
                    else '無需翻譯' if r['origin'] in ('keep_original','not_display') else '比對中' if r['origin']=='pending' else '待校對' if r['supported'] and r['changed'] else '待查')
             original=r.get('en') or r.get('zh_cn') or r.get('current') or r['key']
             for j,text in enumerate((original,r['proposed'],jobs.SOURCE_NAMES.get(r['origin'],r['origin']),'● '+state)):
@@ -1324,6 +1339,7 @@ def main():
         QTimer.singleShot(800,capture)
     else:
         QTimer.singleShot(1800,window.check_updates_on_start)
+        QTimer.singleShot(3000,lambda:window.catalog is None and not window.busy and window.refresh_catalog())  # translation update badge
         QTimer.singleShot(900,window.probe_ai)
     app.exec();lock.unlock()
 

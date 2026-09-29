@@ -287,6 +287,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                     already=[p[0]['file'] for p in plan if p[1]=='already'],
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],
                     language_set=bool(set_language))
+        record_applied(home,instance,manifest,file_hash(Path(patch)))
         report=home/'output'/instance.name/'報告'/('補丁-'+datetime.now().strftime('%Y%m%d-%H%M%S'))
         report.mkdir(parents=True,exist_ok=True)
         jobs.write_json(report/'patch_result.json',result)
@@ -297,11 +298,30 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         shutil.rmtree(staged,ignore_errors=True)
 
 
+def applied_patches(home: Path) -> dict:
+    """Which translation (patch SHA-256) each instance last received, so the catalog can offer updates."""
+    try:return json.loads((home/'applied_patches.json').read_text(encoding='utf-8'))
+    except (OSError,ValueError):return {}
+
+
+def record_applied(home: Path, instance: Path, manifest, digest):
+    data=applied_patches(home);pack=manifest.get('modpack') or {}
+    data[str(Path(instance).resolve()).casefold()]=dict(sha256=digest,projectID=pack.get('projectID',0),fileID=pack.get('fileID',0),
+                                                      version=pack.get('version',''),applied=datetime.now().isoformat(timespec='seconds'))
+    jobs.write_json(home/'applied_patches.json',data)
+
+
 def catalog_url(url: str) -> str:
     p=urlparse(url)
-    if p.scheme!='https' or p.netloc!='raw.githubusercontent.com' or not p.path.startswith('/'+REPOSITORY+'/'):
+    if p.scheme!='https' or p.netloc!='raw.githubusercontent.com' or not p.path.startswith('/'+REPOSITORY+'/translations/'):
         raise ValueError('目錄網址不屬於指定的 GitHub 專案。')
     return url
+
+
+def patch_url(url: str) -> str:
+    """Patches live on this project's translations branch or its GitHub Releases, nowhere else."""
+    try:return catalog_url(url)
+    except ValueError:return release_url(url)
 
 
 def fetch_catalog(session=None):
@@ -314,7 +334,7 @@ def fetch_catalog(session=None):
     packs=[]
     for x in (r.json() or {}).get('packs',[]):
         try:
-            release_url(x['url'])
+            patch_url(x['url'])
             if not re.fullmatch('[0-9a-f]{64}',x['sha256']) or not 0<int(x['size'])<=MAX_PATCH_SIZE:continue
             packs.append(dict(name=str(x['name']),projectID=int(x.get('projectID') or 0),fileID=int(x.get('fileID') or 0),
                               version=str(x.get('version') or ''),gameVersion=str(x.get('gameVersion') or ''),
@@ -324,14 +344,29 @@ def fetch_catalog(session=None):
     return packs
 
 
-def match_catalog(packs, instances):
-    """Pair each published translation with the user's matching CurseForge instances."""
+def match_catalog(packs, instances, applied=None):
+    """One row per modpack: the translation for the version the user has installed, else the newest.
+
+    The catalog keeps every published version, so players on an older modpack version still get the
+    translation made for it.
+    """
+    groups={}
+    for pack in packs:groups.setdefault(pack['projectID'] or pack['name'].casefold(),[]).append(pack)
     rows=[]
-    for pack in packs:
-        mine=[x for x in instances if pack['projectID'] and x['projectID']==pack['projectID']]
-        exact=[x for x in mine if x['fileID']==pack['fileID']]
-        status='exact' if exact else 'other_version' if mine else 'not_installed'
-        rows.append(dict(pack,status=status,instances=exact or mine))
+    for versions in groups.values():
+        versions.sort(key=lambda p:(p['updated'],p['fileID']),reverse=True)
+        mine=[x for x in instances if versions[0]['projectID'] and x['projectID']==versions[0]['projectID']]
+        exact=[(p,x) for p in versions for x in mine if x['fileID']==p['fileID']]
+        pack,status=(exact[0][0],'exact') if exact else (versions[0],'other_version' if mine else 'not_installed')
+        targets=[x for p,x in exact if p is pack] or mine
+        if status=='exact':
+            # Already applied here? Then it is either current or the published translation was updated.
+            done=[(applied or {}).get(str(Path(x['path']).resolve()).casefold()) for x in targets]
+            done=[d for d in done if d and d.get('fileID')==pack['fileID']]
+            if done:status='applied' if any(d['sha256']==pack['sha256'] for d in done) else 'update'
+        rows.append(dict(pack,status=status,instances=targets,versions=len(versions),latest=pack is versions[0],
+                         newest_version=versions[0]['version']))
+    rows.sort(key=lambda r:({'update':0,'exact':1,'applied':2,'other_version':3}.get(r['status'],4),r['name'].casefold()))
     return rows
 
 
@@ -347,7 +382,7 @@ def download_patch(pack, home: Path, progress=lambda _:None, session=None) -> Pa
     if path.exists() and file_hash(path)==pack['sha256']:return path
     part=folder/(uuid.uuid4().hex+'.partial');h=hashlib.sha256();received=0
     try:
-        with session.get(release_url(pack['url']),stream=True,timeout=(15,60)) as response:
+        with session.get(patch_url(pack['url']),stream=True,timeout=(15,60)) as response:
             response.raise_for_status()
             with part.open('xb') as f:
                 for block in response.iter_content(1024*1024):
