@@ -335,6 +335,7 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
         if jobs.file_hash(jobs.contained(Path(session['instance']), name)) != expected:
             raise BridgeError('掃描後原檔已變動，請重新掃描再補翻。')
     completed = 0; glossary = jobs.UserGlossary(home)
+    names = jobs.load_name_terms(session)  # names this modpack already uses, so sentences stay consistent
     session['ai_status'] = 'running'; session['ai_notice'] = NOTICE
     jobs.write_json(report, session)
     try:
@@ -356,7 +357,8 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
                 notify(0, 'AI 補翻中', f'已完成 {completed} 筆；使用 {selected_model}，消耗原方案額度')
                 payload = [dict(id=str(i), text=original, key=row['key'], source=row['source']) for i,row,original in batch]
                 terms = {}
-                for _, _, original in batch: terms.update(glossary.terms_in(original))
+                for _, _, original in batch:
+                    terms.update(jobs.names_in(names, original)); terms.update(glossary.terms_in(original))  # user terms win
                 response = client.translate(payload, model, terms) if terms else client.translate(payload, model)
                 values = response.get('translations')
                 if not isinstance(values, list) or len(values) != len(batch): raise BridgeError('AI 回傳筆數不符，已停止。')

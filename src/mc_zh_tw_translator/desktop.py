@@ -40,6 +40,7 @@ QMainWindow, #page, QDialog { background: {bg}; }
 #header, #sidebar, #card { background: {surface}; }
 #header { border-bottom: 1px solid {gray}; }
 #sidebar { border-right: 1px solid {gray}; }
+#overview { background: {soft}; border: 1px solid {line}; border-radius: 6px; }
 #card { border: 1px solid {gray}; border-radius: 6px; }
 #card:hover { border-color: {primary_fade}; }
 QLabel { background: transparent; }
@@ -427,8 +428,16 @@ class MainWindow(QMainWindow):
         row.addWidget(self.history,1);row.addWidget(button('重新整理',self.refresh_history));self.folder_btn=button('開啟報告資料夾',self.open_report);row.addWidget(self.folder_btn);box.addLayout(row)
         f,b=card();head=QHBoxLayout();head.addWidget(label('本次結果','section'));head.addStretch();self.report_state=label('','pill');head.addWidget(self.report_state);b.addLayout(head)
         self.report_summary=label('尚未有翻譯紀錄。完成掃描後，這裡會顯示實際結果。');b.addWidget(self.report_summary)
+        # Overview first: applied / not applied and why / worth checking / backup. Sources stay folded.
+        grid=QHBoxLayout();grid.setSpacing(12);self.overview={}
+        for key,title in (('applied','已套用'),('not_applied','未套用'),('check','建議確認'),('backup','備份')):
+            cell=QFrame();cell.setObjectName('overview');line=QVBoxLayout(cell);line.setContentsMargins(12,10,12,10);line.setSpacing(2)
+            line.addWidget(label(title,'sub'));value=label('—','number');line.addWidget(value);detail=label('','sub');line.addWidget(detail);line.addStretch()
+            self.overview[key]=(value,detail);grid.addWidget(cell,1)
+        b.addLayout(grid)
         self.report_counts=label('','muted');b.addWidget(self.report_counts)
-        self.report_sources=label('','sub');b.addWidget(self.report_sources)
+        self.sources_toggle=button('顯示譯文來源明細',self.toggle_sources);self.sources_toggle.setObjectName('link');b.addWidget(self.sources_toggle,alignment=Qt.AlignLeft)
+        self.report_sources=label('','sub');self.report_sources.hide();b.addWidget(self.report_sources)
         self.report_errors=label('','warn');self.report_errors.hide();b.addWidget(self.report_errors);box.addWidget(f)
         chips=QHBoxLayout();chips.setSpacing(6);self.chips={}
         for mode,text in (('all','全部'),('missing','缺少中文來源'),('review','建議確認'),('ai','AI 補譯'),('context','待查程式與設定'),('done','已確認／已套用'),('keep','無需翻譯')):
@@ -1114,13 +1123,34 @@ class MainWindow(QMainWindow):
         if self.session.get('apply_error'):message+='\n'+self.session['apply_error']
         if self.session.get('status')=='installed':message+=''.join('\n'+n for n in self.applied_notes(self.session))
         self.report_summary.setText(message)
-        missing=sum(r['origin']=='untranslated' and r['supported'] for r in rows)
-        self.report_counts.setText(f"已套用 {self.session.get('installed_count',0):,} 筆 · AI 補譯 {self.session.get('ai_translation',0):,} 筆 · 缺少來源 {missing:,} 筆 · 外部翻譯 API 未使用（0 筆）")
+        self.fill_overview()
         problems=[jobs.describe_error(e) for e in self.session.get('errors',[])]
         problems+=[Path(str(r[0])).name+'：原本的 zh_tw.json 格式錯誤（遊戲也讀不到），已依英文與簡中重建' for r in self.session.get('repairs',[])]
         self.report_errors.setVisible(bool(problems))
         self.report_errors.setText('需要留意：\n'+'\n'.join('• '+p for p in problems[:5])+(f'\n另有 {len(problems)-5} 項，詳見報告資料夾。' if len(problems)>5 else ''))
         self.update_ai_button()
+
+    def toggle_sources(self):
+        show=not self.report_sources.isVisible();self.report_sources.setVisible(show)
+        self.sources_toggle.setText('隱藏譯文來源明細' if show else '顯示譯文來源明細')
+
+    def fill_overview(self):
+        o=jobs.report_overview(self.session)
+        value,detail=self.overview['applied'];value.setText(f"{o['applied']:,}")
+        detail.setText('筆譯文已寫入整合包'+(f"（含先前套用 {o['recovered']:,} 筆）" if o['recovered'] else ''))
+        value,detail=self.overview['not_applied'];value.setText(f"{sum(n for n,_ in o['not_applied']):,}")
+        detail.setText('\n'.join(f'{n:,} 筆 {why}' for n,why in o['not_applied']) or '沒有')
+        value,detail=self.overview['check'];value.setText(f"{o['check']:,}")
+        detail.setText('、'.join(f'{k} {n:,}' for k,n in o['check_kinds'])+'\n按上方「建議確認」查看' if o['check'] else '沒有需要確認的翻譯')
+        value,detail=self.overview['backup']
+        if o['backup']:value.setText('已備份');detail.setText(stamp_text(Path(o['backup']).name)+'\n可在「備份與還原」復原')
+        else:value.setText('—');detail.setText('還沒有套用，所以沒有備份')
+        notes=[]
+        if o['rechecked']:notes.append('套用後已重新掃描整合包確認寫入')
+        if o['context']:notes.append(f"另有 {o['context']:,} 筆程式或設定裡的文字，需確認是否顯示在遊戲中（見「待查程式與設定」）")
+        if o['renamed']:notes.append(f"{o['renamed']:,} 筆是整合包改過名稱的文字，只採用符合新名稱的來源")
+        notes.append('外部翻譯 API 未使用（0 筆）')
+        self.report_counts.setText('　·　'.join(notes))
 
     def review_current(self):self.review_row(self.table.currentRow(),0)
     def review_row(self,index,column=0):

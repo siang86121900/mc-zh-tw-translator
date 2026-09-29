@@ -168,6 +168,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
             manifest['skipped']=[dict(file=f,reason=r) for f,r in skipped]
             w.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
             w.writestr('授權與來源.txt',ATTRIBUTION)
+            # Per-string sources (AI, converted, reference), so the receiver's report keeps the same labels.
+            w.writestr('provenance.json',json.dumps(jobs.Provenance(home,instance).entries,ensure_ascii=False))
         tmp.replace(out)
     finally:
         tmp.unlink(missing_ok=True)
@@ -289,6 +291,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],
                     language_set=bool(set_language))
         record_applied(home,instance,manifest,file_hash(Path(patch)))
+        merge_provenance(home,instance,z)
         report=home/'output'/instance.name/'報告'/('補丁-'+datetime.now().strftime('%Y%m%d-%H%M%S'))
         report.mkdir(parents=True,exist_ok=True)
         jobs.write_json(report/'patch_result.json',result)
@@ -297,6 +300,17 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
     finally:
         z.close()
         shutil.rmtree(staged,ignore_errors=True)
+
+
+def merge_provenance(home: Path, instance: Path, z):
+    """Adopt the translator's per-string source labels; they only apply where text and English match."""
+    try:incoming=json.loads(z.read('provenance.json').decode('utf-8'))
+    except (KeyError,ValueError):return
+    store=jobs.Provenance(home,instance);fields=('text','en','origin','evidence','issue','unified_from','model')
+    for key,e in (incoming.items() if isinstance(incoming,dict) else ()):
+        if isinstance(key,str) and isinstance(e,dict) and isinstance(e.get('origin'),str) and isinstance(e.get('text'),str):
+            store.entries[key]={f:e.get(f) for f in fields if e.get(f) is None or isinstance(e.get(f),str)}
+    store.path.parent.mkdir(parents=True,exist_ok=True);jobs.write_json(store.path,store.entries)
 
 
 def applied_patches(home: Path) -> dict:

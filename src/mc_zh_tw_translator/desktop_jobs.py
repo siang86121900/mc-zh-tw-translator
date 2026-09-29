@@ -260,13 +260,36 @@ def apply_term(session, en, zh, key_tail=None):
 UNCERTAIN_ORIGINS = ('ai_translation','stale_reference','cross_version_reference')
 
 
+class Provenance:
+    """Where each applied translation came from, per instance.
+
+    After applying, our text sits in the mod's own zh_tw; a later run would otherwise take it for
+    people-written zh_tw and drop its AI / converted label. Matching text and English restore the label.
+    """
+    def __init__(self, home, instance):
+        digest=hashlib.sha1(str(Path(instance).resolve()).casefold().encode('utf-8')).hexdigest()[:16]
+        self.path=Path(home)/'provenance'/(digest+'.json')
+        try:self.entries=json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError,ValueError):self.entries={}
+    @staticmethod
+    def key(row):return row['source']+'\n'+row['key']
+    def lookup(self, row):
+        e=self.entries.get(self.key(row))
+        return e if e and e.get('text')==row.get('current') and e.get('en')==row.get('en') else None
+    def record(self, rows):
+        for r in rows:
+            self.entries[self.key(r)]=dict(text=r['proposed'],en=r.get('en'),origin=r['origin'],evidence=r.get('evidence') or '',
+                                           issue=r.get('issue') or '',unified_from=r.get('unified_from'),model=r.get('ai_model'))
+        self.path.parent.mkdir(parents=True,exist_ok=True);write_json(self.path,self.entries)
+
+
 def needs_check(row):
     """Applied anyway, but worth a look: AI, other-version references, converted old zh_tw, unified names.
 
     Ordinary simplified-to-traditional conversions are not listed; there are tens of thousands and they
     come from the mod's own Chinese text.
     """
-    return bool(row.get('supported') and row.get('changed') and (
+    return bool(row.get('supported') and (row.get('changed') or row.get('recovered')) and (
         row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None
         or str(row.get('issue') or '').startswith('既有繁中')))
 
@@ -287,6 +310,50 @@ def taiwan_wording(text):
     if not isinstance(text,str) or KANA.search(text):return text
     for pattern,replacement in TW_WORDING:text=pattern.sub(replacement,text)
     return text
+
+
+def report_overview(session):
+    """What the player cares about first: applied, not applied (and why), worth checking, backup."""
+    rows=session.get('rows',[])
+    applied=session.get('installed_count',0)+session.get('recovered_count',0)
+    reasons=[]
+    missing=sum(r['origin']=='untranslated' and r['supported'] for r in rows)
+    if missing:reasons.append((missing,'找不到中文來源'+('（可用 AI 補翻）' if not session.get('ai_translation') else '')))
+    waiting=sum(bool(r.get('reviewed') and r.get('changed') and r.get('supported') and not r.get('installed')) for r in rows)
+    if waiting:reasons.append((waiting,'已翻好但還沒寫入（'+('關閉遊戲後重試套用' if session.get('status') in ('awaiting_game','apply_failed') else '尚未套用')+'）'))
+    if session.get('nested_skipped'):reasons.append((session['nested_skipped'],'內嵌函式庫需要 KubeJS 才能套用'))
+    # Program/config strings are candidates, not known gaps; they are reported beside, not inside, 未套用.
+    context=sum(not r['supported'] and r['origin'] not in ('not_display','keep_original') for r in rows)
+    check=collections.Counter()
+    for r in rows:
+        if needs_check(r):
+            check['AI 補譯' if r['origin']=='ai_translation' else '自動統一譯名' if r.get('unified_from') is not None
+                  else '版本不同的參考' if r['origin'] in ('stale_reference','cross_version_reference') else '改過用語的模組繁中']+=1
+    after=session.get('after_counts')
+    return dict(applied=applied,not_applied=reasons,context=context,check=sum(check.values()),check_kinds=check.most_common(),
+                backup=session.get('backup'),rechecked=after is not None,renamed=session.get('renamed_count',0),
+                recovered=session.get('recovered_count',0))
+
+
+def names_in(names, text, limit=40):
+    """Modpack item/block/... names mentioned in text (whole words, up to five words long)."""
+    words=re.findall(r"[A-Za-z][A-Za-z'-]*",text or '');found={};used=set()
+    for n in range(5,0,-1):
+        for i in range(len(words)-n+1):
+            if used.intersection(range(i,i+n)):continue  # 'Iron' inside a matched 'Iron Sword' is not a separate name
+            hit=names.get(' '.join(words[i:i+n]).casefold())
+            if hit:
+                used.update(range(i,i+n))
+                if hit[0] not in found:found[hit[0]]=hit[1]
+            if len(found)>=limit:return found
+    return found
+
+
+def load_name_terms(session):
+    """casefolded English -> (English, Chinese) for names decided in this run (see plan)."""
+    try:data=json.loads((Path(session['report'])/'name_terms.json').read_text(encoding='utf-8'))
+    except (OSError,ValueError,KeyError):return {}
+    return {en.casefold():(en,zh) for en,zh in data.items()}
 
 
 def unify_suggested_terms(session):
@@ -558,7 +625,14 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if isinstance(r['zh_cn'],str) and HAN.search(r['zh_cn']):
             instance_rp_cn.setdefault((m[1],r['key']),[]).append((r['source'],r['zh_cn']))
     counts=collections.Counter()
-    memory=TranslationMemory(home);user_terms=UserGlossary(home)
+    memory=TranslationMemory(home);user_terms=UserGlossary(home);provenance=Provenance(home,instance);special=collections.Counter()
+    # The mods' own English, to notice strings a modpack renamed through KubeJS or resource packs.
+    name_terms={}  # English name -> (trust rank, Chinese); given to AI so sentences use the same names
+    mod_en={}
+    for r in audit.rows:
+        m=re.search(r'assets/([^/]+)/lang/',r['source'])
+        if m and r['kind']=='language' and r['source'].startswith('mods/') and isinstance(r['en'],str):
+            mod_en.setdefault((m[1],r['key']),r['en'])
     ref_kinds=(result.get('references') or {}).get('sources') or ['tw','cn']
     vanilla=next((ref for n,ref in enumerate(refs) if n<len(ref_kinds) and ref_kinds[n]=='vanilla'),None)
     # Without any scanned mod jar there is nothing to compare against, so nothing is skipped.
@@ -631,6 +705,14 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if existing is None and isinstance(r['current'],str):
             # A zh_tw that still contains simplified characters is only a last-resort candidate.
             options.append(('existing_zh_tw',cc.convert(r['current']),r['source']+'（原含簡體，已轉繁）'))
+        renamed=(not r['source'].startswith('mods/') and isinstance(r['en'],str)
+                 and mod_en.get((ns,r['key'])) not in (None,r['en']))
+        if renamed:
+            # The modpack renamed this text (e.g. a KubeJS item rename); sources tied only to the key
+            # still describe the mod's original English and would bring the old name back.
+            options=[o for o in options if o[0] in ('translation_memory','user_glossary','existing_zh_tw','same_source_zh_cn','glossary')
+                     or (o[0]=='reference_pack_or_cfpa' and o[2] in ('reference:tw','reference:para'))]
+            special['renamed']+=1
         value=original; origin='untranslated'; evidence=''; issue='缺少可用中文來源'
         for name,candidate,source in options:
             if usable(original,candidate):
@@ -647,6 +729,13 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             issue='既有繁中含簡體字，已轉為台灣繁體，請核對'
         elif origin=='existing_zh_tw' and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value)):
             value=taiwan_wording(value);issue='既有繁中已把大陸用語改為台灣用語，請核對'
+        extra={}
+        prior=provenance.lookup(r) if origin=='existing_zh_tw' and value==r['current'] else None
+        if prior and prior['origin']!='existing_zh_tw':
+            # Our own earlier output: keep its real source and doubts instead of calling it mod zh_tw.
+            origin=prior['origin'];evidence=prior['evidence'];issue=prior['issue']
+            extra=dict(recovered=True,installed=True,unified_from=prior.get('unified_from'),ai_model=prior.get('model'))
+            special['recovered']+=1
         reason=keep_original_reason(original,r['key'],ns) if origin=='untranslated' else ''
         if reason:
             # Parameters, key names and similar strings stay as-is; they are neither gaps nor AI work.
@@ -655,10 +744,18 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         supported=r['kind']=='language' or ('/en_us/' in r['source'] or '/zh_tw/' in r['source'])
         changed=value!=r['current'] and origin!='untranslated' and (origin!='keep_original' or bool(issue))
         counts[origin]+=1
+        if (NAME_KEY.match(r['key']) and isinstance(r['en'],str) and 2<len(r['en'].strip())<=40 and HAN.search(value)
+                and origin not in ('untranslated','keep_original','ai_translation')):
+            rank=trust_rank(dict(origin=origin,evidence=evidence));en=r['en'].strip()
+            if en not in name_terms or rank<name_terms[en][0]:name_terms[en]=(rank,value.strip())
         if changed or issue or origin=='keep_original':  # keep rows stay visible under the report's 無需翻譯 filter
             result['rows'].append(dict(slim(r),proposed=value,origin=origin,evidence=evidence,issue=issue,
-                                       supported=supported,reviewed=False,changed=changed))
-    result.update(source_counts=dict(counts),status='needs_review',api=0,ai_translation=0)
+                                       supported=supported,reviewed=False,changed=changed,renamed=renamed or None,
+                                       **{k:v for k,v in extra.items() if v is not None}))
+    try:write_json(report/'name_terms.json',{en:zh for en,(_,zh) in name_terms.items()})
+    except OSError:pass
+    result.update(source_counts=dict(counts),status='needs_review',api=0,ai_translation=0,
+                  recovered_count=special['recovered'],renamed_count=special['renamed'])
     for name,expected in result['source_hashes'].items():
         if file_hash(contained(instance,name))!=expected:
             result['status']='blocked';result['errors'].append([name,'掃描途中原檔變動，請重新掃描。'])
@@ -1015,6 +1112,8 @@ def apply_session(session, home, notify):
     ensure_game_closed(instance)
     backup=apply_reviewed(instance,staged,records,home/'output')
     for row in selected:row['installed']=True
+    try:Provenance(home,instance).record(selected)
+    except OSError as exc:session['errors'].append(['來源紀錄',str(exc)])
     session.update(status='installed',backup=str(backup),installed_count=len(selected),nested_skipped=skipped_nested,
                    nested_packed=0 if pack else sum(1 for r in selected if is_nested(r)),
                    language_set=bool(session.get('set_language')))  # options.txt changed now or already zh_tw

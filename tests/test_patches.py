@@ -145,7 +145,41 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(patches.match_catalog([pack],mine,{})[0]['status'],'exact')
 
 
+    def test_rerun_keeps_labels_of_applied_translations_and_patch_carries_them(self,_):
+        self.translate()
+        again=plan(self.translator,self.home,lambda *_:None,references=([{},{}],{'tested':True}))
+        row=next(r for r in again['rows'] if r['key']=='demo.hello')
+        self.assertEqual((row['origin'],row.get('recovered'),row.get('installed')),('same_source_zh_cn',True,True))
+        self.assertGreaterEqual(again['recovered_count'],2)
+        out=patches.export_patch(self.translator,self.home)
+        friend_home=Path(self.temp.name)/'friend-app'
+        patches.apply_patch(self.friend,Path(out['path']),friend_home)
+        theirs=plan(self.friend,friend_home,lambda *_:None,references=([{},{}],{'tested':True}))
+        self.assertEqual(next(r for r in theirs['rows'] if r['key']=='demo.hello')['origin'],'same_source_zh_cn')
+
+    def test_modpack_renamed_text_does_not_take_key_only_sources(self,_):
+        lang=self.translator/'kubejs/assets/real/lang';lang.mkdir(parents=True)
+        (lang/'en_us.json').write_text(json.dumps({'real.a':'Rusty Blade'}),encoding='utf-8')
+        cfpa={'real':{'real.a':'真实'}}
+        session=plan(self.translator,self.home,lambda *_:None,references=([{},cfpa],{'sources':['tw','cn']}))
+        kubejs=next(r for r in session['rows'] if r['key']=='real.a' and r['source'].startswith('instance!/kubejs'))
+        self.assertEqual((kubejs['origin'],kubejs.get('renamed')),('untranslated',True))
+        self.assertEqual(session['renamed_count'],1)
+
+
 class OneClickTests(unittest.TestCase):
+    def test_names_in_finds_longest_modpack_names(self):
+        from mc_zh_tw_translator.desktop_jobs import names_in
+        names={'iron sword':('Iron Sword','鐵劍'),'iron':('Iron','鐵'),'magicule':('Magicule','魔素')}
+        self.assertEqual(names_in(names,'Craft an Iron Sword with Magicules and magicule.'),{'Iron Sword':'鐵劍','Magicule':'魔素'})
+
+    def test_report_overview_explains_what_was_not_applied(self):
+        from mc_zh_tw_translator.desktop_jobs import report_overview
+        rows=[dict(origin='untranslated',supported=True,changed=False),dict(origin='ai_translation',supported=True,changed=True,installed=True),
+              dict(origin='same_source_zh_cn',supported=True,changed=True,installed=True)]
+        o=report_overview(dict(rows=rows,installed_count=2,backup='x/20260929-120000-000000-abc',ai_translation=1))
+        self.assertEqual((o['applied'],o['check'],o['not_applied']),(2,1,[(1,'找不到中文來源')]))
+
     def test_mainland_wording_in_mod_zh_tw_is_fixed_conservatively(self):
         from mc_zh_tw_translator.desktop_jobs import taiwan_wording
         self.assertEqual(taiwan_wording('傳送門激活物，請添加代碼'),'傳送門啟用物，請新增程式碼')
