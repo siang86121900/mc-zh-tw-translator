@@ -167,6 +167,19 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(session['renamed_count'],1)
 
 
+    def test_batch_applied_in_parts_can_finish_later(self,_):
+        from mc_zh_tw_translator.desktop_jobs import auto_confirm_safe
+        session=plan(self.translator,self.home,lambda *_:None,references=([{},{}],{'tested':True}))
+        jar_row=next(r for r in session['rows'] if r['key']=='real.a')
+        jar_row['reviewed']=True  # an older version applied only the rows confirmed by hand
+        first=apply_session(session,self.home,lambda *_:None)
+        self.assertEqual((first['status'],first['installed_count']),('installed',1))
+        auto_confirm_safe(first)  # the report's 備份並套用譯文 now finishes the rest
+        done=apply_session(first,self.home,lambda *_:None)
+        self.assertEqual(done['installed_count'],2);self.assertEqual(len(done['backups']),2)
+        self.assertTrue((self.translator/'kubejs/assets/demo/lang/zh_tw.json').exists())
+        with self.assertRaises(ValueError):apply_session(done,self.home,lambda *_:None)  # nothing left
+
     def test_modpack_update_after_translation_is_noticed(self,_):
         from mc_zh_tw_translator import desktop_jobs as jobs
         self.translate()

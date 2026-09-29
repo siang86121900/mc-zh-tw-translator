@@ -319,7 +319,7 @@ def report_overview(session):
     reasons=[]
     missing=sum(r['origin']=='untranslated' and r['supported'] for r in rows)
     if missing:reasons.append((missing,'找不到中文來源'+('（可用 AI 補翻）' if not session.get('ai_translation') else '')))
-    waiting=0 if session.get('status') in ('installed','restored') else applicable_count(session)
+    waiting=0 if session.get('status')=='restored' else applicable_count(session)
     if waiting:reasons.append((waiting,'已翻好但還沒寫入（'+('關閉遊戲後重試套用' if session.get('status') in ('awaiting_game','apply_failed') else '尚未套用')+'）'))
     if session.get('nested_skipped'):reasons.append((session['nested_skipped'],'內嵌函式庫需要 KubeJS 才能套用'))
     # Program/config strings are candidates, not known gaps; they are reported beside, not inside, 未套用.
@@ -837,6 +837,77 @@ def full_translation(instance, home, model, notify, cancelled=lambda:False, chec
     return result
 
 
+_MOD_NAMES = {}
+
+
+def clean_file_name(name):
+    """'Jadens-Nether-Expansion-2.4.0-BETA.7.jar' -> 'Jadens Nether Expansion'."""
+    stem=re.sub(r'\.(jar|zip)$','',name,flags=re.I)
+    stem=re.sub(r'[-_+ ](?:neo)?(?:forge|fabric|quilt|mc|v)?[-_+ ]?\d[\w.+-]*$','',stem,flags=re.I)
+    stem=re.sub(r'[-_+](?:neo)?(?:forge|fabric|quilt)$','',stem,flags=re.I)
+    return re.sub(r'[-_]+',' ',stem).strip() or name
+
+
+def mod_display_name(instance, outer):
+    """The mod's own display name from its metadata, falling back to a cleaned file name."""
+    key=(str(instance),outer)
+    if key in _MOD_NAMES:return _MOD_NAMES[key]
+    name=None
+    try:
+        with zipfile.ZipFile(contained(Path(instance),outer)) as z:
+            names=set(z.namelist())
+            for meta in ('META-INF/neoforge.mods.toml','META-INF/mods.toml'):
+                if meta in names:
+                    m=re.search(r'(?m)^\s*displayName\s*=\s*"([^"]+)"',z.read(meta).decode('utf-8','replace'))
+                    if m:name=m[1];break
+            if not name and 'fabric.mod.json' in names:
+                name=json.loads(z.read('fabric.mod.json').decode('utf-8-sig')).get('name')
+    except (OSError,ValueError,KeyError,zipfile.BadZipFile,AttributeError):pass
+    _MOD_NAMES[key]=name=str(name or clean_file_name(outer.split('/')[-1]))
+    return name
+
+
+def module_label(instance, row):
+    """Where a row's text lives, as a file the player can find in the modpack folder.
+
+    'Jadens-Nether-Expansion-2.4.0-BETA.7.jar · netherexp'; the mod's display name is kept for
+    the tooltip (mod_display_name) because two jars can share one.
+    """
+    source=row.get('source','');parts=source.split('!/')
+    m=re.search(r'assets/([^/]+)/',source);ns=m[1] if m else ''
+    outer=parts[0]
+    if outer=='instance':
+        path=parts[1] if len(parts)>1 else ''
+        where='/'.join(path.split('/')[:3]) if path.startswith('kubejs/') else path
+    elif len(parts)>2:where=parts[1].split('/')[-1]+'（在 '+outer.split('/')[-1]+' 裡）'
+    else:where=outer.split('/')[-1]
+    return where+(' · '+ns if ns and ns not in where else '')
+
+
+TRANSLATED_CATEGORIES = ('mine','tw_ref','mod_tw','official','s2t','version_ref','ai','other')
+UNTRANSLATED_CATEGORIES = ('missing','context','keep')
+CATEGORY_NAMES = {'mine':'你確認的','tw_ref':'台灣參考庫','mod_tw':'模組／整合包繁中','official':'官方譯名與術語',
+                  's2t':'簡中轉繁','version_ref':'版本不同的參考','ai':'AI 補譯','other':'其他',
+                  'missing':'缺少中文來源','context':'待查程式與設定','keep':'無需翻譯'}
+
+
+def row_category(r):
+    """Report grouping: translated (by how) or untranslated (by why)."""
+    o=r.get('origin')
+    if o=='pending':return 'pending'
+    if o in ('keep_original','not_display'):return 'keep'
+    if not r.get('supported'):return 'context'
+    if o=='untranslated':return 'missing'
+    if o in ('translation_memory','user_glossary','manual'):return 'mine'
+    if o=='reference_pack_or_cfpa':return 'tw_ref' if r.get('evidence') in ('reference:tw','reference:para') else 's2t'
+    if o in ('existing_zh_tw','instance_resourcepack'):return 'mod_tw'
+    if o in ('official_vanilla','glossary'):return 'official'
+    if o in ('same_source_zh_cn','instance_zh_cn'):return 's2t'
+    if o=='ai_translation':return 'ai'
+    if o in ('stale_reference','cross_version_reference'):return 'version_ref'
+    return 'other'
+
+
 def applicable_count(session):
     """Rows the report can apply now: confirmed ones plus everything that passes the automatic checks."""
     return sum(bool(r.get('supported') and r.get('changed') and not r.get('installed') and r.get('origin')!='untranslated'
@@ -1076,14 +1147,21 @@ def apply_session(session, home, notify):
     # KubeJS is installed and is otherwise skipped and reported; ordinary text is written into the mods.
     nested_to_kubejs=not pack and pack_target(instance)=='kubejs'
     selected=[r for r in session['rows'] if r.get('reviewed') and r.get('supported') and r.get('changed')
-              and (pack or nested_to_kubejs or not is_nested(r))]
+              and not r.get('installed') and (pack or nested_to_kubejs or not is_nested(r))]
     skipped_nested=0 if pack or nested_to_kubejs else sum(1 for r in session['rows'] if r.get('reviewed') and r.get('changed') and is_nested(r))
-    if not selected:raise ValueError('尚未有確認可套用的譯文。請先在報告選擇文字並按「確認這筆」。')
+    if not selected:raise ValueError('這一批沒有尚未套用的譯文。')
     if session.get('status')=='blocked':raise ValueError('此批次預檢未通過，不能套用。')
-    if session.get('status')=='installed':raise ValueError('這一批已套用，請重新掃描後建立下一批。')
+    if session.get('status')=='restored':raise ValueError('這一批已還原，請重新翻譯建立新的一批。')
     ensure_game_closed(instance)
+    # A batch may be applied in parts (e.g. an older version wrote only confirmed rows). Files this batch
+    # already wrote are accepted at the hash that earlier write left; anything else must be unchanged.
+    ours={}
+    for earlier in session.get('backups') or ([session['backup']] if session.get('backup') else []):
+        try:ours.update({f['file']:f['after'] for f in json.loads((Path(earlier)/'_備份紀錄/manifest.json').read_text(encoding='utf-8'))['files']})
+        except (OSError,ValueError,KeyError):pass
     for name,expected in session.get('source_hashes',{}).items():
-        if file_hash(contained(instance,name))!=expected:raise ValueError('來源在掃描後有變更，請重新掃描：'+name)
+        now=file_hash(contained(instance,name))
+        if now!=expected and now!=ours.get(name):raise ValueError('來源在掃描後有變更，請重新掃描：'+name)
     changes=collections.defaultdict(list);pack_rows=[]
     for row in selected:
         original=row.get('en') or row.get('zh_cn') or row.get('current') or ''
@@ -1153,7 +1231,9 @@ def apply_session(session, home, notify):
     for row in selected:row['installed']=True
     try:Provenance(home,instance).record(selected);record_translated(home,instance)
     except OSError as exc:session['errors'].append(['來源紀錄',str(exc)])
-    session.update(status='installed',backup=str(backup),installed_count=len(selected),nested_skipped=skipped_nested,
+    backups=(session.get('backups') or ([session['backup']] if session.get('backup') else []))+[str(backup)]
+    session.update(status='installed',backup=str(backup),backups=backups,installed_count=session.get('installed_count',0)+len(selected),
+                   nested_skipped=skipped_nested,
                    nested_packed=0 if pack else sum(1 for r in selected if is_nested(r)),
                    language_set=bool(session.get('set_language')))  # options.txt changed now or already zh_tw
     write_json(report/'session.json',session)

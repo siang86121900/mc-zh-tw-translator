@@ -1,6 +1,7 @@
 """Native Windows desktop app, styled after the user's Agent Task Board."""
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import os
@@ -264,7 +265,11 @@ class ReviewDialog(QDialog):
         super().__init__(parent);self.row=row
         self.setWindowTitle('校對翻譯');self.resize(760,650)
         box=QVBoxLayout(self);box.setSpacing(12)
-        box.addWidget(label(row['key'],'section'))
+        session=getattr(parent,'session',None) or {}
+        outer=row.get('source','').split('!/')[0]
+        shown=jobs.mod_display_name(session.get('instance'),outer) if outer.startswith('mods/') and session.get('instance') else ''
+        box.addWidget(label(jobs.module_label(session.get('instance'),row)+(f'　（{shown}）' if shown else ''),'section'))
+        box.addWidget(label(row['key'],'muted'))
         path=label(row['source'],'sub');path.setTextInteractionFlags(Qt.TextSelectableByMouse);box.addWidget(path)
         box.addWidget(label('原文'))
         original=QTextEdit();original.setPlainText(row.get('en') or row.get('zh_cn') or row.get('current') or '')
@@ -441,11 +446,19 @@ class MainWindow(QMainWindow):
         self.sources_toggle=button('顯示譯文來源明細',self.toggle_sources);self.sources_toggle.setObjectName('link');b.addWidget(self.sources_toggle,alignment=Qt.AlignLeft)
         self.report_sources=label('','sub');self.report_sources.hide();b.addWidget(self.report_sources)
         self.report_errors=label('','warn');self.report_errors.hide();b.addWidget(self.report_errors);box.addWidget(f)
-        chips=QHBoxLayout();chips.setSpacing(6);self.chips={}
-        for mode,text in (('all','全部'),('missing','缺少中文來源'),('review','建議確認'),('ai','AI 補譯'),('context','待查程式與設定'),('done','已確認／已套用'),('keep','無需翻譯')):
-            chip=button(text,lambda checked=False,m=mode:self.set_filter(m));chip.setObjectName('chip');chip.setCheckable(True)
-            chip.setChecked(mode==self.filter_mode);self.chips[mode]=chip;chips.addWidget(chip)
-        chips.addStretch();box.addLayout(chips)
+        # Two groups: translated (split by how) and untranslated (split by why); each chip shows its count.
+        self.chips={};self.chip_names={}
+        groups=((None,(('all','全部'),)),
+                ('已翻譯',(('translated','全部已翻譯'),('review','建議確認'))+tuple((c,jobs.CATEGORY_NAMES[c]) for c in jobs.TRANSLATED_CATEGORIES)),
+                ('未翻譯',tuple((c,jobs.CATEGORY_NAMES[c]) for c in jobs.UNTRANSLATED_CATEGORIES)))
+        for title,items in groups:
+            chips=QHBoxLayout();chips.setSpacing(6)
+            if title:
+                head=label(title,'sub');head.setFixedWidth(52);chips.addWidget(head)
+            for mode,text in items:
+                chip=button(text,lambda checked=False,m=mode:self.set_filter(m));chip.setObjectName('chip');chip.setCheckable(True)
+                chip.setChecked(mode==self.filter_mode);self.chips[mode]=chip;self.chip_names[mode]=text;chips.addWidget(chip)
+            chips.addStretch();box.addLayout(chips)
         self.search=QLineEdit();self.search.setPlaceholderText('搜尋模組、文字或語系鍵')
         # Reports hold ~180k rows; wait for a typing pause instead of refiltering per keystroke.
         self.search_timer=QTimer(self);self.search_timer.setSingleShot(True);self.search_timer.setInterval(300);self.search_timer.timeout.connect(self.reset_table)
@@ -1089,13 +1102,16 @@ class MainWindow(QMainWindow):
             self.stats[0].setText(f"{self.session.get('preview_changed',sum(bool(r['changed'] and r['supported']) for r in rows)):,}")
             self.stats[1].setText(f"{self.session.get('preview_pending',sum(r['origin'] in ('untranslated','pending') for r in rows)):,}");self.stats[2].setText(f"{self.session.get('installed_count',0):,}")
         pending=self.unapplied_count()
-        if self.session['status'] in ('awaiting_game','apply_failed','ready_to_apply') or (pending and self.session['status']=='needs_review'):
-            verb='重試套用' if self.session['status'] in ('awaiting_game','apply_failed') else '套用這批譯文'
+        if self.session['status'] in ('awaiting_game','apply_failed','ready_to_apply') or (pending and self.session['status'] in ('needs_review','installed')):
+            verb='重試套用' if self.session['status'] in ('awaiting_game','apply_failed') else '備份並套用譯文'
             self.apply_btn.setText(f'{verb}（{pending:,} 筆，不重新翻譯）' if pending else '重試套用（不重新翻譯）')
         else:self.apply_btn.setText('備份並套用譯文')
+        # One-click already applied everything (including rows worth checking); the button only shows
+        # when translations are still waiting, e.g. the game was running.
+        self.apply_btn.setVisible(bool(pending) or self.session['status'] in ('awaiting_game','apply_failed'))
 
     def unapplied_count(self):
-        if not self.session or self.session.get('is_preview') or self.session.get('status') in ('installed','restored'):return 0
+        if not self.session or self.session.get('is_preview') or self.session.get('status')=='restored':return 0
         return jobs.applicable_count(self.session)
 
     def refresh_history(self):
@@ -1138,16 +1154,20 @@ class MainWindow(QMainWindow):
             self.table.setRowCount(0);return
         rows=self.session['rows'];mode=self.filter_mode;query=self.search.text().strip().casefold()
         size=int(self.page_size.currentData() or 100)
-        def match(r):
+        categories=[jobs.row_category(r) for r in rows]
+        counts=collections.Counter(categories);counts['all']=len(rows)
+        counts['translated']=sum(counts[c] for c in jobs.TRANSLATED_CATEGORIES)
+        counts['review']=sum(jobs.needs_check(r) for r in rows)
+        for chip_mode,chip in self.chips.items():  # not 'mode': that is the active filter used below
+            chip.setText(f"{self.chip_names[chip_mode]} {counts[chip_mode]:,}")
+            chip.setVisible(chip_mode in ('all','translated','review','missing') or counts[chip_mode]>0)
+        def match(r,category):
             if query and query not in (r['source']+' '+r['key']+' '+str(r.get('en') or r.get('current') or '')+' '+r['proposed']).casefold():return False
-            if mode=='review':return jobs.needs_check(r) or (r['supported'] and r['changed'] and not r['reviewed'] and not r.get('installed'))
-            if mode=='missing':return r['supported'] and r['origin']=='untranslated'
-            if mode=='context':return not r['supported'] and r['origin']!='not_display'
-            if mode=='done':return r['reviewed'] or r.get('installed')
-            if mode=='ai':return r['origin']=='ai_translation' or r.get('previous_origin')=='ai_translation'
-            if mode=='keep':return r['origin'] in ('keep_original','not_display')
-            return True
-        filtered=[r for r in rows if match(r)];pages=max(1,(len(filtered)+size-1)//size)
+            if mode=='all':return True
+            if mode=='review':return jobs.needs_check(r)
+            if mode=='translated':return category in jobs.TRANSLATED_CATEGORIES
+            return category==mode
+        filtered=[r for r,c in zip(rows,categories) if match(r,c)];pages=max(1,(len(filtered)+size-1)//size)
         self.page_index=min(self.page_index,pages-1)
         self.visible_rows=filtered[self.page_index*size:(self.page_index+1)*size]
         tokens=THEMES['dark' if self.dark_theme else 'light']
@@ -1158,8 +1178,12 @@ class MainWindow(QMainWindow):
             original=r.get('en') or r.get('zh_cn') or r.get('current') or r['key']
             for j,text in enumerate((original,r['proposed'],jobs.SOURCE_NAMES.get(r['origin'],r['origin']),'● '+state)):
                 item=QTableWidgetItem(str(text).replace('\n',' ')[:130])
-                item.setToolTip(f"{r['key']}\n{r['source']}\n{r.get('issue') or ''}" if j==0 else str(text))
-                if j==0:item.setData(MODULE_ROLE,row_module(r))
+                if j==0:
+                    outer=r['source'].split('!/')[0]
+                    shown=jobs.mod_display_name(self.session.get('instance'),outer) if outer.startswith('mods/') and self.session.get('instance') else ''
+                    item.setToolTip('\n'.join(x for x in (shown and '模組：'+shown,r['key'],r['source'],r.get('issue') or '') if x))
+                else:item.setToolTip(str(text))
+                if j==0:item.setData(MODULE_ROLE,jobs.module_label(self.session.get('instance'),r))
                 if j==3:
                     item.setForeground(QColor(tokens[STATE_ROLE.get(state,'text60')]))
                     font=item.font();font.setBold(True);item.setFont(font)
@@ -1179,9 +1203,9 @@ class MainWindow(QMainWindow):
         set_pill(self.report_state,*badges.get(self.session['status'],('待套用','todo')))
         message=stages.get(self.session['status'],'本次已產生的譯文與待處理項目如下。')
         pending=self.unapplied_count()
-        if pending and self.session['status'] in ('needs_review','ready_to_apply'):
+        if pending and self.session['status'] in ('needs_review','ready_to_apply','installed'):
             # Reports from older versions could stop after confirming without writing anything.
-            message=f'這批有 {pending:,} 筆已通過檢查的譯文，但還沒寫入模組包。關閉遊戲後按右下「套用這批譯文」，會先備份再套用，不用重新翻譯。'
+            message=f'這批有 {pending:,} 筆已通過檢查的譯文，但還沒寫入模組包。關閉遊戲後按右下「備份並套用譯文」，會先備份再套用，不用重新翻譯。'
         if self.session.get('is_preview'):message+=f"\n已記錄 {self.session['preview_total']:,} 筆，處理中先預覽最近 200 筆；結束後載入完整報告。"
         if self.session.get('apply_error'):message+='\n'+self.session['apply_error']
         if self.session.get('status')=='installed':message+=''.join('\n'+n for n in self.applied_notes(self.session))

@@ -153,7 +153,7 @@ class DesktopUiTests(unittest.TestCase):
                      supported=True,reviewed=True,changed=True,review_method='auto_validated_one_click')
             (report/'session.json').write_text(json.dumps(dict(instance=d,report=str(report),status='needs_review',errors=[],source_counts={},rows=[row])),encoding='utf-8')
             window=MainWindow(home)
-            self.assertIn('套用這批譯文（1 筆',window.apply_btn.text())
+            self.assertIn('備份並套用譯文（1 筆',window.apply_btn.text())
             self.assertIn('還沒寫入模組包',window.report_summary.text())
             window.close()
 
