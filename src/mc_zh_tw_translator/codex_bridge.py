@@ -112,6 +112,12 @@ def validate_login_url(url):
     return url
 
 
+# Rows per request. Each request repeats the instructions and opens a new thread, so small batches
+# spend most of the quota on overhead (12 rows/request used ~68% of a 5-hour window for 1,100 rows).
+BATCH_ROWS = 60
+BATCH_CHARS = 6000
+
+
 def model_quotas(limits):
     """Quotas the plan reserves for one specific model, keyed by that model's slug (casefolded)."""
     found = {}
@@ -242,7 +248,8 @@ class CodexClient:
     def check(self, model=None):
         account = self.account()
         limits = self.call('account/rateLimits/read')
-        return account, limits, quota_guard(account, limits, model)
+        self.last_quota = quota_guard(account, limits, model)
+        return account, limits, self.last_quota
 
     def models(self):
         rows = []; cursor = None
@@ -342,6 +349,17 @@ def pending_rows(session):
             r.get('origin') == 'untranslated' and not r.get('reviewed') and not r.get('installed') and not r.get('ai_attempted')]
 
 
+def usage_estimate(start, now, completed, left):
+    """Remaining-quota note measured from this run: used so far per row times rows left."""
+    if not start or not now or completed < 20: return '；消耗原方案額度'
+    short = min(start, key=lambda q: q.get('minutes') or 1e9); current = min(now, key=lambda q: q.get('minutes') or 1e9)
+    used = short['remaining'] - current['remaining']
+    if used <= 0: return f"；5 小時額度剩 {current['remaining']:g}%"
+    need = used / completed * left
+    return (f"；5 小時額度剩 {current['remaining']:g}%，照目前用量剩下約需 {need:.0f}%"
+            + ('，可能不夠，會在剩 10% 時暫停' if need > current['remaining'] - 10 else ''))
+
+
 def supplement(session, home, selected_model, notify, cancelled=lambda: False, client_factory=CodexClient, checkpoint=lambda _:None):
     from . import desktop_jobs as jobs
     # Per-file scan errors stay listed in the report; they only exclude that file, not the whole batch.
@@ -361,20 +379,23 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
     try:
         with client_factory(home, cancelled) as client:
             model = next((m for m in client.models() if m['model'] == selected_model), None)
+            if hasattr(client, 'check'): client.check(selected_model)
+            start_quota = getattr(client, 'last_quota', None)  # baseline for the measured usage estimate
             if not model: raise BridgeError('此模型目前不可用，請重新整理模型清單；不會自行換模型。')
             while remaining:
                 if cancelled(): raise InterruptedError('已停止，已完成的 AI 譯文保留。')
                 batch = []; length = 0
-                while remaining and len(batch) < 12:
+                while remaining and len(batch) < BATCH_ROWS:
                     i, row = remaining[0]
                     original = row.get('en') or row.get('zh_cn') or row.get('current') or ''
                     if len(original) > 6000:
                         row['issue'] = '文字過長，未送 AI；需分段處理'; row['ai_attempted'] = True
                         remaining.pop(0); continue
-                    if batch and length + len(original) > 6000: break
+                    if batch and length + len(original) > BATCH_CHARS: break
                     remaining.pop(0); batch.append((i, row, original)); length += len(original)
                 if not batch: continue
-                notify(0, 'AI 補翻中', f'已完成 {completed} 筆；使用 {selected_model}，消耗原方案額度')
+                notify(0, 'AI 補翻中', f'已完成 {completed} 筆，還有 {len(remaining) + len(batch)} 筆；使用 {selected_model}'
+                       + usage_estimate(start_quota, getattr(client, 'last_quota', None), completed, len(remaining) + len(batch)))
                 payload = [dict(id=str(i), text=original, key=row['key'], source=row['source']) for i,row,original in batch]
                 terms = {}
                 for _, _, original in batch:
@@ -412,7 +433,10 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
                 checkpoint(session)
         session['ai_status'] = 'completed'; session['ai_message'] = f'AI 補翻完成，本次產生 {completed} 筆待校對譯文。'
     except Exception as exc:
-        session['ai_status'] = 'paused'; session['ai_message'] = str(exc)
+        left = len(pending_rows(session))
+        session['ai_status'] = 'paused'
+        session['ai_message'] = (f'{exc}\n已完成的 AI 譯文和其他所有譯文會照常套用；還有 {left:,} 筆沒有補翻。'
+                                 '額度恢復後再按一次「一鍵完整翻譯並套用」，只會補剩下的部分。')
     finally:
         jobs.write_json(report, session)
     notify(100, 'AI 補翻已停止' if session['ai_status'] == 'paused' else 'AI 補翻完成', session['ai_message'])

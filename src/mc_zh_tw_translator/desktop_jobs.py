@@ -817,9 +817,9 @@ def full_translation(instance, home, model, notify, cancelled=lambda:False, chec
             result.update(ai_status='skipped',ai_message='未連接 AI；缺少中文來源的文字保留原文。')
         if cancelled():
             result['status']='cancelled'
-        elif result.get('ai_status')=='paused':
-            result['status']='needs_review'
         else:
+            # AI pausing (quota) only leaves its remaining rows untranslated; everything already
+            # translated is still applied, and the rest can be supplemented later from the report.
             unify_suggested_terms(result)
             auto_confirm_safe(result)
             result['status']='ready_to_apply'

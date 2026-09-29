@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import requests
 
-VERSION='0.4.9'
+VERSION='0.4.10'
 REPOSITORY='siang86121900/mc-zh-tw-translator'
 ASSET_NAME='MCTranslator.exe'
 

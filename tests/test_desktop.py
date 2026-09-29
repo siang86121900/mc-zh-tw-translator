@@ -290,6 +290,17 @@ class WorkflowTests(unittest.TestCase):
         apply_session(saved,self.home,lambda *_:None)
         self.assertTrue((self.lang/'zh_tw.json').exists())
 
+    @patch('mc_zh_tw_translator.desktop_jobs.refresh',return_value=([{},{}],{}))
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_ai_pause_still_applies_everything_else(self,*_):
+        def paused(session,*args,**kwargs):
+            session.update(ai_status='paused',ai_message='quota');return session
+        with patch('mc_zh_tw_translator.codex_bridge.pending_rows',return_value=[1]),\
+             patch('mc_zh_tw_translator.codex_bridge.supplement',side_effect=paused):
+            result=full_translation(self.instance,self.home,'some-model',lambda *_:None)
+        self.assertEqual((result['status'],result['ai_status']),('installed','paused'))
+        self.assertEqual(json.loads((self.lang/'zh_tw.json').read_text(encoding='utf-8'))['demo.hello'],'你好 %s')
+
     @patch('mc_zh_tw_translator.desktop_jobs.refresh',side_effect=InterruptedError('stopped'))
     def test_cancel_during_preflight_keeps_scan_without_applying(self,_):
         result=full_translation(self.instance,self.home,None,lambda *_:None)

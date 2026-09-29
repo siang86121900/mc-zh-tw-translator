@@ -736,6 +736,8 @@ class MainWindow(QMainWindow):
         self.ai_compare.hide();b.addWidget(self.ai_compare)
         self.ai_models.currentIndexChanged.connect(self.select_ai_model)
         b.addWidget(label('只列官方回傳的可用模型，使用該模型建議的推理設定。若模型不可用會停止，不偷偷換模型。','sub'))
+        b.addWidget(label('建議：遊戲文字多是短句，官方描述為「快速、經濟」的模型（例如 Luna）通常就夠用，也比最高階模型省很多額度。'
+                          '補翻時會顯示依本次實際用量推算的剩餘額度需求。','sub'))
         self.ai_model_card=f;box.addWidget(f)
         self.ai_stop_btn=button('停止登入／補翻',self.cancel_job);self.ai_stop_btn.setEnabled(False);box.addWidget(self.ai_stop_btn,alignment=Qt.AlignLeft)
         box.addStretch()

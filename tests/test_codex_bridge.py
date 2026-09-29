@@ -99,8 +99,9 @@ class CodexBridgeTests(unittest.TestCase):
                 if self.calls:raise ai.BridgeError('quota stopped')
                 return super().translate(payload,model)
         with tempfile.TemporaryDirectory() as d:
-            result=ai.supplement(self.session(Path(d),13),Path(d),'account-model',lambda *_:None,client_factory=FailSecond)
-            self.assertEqual(result['ai_status'],'paused');self.assertEqual(result['ai_translation'],12)
+            result=ai.supplement(self.session(Path(d),ai.BATCH_ROWS+1),Path(d),'account-model',lambda *_:None,client_factory=FailSecond)
+            self.assertEqual(result['ai_status'],'paused');self.assertEqual(result['ai_translation'],ai.BATCH_ROWS)
+            self.assertIn('再按一次「一鍵完整翻譯並套用」',result['ai_message'])
             self.assertEqual(len(ai.pending_rows(result)),1)
 
     def test_invalid_row_is_rejected_alone_and_never_reviewed(self):
