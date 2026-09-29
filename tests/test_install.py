@@ -14,6 +14,11 @@ from mc_zh_tw_translator import patches
 from mc_zh_tw_translator.desktop_jobs import plan, apply_session
 
 
+def put(z,name,data):
+    """An entry with a fixed date: two jars made a moment apart must be the same file, byte for byte."""
+    z.writestr(zipfile.ZipInfo(name,(2026,1,1,0,0,0)),data)
+
+
 def make_instance(instance):
     lang=instance/'kubejs/assets/demo/lang';lang.mkdir(parents=True)
     (lang/'en_us.json').write_text(json.dumps({'demo.hello':'Hello %s'}),encoding='utf-8')
@@ -23,18 +28,18 @@ def make_instance(instance):
     (instance/'minecraftinstance.json').write_text(json.dumps({'name':'Demo Pack','projectID':123,'fileID':456,'gameVersion':'1.21.1'}),encoding='utf-8')
     (instance/'mods').mkdir()
     with zipfile.ZipFile(instance/'mods/real.jar','w') as z:
-        z.writestr('real/Main.class',b'\xca\xfe\xba\xbe')
-        z.writestr('assets/real/lang/en_us.json',json.dumps({'real.a':'Real'}))
-        z.writestr('assets/real/lang/zh_cn.json',json.dumps({'real.a':'真实'},ensure_ascii=False))
+        put(z,'real/Main.class',b'\xca\xfe\xba\xbe')
+        put(z,'assets/real/lang/en_us.json',json.dumps({'real.a':'Real'}))
+        put(z,'assets/real/lang/zh_cn.json',json.dumps({'real.a':'真实'},ensure_ascii=False))
     return instance
 
 
 def mod_jar(path,namespace,text):
     with zipfile.ZipFile(path,'w') as z:
-        z.writestr('META-INF/neoforge.mods.toml',f'modLoader="javafml"\n[[mods]]\nmodId="{namespace}"\n')
-        z.writestr(namespace+'/Main.class',b'\xca\xfe\xba\xbe')
-        z.writestr(f'assets/{namespace}/lang/en_us.json',json.dumps({namespace+'.a':text}))
-        z.writestr(f'assets/{namespace}/lang/zh_cn.json',json.dumps({namespace+'.a':'输入法'},ensure_ascii=False))
+        put(z,'META-INF/neoforge.mods.toml',f'modLoader="javafml"\n[[mods]]\nmodId="{namespace}"\n')
+        put(z,namespace+'/Main.class',b'\xca\xfe\xba\xbe')
+        put(z,f'assets/{namespace}/lang/en_us.json',json.dumps({namespace+'.a':text}))
+        put(z,f'assets/{namespace}/lang/zh_cn.json',json.dumps({namespace+'.a':'输入法'},ensure_ascii=False))
     return path
 
 
