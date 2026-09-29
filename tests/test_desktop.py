@@ -257,7 +257,7 @@ class WorkflowTests(unittest.TestCase):
         result=self.make_plan()
         next(r for r in result['rows'] if r['key']=='demo.hello')['reviewed']=True
         (self.lang/'en_us.json').write_text('{"demo.hello":"Changed %s"}',encoding='utf-8')
-        with self.assertRaisesRegex(ValueError,'重新掃描'):apply_session(result,self.home,lambda *_:None)
+        with self.assertRaisesRegex(ValueError,'掃描後有變動'):apply_session(result,self.home,lambda *_:None)
         self.assertFalse((self.lang/'zh_tw.json').exists())
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')

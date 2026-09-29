@@ -108,6 +108,30 @@ class DesktopUiTests(unittest.TestCase):
                 window.ai_supplement();run.assert_not_called()
             self.assertEqual(window.pages.count(),7);window.close()
 
+    def test_suggested_model_is_the_default_until_the_user_picks_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            window=MainWindow(Path(d))
+            window.settings.setValue('ai_model','top')  # saved automatically by v0.5.0 and older, not a choice
+            info=dict(account=dict(type='chatgpt',planType='plus'),warning='',quota=[],model_quota={},models=[
+                dict(model='top',displayName='Top',isDefault=True,description='Frontier intelligence for the most demanding work.'),
+                dict(model='fast',displayName='Fast',description='Fast and affordable model for easier tasks.'),
+                dict(model='new',displayName='New',description='Something not seen before.')])
+            window.ai_connected(info)
+            self.assertEqual(window.ai_models.currentData()['model'],'fast')
+            self.assertEqual(window.ai_models.currentText(),'Fast（建議）')
+            self.assertIn('建議使用「Fast」',window.ai_recommend.text())
+            self.assertIn('快速、省額度',window.ai_model_detail.text())
+            self.assertEqual(window.settings.value('ai_model'),'top')  # showing the suggestion is not a choice
+            self.assertEqual([window.ai_compare.item(i,0).text() for i in range(3)],['Top（官方預設）','Fast（建議）','New'])
+            self.assertEqual(window.ai_compare.item(0,1).text(),'最高階模型，適合最困難的工作。')
+            self.assertIn('Frontier intelligence',window.ai_compare.item(0,1).toolTip())
+            self.assertEqual(window.ai_compare.item(2,1).text(),'Something not seen before.')
+            window.ai_models.setCurrentIndex(0)  # the user picks another model
+            window.ai_connected(info);self.assertEqual(window.ai_models.currentData()['model'],'top')
+            window.ai_connected(dict(info,model_quota={'fast':dict(remaining=0)},models=info['models'][1:]))
+            self.assertEqual(window.ai_models.currentData()['model'],'new')  # pick gone, suggestion used up
+            window.close()
+
     def test_ai_guard_warning_stops_before_confirmation(self):
         with tempfile.TemporaryDirectory() as d:
             window=MainWindow(Path(d))
@@ -130,7 +154,7 @@ class DesktopUiTests(unittest.TestCase):
                 window.ai_connected(dict(account=dict(email='a@b.c'),warning='帳號已達用量限制',quota=[],models=[dict(model='m')]))
                 self.assertTrue(window.use_ai.isEnabled());self.assertIn('用量限制',window.ai_hint.text())
                 with patch.object(QMessageBox,'question',return_value=QMessageBox.Yes) as ask,patch.object(window,'run_worker') as run:
-                    window.path.setText(d);window.full_translation_job()
+                    (Path(d)/"pack/mods").mkdir(parents=True);window.path.setText(str(Path(d)/"pack"));window.full_translation_job()
                     self.assertIn('AI 目前無法使用',ask.call_args[0][2])  # checked box never sends to an over-limit account
                     run.assert_called_once()
             window.close()

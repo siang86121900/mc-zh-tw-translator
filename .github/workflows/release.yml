@@ -51,7 +51,9 @@ jobs:
         run: python scripts/package_desktop.py
 
       - name: Publish public GitHub Release
-        uses: softprops/action-gh-release@v2
+        # Third-party action with write access to releases: pinned to the exact commit of v2.6.2,
+        # so a later change to its moving "v2" tag cannot alter what gets published.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           # The in-app updater shows this body to players; auto-generated notes are only a commit link.
           body_path: docs/release-notes/${{ github.ref_name }}.md

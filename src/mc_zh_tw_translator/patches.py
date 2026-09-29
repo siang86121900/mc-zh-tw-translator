@@ -34,13 +34,18 @@ CATALOG_URL = f'https://raw.githubusercontent.com/{REPOSITORY}/translations/inde
 # Text resources only: a shared patch must never carry code, scripts or binaries.
 TEXT_SUFFIXES = ('.json', '.lang', '.txt', '.md', '.snbt')
 ARCHIVE_SUFFIXES = ('.jar', '.zip')
-LOOSE_ROOTS = ('kubejs/assets/', 'kubejs/data/', 'config/', 'defaultconfigs/', 'resourcepacks/', 'datapacks/')
-ARCHIVE_ROOTS = ('mods/', 'resourcepacks/', 'datapacks/')
+LOOSE_ROOTS = ('kubejs/assets/', 'kubejs/data/', 'config/', 'defaultconfigs/', 'resourcepacks/', 'datapacks/', 'patchouli_books/')
+ARCHIVE_ROOTS = ('mods/', 'resourcepacks/', 'datapacks/', 'config/openloader/')
+# The only things a translation writes: a Traditional Chinese language file, or a page of a zh_tw book.
+# English files, recipes, loot tables, settings and scripts can therefore never come from a patch.
+TRANSLATED = re.compile(r'(?:^|/)lang/zh_tw\.(?:json|lang)$|/zh_tw/[^/].*\.(?:json|txt|md|snbt)$')
 MAX_PATCH_SIZE = 200*1024*1024
+MAX_ENTRY_SIZE = 64*1024*1024       # one translated file, unpacked
+MAX_UNPACKED_SIZE = 1024*1024*1024  # the whole patch, unpacked
 ATTRIBUTION = """MC Translator 繁體中文翻譯補丁
 
 這個補丁只包含翻譯文字，不含任何模組程式或模組檔案。請先安裝同一版本的模組包，
-再用 MC Translator 的「現成翻譯」頁套用。
+再用 MC Translator 的「已翻譯整合包」頁套用。
 
 譯文可能引用以下社群翻譯，依其授權（CC BY-NC-SA 4.0）以相同授權免費分享、不得商用：
 - CFPA Minecraft Mod Language Package  https://github.com/CFPAOrg/Minecraft-Mod-Language-Package
@@ -66,12 +71,12 @@ def clean_path(value: str) -> str:
 def allowed_file(file: str, archive: bool) -> bool:
     lower=file.casefold()
     if archive:return lower.startswith(ARCHIVE_ROOTS) and lower.endswith(ARCHIVE_SUFFIXES)
-    return lower.startswith(LOOSE_ROOTS) and lower.endswith(TEXT_SUFFIXES)
+    return lower.startswith(LOOSE_ROOTS) and lower.endswith(TEXT_SUFFIXES) and bool(TRANSLATED.search(lower))
 
 
 def allowed_entry(name: str) -> bool:
     lower=name.casefold()
-    return lower.startswith(('assets/','data/')) and lower.endswith(TEXT_SUFFIXES)
+    return lower.endswith(TEXT_SUFFIXES) and bool(TRANSLATED.search(lower))
 
 
 def instance_identity(instance: Path) -> dict:
@@ -185,6 +190,9 @@ def read_patch(path: Path):
     try:
         manifest=json.loads(z.read('manifest.json').decode('utf-8'))
         if manifest.get('format')!=PATCH_FORMAT:raise ValueError('不是 MC Translator 翻譯補丁，或需要更新程式才能讀取。')
+        # Sizes are checked before anything is unpacked, so a small download cannot expand without limit.
+        if any(i.file_size>MAX_ENTRY_SIZE for i in z.infolist()) or sum(i.file_size for i in z.infolist())>MAX_UNPACKED_SIZE:
+            raise ValueError('補丁解開後的大小超過上限，已拒絕。')
         names=set(z.namelist());seen=set()
         for item in manifest['files']:
             file=clean_path(item['file']);archive=bool(item['archive'])
@@ -277,6 +285,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         if set_language:
             record=jobs.set_language_record(instance,staged)
             if record:records.append(record)
+        jobs.require_space(instance,home,applied)
         backup=None
         if records:
             jars=[staged/r['file'] for r in records if r['file'].casefold().endswith('.jar')]

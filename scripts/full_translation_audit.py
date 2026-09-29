@@ -175,6 +175,7 @@ class Audit:
         for n in sorted(names):
             if not n.lower().endswith('.jar'):continue
             try:
+                if z.getinfo(n).file_size>512*1024*1024:raise ValueError('embedded jar is larger than 512 MB')
                 with zipfile.ZipFile(io.BytesIO(z.read(n))) as inner:
                     self.counts['nested_archives']+=1
                     self.collection(label+'!/'+n,set(inner.namelist()),inner.read)
@@ -224,13 +225,18 @@ class Audit:
                             if visible and (HAN.search(value) or LATIN.search(value)):
                                 self.add(n,f'{lineno}:{i}',None,value,kind='script_candidate' if p.suffix=='.js' else 'config')
             except Exception as e:self.errors.append([n,str(e)])
-    def finish(self):
-        for name,items in [('files.jsonl',self.files),('strings.jsonl',self.rows),('pending.jsonl',[r for r in self.rows if r['status']=='needs_review'])]:
-            with (self.out/name).open('w',encoding='utf-8') as f:
+    def finish(self,details='full',quiet=False):
+        # details: 'full' writes plain lists (command-line audits); 'compressed' writes the two lists the
+        # desktop report keeps for diagnosis as .gz; 'summary' writes the counts only.
+        lists=[('files.jsonl',self.files),('strings.jsonl',self.rows),('pending.jsonl',[r for r in self.rows if r['status']=='needs_review'])]
+        for name,items in lists if details=='full' else lists[:2] if details=='compressed' else []:
+            with ((self.out/name).open('w',encoding='utf-8') if details=='full'
+                  else gzip.open(self.out/(name+'.gz'),'wt',encoding='utf-8',compresslevel=5)) as f:
                 for row in items:f.write(json.dumps(row,ensure_ascii=False)+'\n')
         summary=dict(counts=dict(self.counts),file_entries=len(self.files),text_records=len(self.rows),errors=self.errors,repairs=self.repairs,complete=self.counts['needs_review']==0 and not self.errors,limits=['靜態程式字串為待查候選，無法證明所有動態組句與遊戲畫面均已實測。','其他語言資源保留原文，檢查 zh_tw 的實際內容與缺漏。'])
         (self.out/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
-        print(json.dumps({k:v for k,v in summary.items() if k!='errors'},ensure_ascii=False));print('Errors:',len(self.errors))
+        if not quiet:
+            print(json.dumps({k:v for k,v in summary.items() if k!='errors'},ensure_ascii=False));print('Errors:',len(self.errors))
         return 0 if summary['complete'] else 1
 
 def main():

@@ -130,6 +130,48 @@ def model_quotas(limits):
     return found
 
 
+# The service describes its models in English. Descriptions seen so far are shown in Traditional
+# Chinese; anything else is shown as received, so a new or reworded description is never guessed.
+DESCRIPTIONS_ZH = {
+    'frontier intelligence for the most demanding work': '最高階模型，適合最困難的工作。',
+    'workhorse model for coding and everyday work': '主力模型，適合寫程式與日常工作。',
+    'fast and affordable model for easier tasks': '快速、省額度的模型，適合較簡單的工作。',
+    'older coding model for complex work': '較舊的程式模型，適合複雜的工作。',
+    'older balanced model for straightforward work': '較舊的均衡模型，適合單純的工作。',
+    'older fast and efficient model': '較舊的快速、省額度模型。',
+    'legacy coding model': '舊版的程式模型。',
+}
+FAST_MODEL = re.compile(r'\b(?:fast|faster|fastest|affordable|efficient|economical|lightweight)\b', re.I)
+OLDER_MODEL = re.compile(r'\b(?:older|legacy|deprecated|previous)\b', re.I)
+
+
+def describe_model(model):
+    """The official description in Traditional Chinese when it is a known one, else as received."""
+    text = str(model.get('description') or '').strip()
+    return DESCRIPTIONS_ZH.get(text.rstrip('.。 ').casefold(), text)
+
+
+def recommended_model(models, quotas=None):
+    """(model, reason) suggested for game text, or (None, '') when no model can be used.
+
+    Game text is mostly short sentences, so the suggestion is the model the service itself describes
+    as fast and affordable: a current one first, then an older one. Models whose own quota is used up
+    are skipped. Nothing here ranks translation quality, and no model name is built in; without a
+    fast model the service's default is suggested.
+    """
+    def usable(m):
+        q = (quotas or {}).get(str(m['model']).casefold())
+        return not q or q['remaining'] > 10
+    ready = [m for m in models if usable(m)]
+    for older in (False, True):
+        for m in ready:
+            text = m.get('description') or ''
+            if FAST_MODEL.search(text) and bool(OLDER_MODEL.search(text)) == older:
+                return m, '官方描述為快速、省額度的模型；遊戲文字多是短句，通常就夠用，也比高階模型省額度。'
+    default = next((m for m in ready if m.get('isDefault')), ready[0] if ready else None)
+    return default, ('官方說明裡沒有標示為快速、省額度的可用模型，建議先用官方預設模型。' if default else '')
+
+
 def quota_guard(account, limits, model=None):
     if not account or account.get('type') != 'chatgpt':
         raise BridgeError('請使用 ChatGPT 官方登入。本程式拒絕 API key 與其他計費方式。')
@@ -364,14 +406,14 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
     from . import desktop_jobs as jobs
     # Per-file scan errors stay listed in the report; they only exclude that file, not the whole batch.
     if session.get('status') in ('blocked', 'installed', 'restored'):
-        raise BridgeError('此批次不可補翻；請先排除掃描錯誤並重新掃描。')
+        raise BridgeError('這一批不能補翻。請重新按「一鍵完整翻譯並套用」建立新的一批。')
     report = Path(session['report']) / 'session.json'
     remaining = pending_rows(session)
     if not remaining: raise BridgeError('沒有可安全補翻的缺漏；其他格式需另行確認。')
     # Guard stale scans before consuming any quota.
     for name, expected in session.get('source_hashes', {}).items():
         if jobs.file_hash(jobs.contained(Path(session['instance']), name)) != expected:
-            raise BridgeError('掃描後原檔已變動，請重新掃描再補翻。')
+            raise BridgeError('模組包的檔案在掃描後有變動，請重新按「一鍵完整翻譯並套用」後再補翻。')
     completed = 0; glossary = jobs.UserGlossary(home)
     names = jobs.load_name_terms(session)  # names this modpack already uses, so sentences stay consistent
     session['ai_status'] = 'running'; session['ai_notice'] = NOTICE
@@ -435,7 +477,7 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
     except Exception as exc:
         left = len(pending_rows(session))
         session['ai_status'] = 'paused'
-        session['ai_message'] = (f'{exc}\n已完成的 AI 譯文和其他所有譯文會照常套用；還有 {left:,} 筆沒有補翻。'
+        session['ai_message'] = (f'{jobs.explain_error(exc)}\n已完成的 AI 譯文和其他所有譯文會照常套用；還有 {left:,} 筆沒有補翻。'
                                  '額度恢復後再按一次「一鍵完整翻譯並套用」，只會補剩下的部分。')
     finally:
         jobs.write_json(report, session)

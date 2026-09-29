@@ -14,23 +14,118 @@ import requests
 from opencc import OpenCC
 
 
-def minecraft_version(instance: Path) -> str:
-    for filename in ('manifest.json', 'minecraftinstance.json'):
-        p = instance/filename
-        if not p.exists():
-            continue
+# OpenCC writes 臺, 巖, 牀… where Taiwan, and Minecraft's official zh_tw, write 台, 岩, 床.
+TAIWAN_FORMS = str.maketrans({'臺':'台','巖':'岩','牀':'床','羣':'群','峯':'峰','裏':'裡','爲':'為','啓':'啟','着':'著','綫':'線','衆':'眾'})
+S2TWP = OpenCC('s2twp')
+S2T = OpenCC('s2t')
+# Correct Traditional Chinese words that a character-by-character conversion would take for simplified.
+KEPT_WORDS = re.compile('干擾|干涉|干預|若干|相干')
+
+
+# One simplified character can stand for several traditional ones (松 pine / 鬆 loose, 只 only / 隻 a
+# counter, 发 發 / 髮); the converter picks the wrong one where it knows no phrase. Seen in real modpacks.
+COUNTED = '一二兩三四五六七八九十百千萬幾這那每數半\\d'
+SLIPS = [(re.compile(a), b) for a, b in (
+    ('鬆(?=[木樹果針鼠林脂香])', '松'), ('(?<=[雪赤黑白紅油])鬆(?![散開動弛懈軟緊])', '松'),
+    ('(?<!['+COUNTED+'])隻(?=[能有是要會需在對可允讀限剩想為])', '只'), ('只讀', '唯讀'),
+    ('幹草', '乾草'), ('吃幹抹淨', '吃乾抹淨'), ('(?<!頭)髮光', '發光'), ('繫結', '綁定'),
+)]
+
+
+def fix_slips(text: str) -> str:
+    for pattern, replacement in SLIPS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def to_taiwan(text: str) -> str:
+    """Simplified Chinese to Taiwan wording, written with the character forms Taiwan uses."""
+    return fix_slips(S2TWP.convert(text).translate(TAIWAN_FORMS))
+
+
+def has_simplified(text: str) -> bool:
+    """Whether text contains simplified characters; 台, 岩, 床 and similar Taiwan forms do not count."""
+    masked = KEPT_WORDS.sub(lambda m: '\0'*len(m[0]), text)
+    return fix_slips(S2T.convert(masked).translate(TAIWAN_FORMS)) != fix_slips(masked.translate(TAIWAN_FORMS))
+
+
+VERSION = re.compile(r'1\.\d+(?:\.\d+)?')
+
+
+def launcher_version(instance: Path) -> tuple[str, str]:
+    """(Minecraft version, file it came from) as recorded by the launcher, or ('', '')."""
+    def read(path):
+        return json.loads(path.read_text(encoding='utf-8-sig'))
+    readers = (
+        ('manifest.json', lambda d: d.get('minecraft', {}).get('version')),              # CurseForge export
+        ('minecraftinstance.json', lambda d: d.get('gameVersion')),                        # CurseForge app
+        ('mmc-pack.json', lambda d: next((c.get('version') for c in d.get('components', [])
+                                          if c.get('uid') == 'net.minecraft'), None)),    # Prism, MultiMC, PolyMC
+        ('profile.json', lambda d: d.get('metadata', {}).get('game_version')),            # Modrinth
+        ('instance.json', lambda d: d.get('id')),                                          # ATLauncher
+    )
+    # Prism and MultiMC keep the game in .minecraft/ and their own files one folder up.
+    for folder in (instance, instance.parent):
+        for filename, pick in readers:
+            try:
+                value = pick(read(folder/filename))
+            except (OSError, ValueError, AttributeError, TypeError):
+                continue
+            if isinstance(value, str) and VERSION.fullmatch(value):
+                return value, filename
+    return '', ''
+
+
+def version_from_mods(instance: Path, limit: int = 80) -> str:
+    """The Minecraft version the installed mods ask for, when the launcher left no record.
+
+    Each mod states the oldest Minecraft it runs on; the most common release line wins and, within
+    it, the highest of those minimums, because every installed mod has to run on the real version.
+    """
+    found = []
+    for jar in sorted((instance/'mods').glob('*.jar'))[:limit]:
         try:
-            data = json.loads(p.read_text(encoding='utf-8-sig'))
-            value = data.get('minecraft', {}).get('version') or data.get('gameVersion')
-            if isinstance(value, str) and re.fullmatch(r'1\.\d+(?:\.\d+)?', value):
-                return value
-        except (ValueError, AttributeError):
+            with zipfile.ZipFile(jar) as z:
+                names = set(z.namelist())
+                for meta in ('META-INF/neoforge.mods.toml', 'META-INF/mods.toml'):
+                    if meta in names:
+                        for block in z.read(meta).decode('utf-8', 'replace').split('[[dependencies.')[1:]:
+                            if re.search(r'(?m)^\s*modId\s*=\s*"minecraft"', block):
+                                m = re.search(r'(?m)^\s*versionRange\s*=\s*"([^"]*)"', block)
+                                v = m and VERSION.search(m[1])
+                                if v: found.append(v[0])
+                        break
+                else:
+                    if 'fabric.mod.json' in names:
+                        wanted = json.loads(z.read('fabric.mod.json').decode('utf-8-sig')).get('depends', {}).get('minecraft')
+                        v = VERSION.search(' '.join(wanted) if isinstance(wanted, list) else str(wanted or ''))
+                        if v: found.append(v[0])
+        except (OSError, ValueError, zipfile.BadZipFile, AttributeError):
             continue
-    return ''
+    if not found:
+        return ''
+    numbers = lambda v: [int(n) for n in v.split('.')]
+    line = lambda v: '.'.join(v.split('.')[:2])
+    counts = {}
+    for v in found: counts[line(v)] = counts.get(line(v), 0)+1
+    best = max(counts, key=lambda k: (counts[k], numbers(k)))
+    return max((v for v in found if line(v) == best), key=numbers)
+
+
+def detect_version(instance: Path) -> tuple[str, str]:
+    """(Minecraft version, how it was found); the second part is shown in the report."""
+    version, source = launcher_version(instance)
+    if version:
+        return version, source
+    version = version_from_mods(instance)
+    return (version, '由已安裝模組的需求推測') if version else ('', '')
+
+
+def minecraft_version(instance: Path) -> str:
+    return detect_version(instance)[0]
 
 
 def build_scoped(raw: bytes, locale: str, progress=lambda _:None, cancelled=lambda:False) -> dict:
-    cc = OpenCC('s2twp')
     result = {}
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         names=sorted(z.namelist())
@@ -48,13 +143,13 @@ def build_scoped(raw: bytes, locale: str, progress=lambda _:None, cancelled=lamb
                         namespace = meta.get('contents', {}).get('tiers', {}).get(match[2], {}).get('mod_id', meta.get('mod_id'))
                     except (KeyError, ValueError):
                         continue
-            if not namespace:
+            if not namespace or z.getinfo(name).file_size > 64*1024*1024:
                 continue
             try:
                 values = json.loads(z.read(name).decode('utf-8-sig'))
                 if not isinstance(values, dict):
                     continue
-                result.setdefault(namespace, {}).update({k: cc.convert(v) if locale=='zh_cn' else v
+                result.setdefault(namespace, {}).update({k: to_taiwan(v) if locale=='zh_cn' else v
                                                         for k,v in values.items() if isinstance(v,str)})
                 if locale == 'zh_tw':
                     # Keep every version folder's (zh_tw, English) pair so matching can pick the translation
@@ -90,46 +185,165 @@ def pick_reference(ref: dict, namespace: str, key: str, english):
     return pairs[-1][0], None
 
 
+TW_REPO = 'TeamKugimiya/ModsTranslationPack'
+PARA_REPO = 'TeamKugimiya/ParaTranslationPack'
+CFPA_REPO = 'CFPAOrg/Minecraft-Mod-Language-Package'
+ATTEMPTS = 3
+
+
+class RateLimited(RuntimeError):
+    """GitHub's hourly allowance for queries without an account is used up on this network."""
+    def __init__(self, reset=None):
+        self.reset = reset
+        minutes = max(1, round((reset-time.time())/60)) if reset else None
+        super().__init__('GitHub 的查詢次數暫時用完（同一個網路每小時 60 次）'
+                         + (f'，約 {minutes} 分鐘後恢復。' if minutes else '，請稍後再試。'))
+
+
+def network_message(exc) -> str:
+    """Why a download or lookup failed, in words a player can act on."""
+    if isinstance(exc, RateLimited):
+        return str(exc)
+    if isinstance(exc, (requests.Timeout, TimeoutError)):
+        return '連線逾時，網路可能不穩，請稍後再試。'
+    if isinstance(exc, requests.exceptions.SSLError):
+        return '安全連線失敗，請確認電腦的日期時間正確，或暫時關閉會攔截連線的軟體後再試。'
+    if isinstance(exc, requests.ConnectionError):
+        return '無法連上網路，請檢查網路連線後再試。'
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        code = exc.response.status_code
+        if code == 404: return '找不到要下載的檔案，來源可能已更名或移除。'
+        if code >= 500: return f'對方伺服器暫時故障（代碼 {code}），請稍後再試。'
+        return f'對方伺服器拒絕了要求（代碼 {code}），請稍後再試。'
+    if isinstance(exc, requests.RequestException):
+        return '下載中斷，請檢查網路後再試。'
+    return str(exc)
+
+
+def rate_limited(response):
+    if response.status_code in (403, 429) and response.headers.get('X-RateLimit-Remaining') == '0':
+        reset = response.headers.get('X-RateLimit-Reset', '')
+        raise RateLimited(int(reset) if reset.isdigit() else None)
+
+
 def refresh(instance: Path, cache: Path, progress, cancelled) -> tuple[list[dict], dict]:
-    version = minecraft_version(instance)
+    version, version_source = detect_version(instance)
     if not version:
-        raise ValueError('無法從模組包辨識 Minecraft 版本。請選擇含 manifest.json 或 minecraftinstance.json 的模組包根目錄。')
+        raise ValueError('無法辨識這個模組包的 Minecraft 版本。請選擇模組包的根資料夾（裡面有 mods），'
+                         '並確認 mods 裡已經有模組。')
     family = '-'.join(version.split('.')[:2])
     asset_name = f'Minecraft-Mod-Language-Modpack-{family}.zip'
     cache.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
-    session.headers['User-Agent'] = 'MC-ZH-TW-Desktop/0.1'
+    session.headers['User-Agent'] = 'MCTranslator-References'
+
+    def attempt(description, action):
+        """Bounded retries for failures that usually pass: dropped connections, timeouts, server errors."""
+        for n in range(1, ATTEMPTS+1):
+            if cancelled():
+                raise InterruptedError('已停止，遊戲原檔未修改。')
+            try:
+                return action()
+            except (requests.ConnectionError, requests.Timeout, TimeoutError, requests.HTTPError) as exc:
+                code = exc.response.status_code if isinstance(exc, requests.HTTPError) and exc.response is not None else 0
+                if n == ATTEMPTS or (isinstance(exc, requests.HTTPError) and code < 500):
+                    raise
+                wait = 2*n
+                progress(f'{description}：連線不穩，{wait} 秒後重試（第 {n+1} 次，最多 {ATTEMPTS} 次）')
+                until = time.monotonic()+wait
+                while time.monotonic() < until:
+                    if cancelled():
+                        raise InterruptedError('已停止，遊戲原檔未修改。')
+                    time.sleep(.2)
 
     def fetch(url, description, binary=False):
-        if cancelled():
-            raise InterruptedError('已停止，遊戲原檔未修改。')
-        progress(description+'…（連線逾時會保留報告並停止）')
-        started=time.monotonic()
-        with session.get(url, timeout=(10,20),stream=True) as r:
-            r.raise_for_status()
-            total=int(r.headers.get('Content-Length',0));chunks=[];received=0;last=0
-            for block in r.iter_content(256*1024):
-                if cancelled():raise InterruptedError('已停止下載，掃描報告已保留。')
-                if time.monotonic()-started>300:raise TimeoutError('參考庫下載超過 5 分鐘，請檢查網路後重試。')
-                received+=len(block)
-                if received>256*1024*1024:raise ValueError('參考庫超過大小上限，已停止。')
-                chunks.append(block)
-                if time.monotonic()-last>=.5:
-                    suffix=f' / {total/1048576:.1f} MB' if total else ' MB'
-                    progress(f'{description}：{received/1048576:.1f}'+suffix)
-                    last=time.monotonic()
-        raw=b''.join(chunks)
+        def action():
+            progress(description+'…（連線逾時會保留報告並停止）')
+            started = time.monotonic()
+            with session.get(url, timeout=(10, 20), stream=True) as r:
+                rate_limited(r)
+                r.raise_for_status()
+                total = int(r.headers.get('Content-Length', 0)); chunks = []; received = 0; last = 0
+                for block in r.iter_content(256*1024):
+                    if cancelled(): raise InterruptedError('已停止下載，掃描報告已保留。')
+                    if time.monotonic()-started > 300: raise TimeoutError('參考庫下載超過 5 分鐘，請檢查網路後重試。')
+                    received += len(block)
+                    if received > 256*1024*1024: raise ValueError('參考庫超過大小上限，已停止。')
+                    chunks.append(block)
+                    if time.monotonic()-last >= .5:
+                        suffix = f' / {total/1048576:.1f} MB' if total else ' MB'
+                        progress(f'{description}：{received/1048576:.1f}'+suffix)
+                        last = time.monotonic()
+            return b''.join(chunks)
+        raw = attempt(description, action)
         return raw if binary else json.loads(raw)
 
+    confirmed = {}  # how each source's latest version was confirmed, kept in the report
+
+    def latest_commit(repo, name):
+        """Newest commit of the main branch. Asked the way git itself asks, which has no hourly
+        allowance; GitHub's query service is the second choice."""
+        try:
+            raw = fetch(f'https://github.com/{repo}.git/info/refs?service=git-upload-pack', '查詢'+name+'最新版', binary=True)
+            found = re.search(rb'([0-9a-f]{40}) refs/heads/main\n', raw)
+            if not found: raise ValueError('回應裡沒有 main 分支')
+            confirmed[name] = 'git'
+            return found[1].decode()
+        except InterruptedError:
+            raise
+        except Exception:
+            sha = fetch(f'https://api.github.com/repos/{repo}/commits/main', '查詢'+name+'最新版（備援）')['sha']
+            confirmed[name] = 'api'
+            return sha
+
+    release = []  # the query service's asset list, asked for at most once
+
+    def from_api(name):
+        if not release:
+            release.append(fetch(f'https://api.github.com/repos/{CFPA_REPO}/releases/tags/autobuild', '查詢簡中參考庫最新版（備援）'))
+        x = next((x for x in release[0]['assets'] if x['name'] == name), None)
+        return x and dict(name=name, identity=str(x['id'])+'-'+x['updated_at'], updated=x['updated_at'], url=x['browser_download_url'])
+
+    def latest_asset(name):
+        """One CFPA download as it is published right now, or None when that version has none.
+
+        The download's own headers say when it last changed, so no query allowance is spent.
+        """
+        url = f'https://github.com/{CFPA_REPO}/releases/download/autobuild/{name}'
+        try:
+            def action():
+                with session.head(url, timeout=(10, 20), allow_redirects=True) as r:
+                    if r.status_code == 404: return None
+                    r.raise_for_status()
+                    return dict(r.headers)
+            headers = attempt('查詢 '+name, action)
+            if headers is None:
+                return None
+            headers = {k.lower(): v for k, v in headers.items()}
+            marks = [headers.get(k, '') for k in ('etag', 'last-modified', 'content-length')]
+            if not (marks[0] or marks[1]): raise ValueError('下載位置沒有提供更新時間')
+            confirmed[name] = 'download'
+            return dict(name=name, identity='|'.join(marks), updated=marks[1], url=url)
+        except InterruptedError:
+            raise
+        except Exception:
+            found = from_api(name)
+            confirmed[name] = 'api'
+            return found
+
     progress('確認最新繁中與簡中參考庫…')
-    commit = fetch('https://api.github.com/repos/TeamKugimiya/ModsTranslationPack/commits/main','查詢繁中參考庫最新版')
-    release = fetch('https://api.github.com/repos/CFPAOrg/Minecraft-Mod-Language-Package/releases/tags/autobuild','查詢簡中參考庫最新版')
-    asset = next((x for x in release['assets'] if x['name']==asset_name), None)
+    try:
+        commit = latest_commit(TW_REPO, '繁中參考庫')
+        asset = latest_asset(asset_name)
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        raise ValueError('無法確認參考庫是不是最新版，這次沒有開始翻譯，遊戲檔案也沒有修改。'+network_message(exc)) from exc
     if not asset:
-        raise ValueError(f'最新 CFPA 發布找不到適用 Minecraft {version} 的 {asset_name}，已停止正式翻譯。')
-    specs = [('tw', commit['sha'], f"https://codeload.github.com/TeamKugimiya/ModsTranslationPack/zip/{commit['sha']}", 'zh_tw'),
-             ('cn', str(asset['id'])+'-'+asset['updated_at'], asset['browser_download_url'], 'zh_cn')]
-    dbs, hashes, sources, notes = [], {}, [], []
+        raise ValueError(f'簡中參考庫（CFPA）沒有提供 Minecraft {version} 的版本，已停止正式翻譯。')
+    specs = [('tw', commit, f'https://codeload.github.com/{TW_REPO}/zip/{commit}', 'zh_tw'),
+             ('cn', asset['identity'], asset['url'], 'zh_cn')]
+    dbs, hashes, sources, notes, used = [], {}, [], [], set()
 
     def load(kind, identity, url, locale, name):
         key = hashlib.sha256(identity.encode()).hexdigest()[:24]
@@ -138,49 +352,65 @@ def refresh(instance: Path, cache: Path, progress, cancelled) -> tuple[list[dict
             raw = rawpath.read_bytes()
         else:
             progress('下載'+name+'…')
-            raw = fetch(url,'下載'+name,binary=True)
+            raw = fetch(url, '下載'+name, binary=True)
         progress('解析'+name+'…')
         db = build_scoped(raw, locale, progress, cancelled)
         if not rawpath.exists():
             tmp = rawpath.with_suffix('.download')
             tmp.write_bytes(raw)
             tmp.replace(rawpath)
+        used.add(rawpath.name)
         dbs.append(db); sources.append(kind)
         hashes[kind] = hashlib.sha256(raw).hexdigest()
 
     # Primary references must be confirmed latest; failures stop the translation (AGENTS.md).
     for kind, identity, url, locale in specs:
-        load(kind, identity, url, locale, '繁中參考庫' if kind=='tw' else '簡中參考庫')
+        try:
+            load(kind, identity, url, locale, '繁中參考庫' if kind == 'tw' else '簡中參考庫')
+        except InterruptedError:
+            raise
+        except (requests.RequestException, TimeoutError) as exc:
+            raise ValueError('參考庫下載失敗，這次沒有開始翻譯，遊戲檔案也沒有修改。'+network_message(exc)) from exc
     # Supplementary sources only add coverage; if one is unavailable it is skipped and noted.
     para_commit = None
     try:
-        para = fetch('https://api.github.com/repos/TeamKugimiya/ParaTranslationPack/commits/main','查詢 ParaTranslationPack 最新版')
-        para_commit = para['sha']
-        load('para', para_commit, f'https://codeload.github.com/TeamKugimiya/ParaTranslationPack/zip/{para_commit}', 'zh_tw', 'ParaTranslationPack')
+        para_commit = latest_commit(PARA_REPO, 'ParaTranslationPack')
+        load('para', para_commit, f'https://codeload.github.com/{PARA_REPO}/zip/{para_commit}', 'zh_tw', 'ParaTranslationPack')
     except InterruptedError:
         raise
     except Exception as exc:
-        notes.append('ParaTranslationPack 暫時無法取得：'+str(exc)[:120])
-    other = sorted((x for x in release['assets'] if re.fullmatch(r'Minecraft-Mod-Language-Modpack-(\d+-\d+)\.zip', x['name'])
-                    and x['name'] != asset_name), key=lambda x: [int(n) for n in re.findall(r'\d+', x['name'])], reverse=True)
-    older = [x for x in other if [int(n) for n in re.findall(r'\d+', x['name'])] < [int(n) for n in family.split('-')]][:3]
-    for x in older:
+        notes.append('ParaTranslationPack 暫時無法取得：'+network_message(exc)[:120])
+    older = []
+    minor = int(family.split('-')[1])
+    for n in range(minor-1, max(11, minor-7), -1):  # the three newest older versions that CFPA publishes
+        if len(older) == 3: break
+        name = f'Minecraft-Mod-Language-Modpack-1-{n}.zip'
         try:
-            load('cn-'+re.search(r'(\d+-\d+)', x['name'])[1], str(x['id'])+'-'+x['updated_at'], x['browser_download_url'], 'zh_cn',
-                 '跨版本簡中參考庫 '+x['name'])
+            x = latest_asset(name)
+            if not x: continue
+            load('cn-1-'+str(n), x['identity'], x['url'], 'zh_cn', '跨版本簡中參考庫 '+name)
+            older.append(x)
         except InterruptedError:
             raise
         except Exception as exc:
-            notes.append(f"{x['name']} 暫時無法取得：{str(exc)[:120]}")
+            notes.append(f'{name} 暫時無法取得：{network_message(exc)[:120]}')
     vanilla = official_vanilla(version, fetch, cache, progress)
     if vanilla:
         dbs.append(vanilla); sources.append('vanilla')
     else:
         notes.append('找不到官方 Minecraft 繁中語系檔，本次沒有使用官方譯名。')
-    return dbs, dict(checked_at=datetime.now(timezone.utc).isoformat(), minecraft=version,
-                     ref_commit=commit['sha'], cfpa_asset=asset_name, cfpa_updated=asset['updated_at'],
+    if version_source.startswith('由'):
+        notes.append(f'啟動器沒有記錄 Minecraft 版本，{version_source}為 {version}。')
+    # Downloads of earlier versions are no longer the latest and are never read again.
+    for stale in list(cache.glob('*.zip'))+list(cache.glob('*.download')):
+        if stale.name not in used:
+            try: stale.unlink()
+            except OSError: pass
+    return dbs, dict(checked_at=datetime.now(timezone.utc).isoformat(), minecraft=version, minecraft_source=version_source,
+                     ref_commit=commit, cfpa_asset=asset_name, cfpa_updated=asset['updated'],
                      para_commit=para_commit, cross_version_assets=[x['name'] for x in older],
                      vanilla=vanilla.get('__source__') if vanilla else None, sources=sources, notes=notes,
+                     confirmed_by=confirmed,
                      sha256=hashes, entries=[sum(len(v) for k,v in x.items() if not k.startswith('__')) for x in dbs])
 
 

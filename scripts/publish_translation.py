@@ -1,4 +1,4 @@
-"""Publish an exported translation patch to the in-app 「現成翻譯」 catalog.
+"""Publish an exported translation patch to the in-app 「已翻譯整合包」 catalog.
 
 The catalog is the `translations` branch of this repository:
     index.json                         list shown in the app
@@ -91,7 +91,7 @@ def main():
             index_file.write_text(json.dumps(index, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
             git('add', 'index.json', relative, cwd=work)
             action = '更新' if replaced else '新增'
-            git('commit', '--quiet', '-m', f"{action}現成翻譯：{pack['name']} {pack.get('version', '')}", cwd=work)
+            git('commit', '--quiet', '-m', f"{action}已翻譯整合包：{pack['name']} {pack.get('version', '')}", cwd=work)
             if args.dry_run:
                 print(json.dumps(index['packs'][-1], ensure_ascii=False, indent=2))
                 print('dry-run：未推送。')

@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import requests
 
-VERSION='0.5.0'
+VERSION='0.6.0'
 REPOSITORY='siang86121900/mc-zh-tw-translator'
 ASSET_NAME='MCTranslator.exe'
 
@@ -26,10 +26,29 @@ def version_tuple(value):
     return tuple(map(int,m.groups()))
 
 
+def check_without_query_service(session):
+    """The newest release found by following the public release page, for when GitHub's query
+    service has used up its hourly allowance. The download is verified the same way."""
+    headers={'User-Agent':f'MCTranslator/{VERSION}'};base=f'https://github.com/{REPOSITORY}/releases'
+    response=session.get(base+'/latest',timeout=(10,25),headers=headers,allow_redirects=False)
+    m=re.search(r'/releases/tag/(v\d+\.\d+\.\d+)$',response.headers.get('Location') or '')
+    if not m:return dict(status='unavailable',message='目前還沒有可下載的公開更新；請稍後再按「檢查更新」。')
+    latest=m[1]
+    if version_tuple(latest)<=version_tuple(VERSION):
+        return dict(status='current',version=VERSION,message='目前已是最新版本。')
+    url=f'{base}/download/{latest}/{ASSET_NAME}'
+    size=session.head(url,timeout=(10,25),headers=headers,allow_redirects=True)
+    size.raise_for_status()
+    notes=session.get(f'https://raw.githubusercontent.com/{REPOSITORY}/{latest}/docs/release-notes/{latest}.md',timeout=(10,25),headers=headers)
+    return dict(status='available',version=latest,notes=notes.text if notes.status_code==200 and notes.text.strip() else '此版本未提供更新說明。',
+                url=url,size=int(size.headers['Content-Length']),sha256=None,checksum_url=f'{base}/download/{latest}/SHA256SUMS.txt')
+
+
 def check_update(session=None):
     session=session or requests.Session()
     response=session.get(f'https://api.github.com/repos/{REPOSITORY}/releases/latest',timeout=(10,25),
                          headers={'User-Agent':f'MCTranslator/{VERSION}'})
+    if response.status_code in (403,429):return check_without_query_service(session)
     if response.status_code==404:
         return dict(status='unavailable',message='目前還沒有可下載的公開更新；請稍後再按「檢查更新」。')
     response.raise_for_status()
@@ -95,6 +114,28 @@ def launch_update(downloaded, expected, home):
                                       pid=os.getpid(),home=str(home)),ensure_ascii=False),encoding='utf-8')
     subprocess.Popen([str(downloaded),'--apply-update',str(ticket)],
                      creationflags=subprocess.CREATE_NO_WINDOW|subprocess.DETACHED_PROCESS,close_fds=True)
+
+
+def clean_leftovers(home, executable=None):
+    """Remove what earlier updates left behind: downloaded installers and all but the newest old EXE.
+
+    The newest old EXE stays so the last update can be undone by hand. Files still in use (the
+    update helper may be finishing) are left for the next start.
+    """
+    try:
+        for folder in (Path(home)/'updates').iterdir():
+            if folder.is_dir() and time.time()-folder.stat().st_mtime>600:shutil.rmtree(folder,ignore_errors=True)
+    except OSError:pass
+    if executable is None:
+        if not getattr(sys,'frozen',False):return  # running from source: there is no EXE to tidy
+        executable=sys.executable
+    executable=Path(executable)
+    try:
+        old=sorted(executable.parent.glob(executable.name+'.previous-*'),key=lambda p:p.stat().st_mtime,reverse=True)
+        for path in old[1:]+list(executable.parent.glob(executable.name+'.failed-*')):
+            try:path.unlink()
+            except OSError:pass
+    except OSError:pass
 
 
 def apply_update(ticket_path):

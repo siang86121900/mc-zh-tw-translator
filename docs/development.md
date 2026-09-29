@@ -15,7 +15,7 @@
 
 備份只涵蓋本批將修改的原檔，不是整個 instance 或存檔備份。新增檔沒有原檔可備份，須依清冊處理；還原時不要把 `_備份紀錄` 複製到遊戲，也不要覆蓋使用者後來自行修改的內容。
 
-參考庫來自 ModsTranslationPack main 與 CFPA autobuild。版本、資產時間、雜湊及條目數以當次預檢紀錄為準；無法確認最新就停止正式翻譯。不使用外部翻譯 API，參考來源缺漏記錄為 `ai_translation`。
+參考庫來自 ModsTranslationPack main 與 CFPA autobuild。版本、資產時間、雜湊及條目數以當次預檢紀錄為準；無法確認最新就停止正式翻譯。最新版的確認方式依序為 git 分支參考（`<repo>.git/info/refs`）與下載位置的標頭（ETag／Last-Modified），GitHub 查詢服務只當備援；`references.confirmed_by` 記錄每個來源實際用了哪一種。不使用外部翻譯 API，參考來源缺漏記錄為 `ai_translation`。
 
 桌面版的翻譯記憶存在程式資料夾的 `translation_memory.json`，只收使用者在報告中按「確認這筆」的譯文，以「模組 namespace＋語系鍵＋原文雜湊」對應；自動來源、參考庫與 AI 候選不會寫入。模組包附帶的翻譯包（OpenLoader、resourcepacks）中，namespace 不在已安裝模組（含 jar-in-jar）裡的語系會略過並計入 `not_installed`。
 
@@ -72,9 +72,9 @@ python -m mc_zh_tw_translator verify 'tmp/pack/batch/mods' --input 'C:/path/inst
 
 套用後重掃實際 instance，驗證 `<instance>/mods`，並對修改的 JAR 逐檔與該批原檔備份比對。語系鍵補齊或結構驗證通過不代表翻譯完成。
 
-## 翻譯補丁與現成翻譯目錄
+## 翻譯補丁與已翻譯整合包目錄
 
-「現成翻譯」頁使用 `mc_zh_tw_translator.patches`：
+「已翻譯整合包」頁使用 `mc_zh_tw_translator.patches`：
 
 - `export_patch(instance, home)`：從該 instance 仍為 `installed` 的備份清冊收集翻譯檔，輸出到 `output/<instance>/分享/*.zip`。ZIP 內含 `manifest.json`（格式 `mctranslator-patch-1`、整合包 projectID／fileID、每檔原 SHA-256 與項目雜湊）、`payload/` 與 `授權與來源.txt`。
 - `apply_patch(instance, zip, home)`：驗證清冊與路徑白名單，只改雜湊與原檔相符的檔案，經 `apply_reviewed` 備份與寫回。
@@ -83,7 +83,7 @@ python -m mc_zh_tw_translator verify 'tmp/pack/batch/mods' --input 'C:/path/inst
 
 套用補丁後在 `applied_patches.json` 記錄每個 instance 最後套用的補丁雜湊；目錄上同一整合包版本的補丁雜湊不同時顯示「翻譯有更新」。
 
-上架一個現成翻譯（需使用者授權）：`python scripts/publish_translation.py <補丁.zip> --translator 名稱 [--notes 說明] [--dry-run]`。它把補丁放到 `translations` 分支的 `packs/<projectID>/`、更新 `index.json`（同整合包同版本會取代）並推送。手動作法：
+上架一個已翻譯整合包（需使用者授權）：`python scripts/publish_translation.py <補丁.zip> --translator 名稱 [--notes 說明] [--dry-run]`。它把補丁放到 `translations` 分支的 `packs/<projectID>/`、更新 `index.json`（同整合包同版本會取代）並推送。手動作法：
 
 1. 用程式匯出補丁，建立或更新預先發行版（prerelease）`translations` 並上傳 ZIP；預先發行版不會被 `releases/latest` 當成程式更新。
 2. 在 `translations` 分支的 `index.json` 加入：

@@ -61,6 +61,26 @@ class CodexBridgeTests(unittest.TestCase):
         with self.assertRaises(ai.BridgeError):ai.quota_guard(account,value,'gpt-5.6-luna')  # that model's own reserve
         self.assertEqual(ai.model_quotas(value)['gpt-5.6-luna']['remaining'],0)
 
+    def test_recommended_model_follows_official_description_and_quota(self):
+        models=[dict(model='top',description='Frontier intelligence for the most demanding work.',isDefault=True),
+                dict(model='old-fast',description='Older fast and efficient model.'),
+                dict(model='fast',description='Fast and affordable model for easier tasks.')]
+        self.assertEqual(ai.recommended_model(models)[0]['model'],'fast')  # current before older, whatever the order
+        used_up={'fast':dict(remaining=0)}
+        self.assertEqual(ai.recommended_model(models,used_up)[0]['model'],'old-fast')  # its own quota is gone
+        self.assertEqual(ai.recommended_model(models,{'fast':dict(remaining=0),'old-fast':dict(remaining=10)})[0]['model'],'top')
+        plain=[dict(model='a'),dict(model='b',isDefault=True)]
+        model,reason=ai.recommended_model(plain)
+        self.assertEqual(model['model'],'b');self.assertIn('官方預設',reason)  # nothing described as fast
+        self.assertEqual(ai.recommended_model([]),(None,''))
+        self.assertEqual(ai.recommended_model(plain,{'a':dict(remaining=0),'b':dict(remaining=5)}),(None,''))
+
+    def test_official_description_is_translated_only_when_known(self):
+        self.assertEqual(ai.describe_model(dict(description='Fast and affordable model for easier tasks.')),'快速、省額度的模型，適合較簡單的工作。')
+        self.assertEqual(ai.describe_model(dict(description=' legacy coding model ')),'舊版的程式模型。')
+        self.assertEqual(ai.describe_model(dict(description='A brand new kind of model.')),'A brand new kind of model.')
+        self.assertEqual(ai.describe_model(dict(model='x')),'')
+
     def test_child_cannot_inherit_api_keys_or_auth_proxy(self):
         with patch.dict(os.environ,{'OPENAI_API_KEY':'secret','OPENAI_BASE_URL':'https://evil.test','CODEX_AUTH_JSON':'secret','CODEX_HOME':'outside','CODEX_ACCESS_TOKEN':'secret'}):
             env=ai.child_environment(Path('isolated'))

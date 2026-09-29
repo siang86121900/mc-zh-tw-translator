@@ -18,9 +18,8 @@ from datetime import datetime
 from pathlib import Path
 
 from full_translation_audit import Audit, parse, placeholders, at
-from opencc import OpenCC
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy
-from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS
+from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
 from .verifier import VerifyResult, check_java_zipfs
 
@@ -75,6 +74,8 @@ def keep_original_reason(text, key='', namespace=''):
     if re.fullmatch(r'#[A-Za-z_]+',stripped):return '書本樣板變數'
     if re.match(r'/[a-z]',stripped):return '指令用法'
     if re.fullmatch(r'(?:config|assets|data|kubejs|mods|saves|defaultconfigs)(?:/[a-z0-9_.\-]+)+|[a-z0-9_.\-]+:[a-z0-9_./\-]+|\w+=\w+(?:,\w+=\w+)*',stripped):return '檔案路徑、ID 或語法範例'
+    if stripped=='Boss':return '官方繁中也直接寫 Boss'
+    if namespace and key==namespace and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9&+'\- ]{2,39}",stripped):return '模組名稱'
     compact=lambda s:re.sub('[^a-z0-9]','',s.lower().replace('&','and'))
     name=compact(re.sub(r'\s+wiki$','',stripped,flags=re.I));mod=compact(re.sub(r'\d+$','',namespace or ''))
     if mod and len(name)>=4 and name in (mod,mod.removesuffix('mod')):return '模組名稱'
@@ -126,6 +127,68 @@ def describe_error(error):
     return (where+'：'+detail) if detail else where
 
 
+def explain_error(exc):
+    """What went wrong and what to do next, in plain words; the raw text is kept as a short detail.
+
+    Messages this program raises itself are already written for players and pass through.
+    """
+    import errno
+    import requests
+    from .desktop_references import network_message, RateLimited
+    text=str(exc)
+    if isinstance(exc,(requests.RequestException,RateLimited)):return network_message(exc)
+    if HAN.search(text) and not isinstance(exc,OSError):return text
+    name=Path(getattr(exc,'filename',None) or '').name
+    where=f'「{name}」' if name else '檔案'
+    code=getattr(exc,'winerror',None);number=getattr(exc,'errno',None)
+    if isinstance(exc,OSError) and (number==errno.ENOSPC or code in (39,112)):
+        plain='硬碟空間不足，已停止。請清出空間後再試；已完成的譯文和報告都有保存。'
+    elif isinstance(exc,OSError) and (number==errno.ENAMETOOLONG or code in (206,3) and len(str(getattr(exc,'filename','') or ''))>240):
+        plain='檔案路徑太長，Windows 無法處理。請把 MCTranslator.exe 連同 MCTranslatorData 移到較短的位置（例如 C:\\MCTranslator）後再試。'
+    elif isinstance(exc,PermissionError):
+        plain=f'{where}正被其他程式使用，或沒有寫入權限。請關閉遊戲、啟動器和正在掃描的防毒軟體後再試。'
+    elif isinstance(exc,FileNotFoundError):
+        plain=f'找不到{where}，可能已被移動、改名或刪除。請重新選擇模組包後再試。'
+    elif isinstance(exc,zipfile.BadZipFile):
+        plain='有模組檔或壓縮檔已損壞，無法讀取。請用啟動器修復或重新下載這個模組包後再試。'
+    elif isinstance(exc,MemoryError):
+        plain='電腦記憶體不足，已停止。請關閉其他程式後再試。'
+    elif isinstance(exc,subprocess.TimeoutExpired):
+        plain='檢查模組檔花費太久，已停止，沒有修改遊戲檔案。請稍後再試。'
+    elif isinstance(exc,(ValueError,UnicodeError,KeyError,IndexError,TypeError)):
+        plain='有檔案的內容格式和預期不同，無法處理，已停止，沒有修改遊戲檔案。'
+    elif isinstance(exc,OSError):
+        plain=f'讀寫{where}時發生問題，已停止。請確認磁碟正常、資料夾沒有被其他程式鎖住後再試。'
+    else:
+        plain='發生沒有預料到的問題，已停止。已完成的譯文和報告都有保存。'
+    return plain+'\n（技術細節：'+type(exc).__name__+'：'+text[:200]+'）'
+
+
+NUMBER = re.compile(r'\d+(?:\.\d+)?')
+UNITS_OF_NUMBER = {'thousand':1e3,'million':1e6,'billion':1e9,'k':1e3,'千':1e3,'萬':1e4,'億':1e8}
+NUMBER_UNIT = re.compile(r'(\d+(?:\.\d+)?)\s*(thousand|million|billion|k(?![a-z])|[千萬億])',re.I)
+CHINESE_NUMERAL = re.compile('[零〇一二兩三四五六七八九十百千萬億半雙]')
+
+
+def number_doubt(original, value):
+    """Numbers of the English original that the translation dropped or changed, as a note; '' when fine.
+
+    The usual cause is Chinese written for another version of the mod (gains 20 experience → 獲得 10 點).
+    Numbers written in Chinese (九十九, 雙倍) and parameters such as %1$s are not counted.
+    """
+    if not isinstance(original,str) or not isinstance(value,str):return ''
+    def numbers(text):
+        text=re.sub(r'(?<=\d),(?=\d{3})','',PARAMETER.sub(' ',text))
+        # 1 million, 10k, 100萬 and 1億 are written out so that both sides compare as plain numbers.
+        text=NUMBER_UNIT.sub(lambda m:f' {float(m[1])*UNITS_OF_NUMBER[m[2].casefold()]:.10g} ',text)
+        return [f'{float(n):.10g}' for n in NUMBER.findall(text)]
+    wanted=numbers(original);found=numbers(value)
+    missing=[n for n in wanted if n not in found];extra=[n for n in found if n not in wanted]
+    if not missing or (not extra and CHINESE_NUMERAL.search(value)):return ''
+    if not extra and set(missing)=={'0'} and re.search('[無沒未]',value):return ''
+    return '數值和原文不同（原文 '+'、'.join(missing[:4])+('，譯文 '+'、'.join(extra[:4]) if extra else '，譯文沒有寫出')+'），請核對'
+
+
 def validate_text(original, value):
     if not isinstance(value,str) or '\ufffd' in value:
         return False
@@ -134,9 +197,6 @@ def validate_text(original, value):
     return (placeholders(original)==placeholders(value)
             and collections.Counter(FORMAT.findall(original))==collections.Counter(FORMAT.findall(value))
             and original.count('\n')==value.count('\n'))
-
-
-S2T = OpenCC('s2t')  # character-only conversion: any change means simplified characters were present
 
 
 class TranslationMemory:
@@ -290,7 +350,7 @@ def needs_check(row):
     come from the mod's own Chinese text.
     """
     return bool(row.get('supported') and (row.get('changed') or row.get('recovered')) and (
-        row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None
+        row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None or row.get('number_doubt')
         or str(row.get('issue') or '').startswith('既有繁中')))
 
 
@@ -301,7 +361,8 @@ TW_WORDING = [(re.compile(a),b) for a,b in (
     ('激活','啟用'),('添加','新增'),('代碼','程式碼'),('默認','預設'),('信息','資訊'),('啓','啟'),
     ('視頻','影片'),('軟件','軟體'),('硬件','硬體'),('文件夾','資料夾'),('菜單','選單'),('鼠標','滑鼠'),
     ('屏幕','螢幕'),('界面','介面'),('服務器','伺服器'),('數據','資料'),('加載','載入'),('兼容','相容'),
-    ('質量','品質'),('用戶(?!端)','使用者'),('網絡','網路'),('設置','設定'),('支持','支援'),('緩存','快取'),
+    # 質量 (mass) and 支持 (支持者, 感謝支持) are left alone: both are also correct Taiwan wording.
+    ('用戶(?!端)','使用者'),('網絡','網路'),('設置','設定'),('緩存','快取'),
 )]
 KANA = re.compile('[぀-ヿ]')
 
@@ -328,7 +389,8 @@ def report_overview(session):
     for r in rows:
         if needs_check(r):
             check['AI 補譯' if r['origin']=='ai_translation' else '自動統一譯名' if r.get('unified_from') is not None
-                  else '版本不同的參考' if r['origin'] in ('stale_reference','cross_version_reference') else '改過用語的模組繁中']+=1
+                  else '版本不同的參考' if r['origin'] in ('stale_reference','cross_version_reference')
+                  else '數值和原文不同' if r.get('number_doubt') else '改過用語的模組繁中']+=1
     after=session.get('after_counts')
     return dict(applied=applied,not_applied=reasons,context=context,check=sum(check.values()),check_kinds=check.most_common(),
                 backup=session.get('backup'),rechecked=after is not None,renamed=session.get('renamed_count',0),
@@ -561,7 +623,7 @@ def scan_archive(audit, p, label, digest, cache):
     return key
 
 
-def scan(instance, report, notify, cancelled, cache=None):
+def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
     audit = Audit(report/'audit',{});audit.cache_hits=0;used=set()
     audit.source_hashes={}
     archives=[]
@@ -589,7 +651,8 @@ def scan(instance, report, notify, cancelled, cache=None):
                 contained(instance,p.relative_to(instance).as_posix())
                 audit.source_hashes[p.relative_to(instance).as_posix()]=file_hash(p)
     audit.loose(instance)
-    audit.finish()
+    # The report keeps every row it needs in session.json; the scan's own lists are for diagnosis.
+    audit.finish(details=details,quiet=True)
     return audit
 
 
@@ -615,7 +678,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         audit=scan(instance,report,notify,cancelled,scan_cache(home,instance))
     except Exception as exc:
         result.update(status='cancelled' if isinstance(exc,InterruptedError) else 'blocked')
-        result['errors'].append(['掃描',str(exc)])
+        result['errors'].append(['掃描',explain_error(exc)])
         publish()
         return result
     result['audit_counts']=dict(audit.counts)
@@ -634,12 +697,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             refs,versions=references  # tests inject deterministic references; GUI never uses this
         result['references']=versions
     except Exception as exc:
-        result.update(status='cancelled' if isinstance(exc,InterruptedError) else 'blocked',errors=result['errors']+[['參考庫預檢',str(exc)]])
+        result.update(status='cancelled' if isinstance(exc,InterruptedError) else 'blocked',errors=result['errors']+[['參考庫預檢',explain_error(exc)]])
         publish()
         return result
     result['rows']=[]
     result['status']='matching'
-    cc=OpenCC('s2twp')
     instance_cn={}
     for r in audit.rows:
         if r['kind']!='language' or not isinstance(r['zh_cn'],str): continue
@@ -656,6 +718,12 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             instance_rp_tw.setdefault((m[1],r['key']),[]).append((r['source'],r['current']))
         if isinstance(r['zh_cn'],str) and HAN.search(r['zh_cn']):
             instance_rp_cn.setdefault((m[1],r['key']),[]).append((r['source'],r['zh_cn']))
+    # Text of embedded (jar-in-jar) libraries is applied as KubeJS assets, which the game shows instead
+    # of the library's own file; that is the text currently in effect for those rows.
+    kubejs_tw={}
+    for r in audit.rows:
+        m=re.match(r'instance!/kubejs/assets/([^/]+)/lang/',r['source'])
+        if m and r['kind']=='language' and isinstance(r['current'],str):kubejs_tw[(m[1],r['key'])]=r['current']
     counts=collections.Counter()
     memory=TranslationMemory(home);user_terms=UserGlossary(home);provenance=Provenance(home,instance);special=collections.Counter()
     # The mods' own English, to notice strings a modpack renamed through KubeJS or resource packs.
@@ -690,8 +758,9 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                                            supported=False,reviewed=False,changed=False))
                 counts['not_display' if hidden else 'context_candidate']+=1
             continue
-        original=r['en'] if isinstance(r['en'],str) else r['zh_cn'] or r['current'] or ''
         m=re.search(r'assets/([^/]+)/lang/',r['source']); ns=m[1] if m else ''
+        if r['source'].count('!/')>=2 and (ns,r['key']) in kubejs_tw:r=dict(r,current=kubejs_tw[(ns,r['key'])])
+        original=r['en'] if isinstance(r['en'],str) else r['zh_cn'] or r['current'] or ''
         if installed is not None and ns and ns not in installed and TRANSLATION_PACK.match(r['source']):
             # Bundled translation packs (e.g. a whole CFPA pack via OpenLoader) cover mods this
             # modpack does not have; the game never shows those strings.
@@ -705,7 +774,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         # Decisions the user made → people-written zh_tw (reference packs whose English matches this
         # version, the modpack's zh_tw packs, the mod's own zh_tw) → Mojang's official names →
         # converted zh_cn (modpack, same mod, CFPA) → unverified candidates → glossary → AI later.
-        existing=r['current'] if isinstance(r['current'],str) and S2T.convert(r['current'])==r['current'] else None
+        existing=r['current'] if isinstance(r['current'],str) and not has_simplified(r['current']) else None
         human_tw=[];converted_cn=[];stale_tw=[];cross=[]
         if ns:
             for n,ref in enumerate(refs):
@@ -733,10 +802,12 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         options+=converted_cn
         options+=[('stale_reference',v,s) for _,v,s in stale_tw]
         options+=cross
-        options.append(('glossary',MINECRAFT_GLOSSARY.get(original.lower()),'MINECRAFT_GLOSSARY'))
+        term=MINECRAFT_GLOSSARY.get(original.lower())
+        if term and vanilla:term=vanilla['__terms__'].get(original.strip().casefold(),term)  # Mojang's own name wins
+        options.append(('glossary',term,'MINECRAFT_GLOSSARY'))
         if existing is None and isinstance(r['current'],str):
             # A zh_tw that still contains simplified characters is only a last-resort candidate.
-            options.append(('existing_zh_tw',cc.convert(r['current']),r['source']+'（原含簡體，已轉繁）'))
+            options.append(('existing_zh_tw',to_taiwan(r['current']),r['source']+'（原含簡體，已轉繁）'))
         renamed=(not r['source'].startswith('mods/') and isinstance(r['en'],str)
                  and mod_en.get((ns,r['key'])) not in (None,r['en']))
         if renamed:
@@ -746,28 +817,39 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                      or (o[0]=='reference_pack_or_cfpa' and o[2] in ('reference:tw','reference:para'))]
             special['renamed']+=1
         value=original; origin='untranslated'; evidence=''; issue='缺少可用中文來源'
+        # Converted or other-version Chinese that changes the numbers of the English original waits for
+        # a source that keeps them, and is used (and listed for checking) only when none does. The
+        # user's own decisions are not checked, and Traditional Chinese written for this version keeps
+        # its place and is only listed.
+        ready=[];doubt=''
         for name,candidate,source in options:
-            if usable(original,candidate):
-                value=cc.convert(candidate) if name in ('same_source_zh_cn','instance_zh_cn') else candidate
-                if not validate_text(original,value):continue
-                origin=name;evidence=source
-                issue=('' if name in ('existing_zh_tw','translation_memory','user_glossary','official_vanilla','instance_resourcepack')
-                       or (name=='reference_pack_or_cfpa' and source in ('reference:tw','reference:para'))
-                       else '參考譯文對應的英文與目前版本不同，需核對' if name=='stale_reference'
-                       else '跨版本參考：來自其他 Minecraft 版本的 CFPA，需核對版本差異' if name=='cross_version_reference'
-                       else '簡中轉繁：需校對台灣用語、版本語意與名稱')
-                break
-        if origin=='existing_zh_tw' and existing is None:
-            issue='既有繁中含簡體字，已轉為台灣繁體，請核對'
-        elif origin=='existing_zh_tw' and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value)):
-            value=taiwan_wording(value);issue='既有繁中已把大陸用語改為台灣用語，請核對'
+            if not usable(original,candidate):continue
+            text=to_taiwan(candidate) if name in ('same_source_zh_cn','instance_zh_cn') else candidate
+            if not validate_text(original,text):continue
+            written_tw=(name in ('existing_zh_tw','instance_resourcepack','official_vanilla')
+                        or (name=='reference_pack_or_cfpa' and source in ('reference:tw','reference:para')))
+            note='' if name in ('translation_memory','user_glossary') else number_doubt(r['en'],text)
+            ready.append((bool(note) and not written_tw,name,text,source,note))
+            if not ready[-1][0]:break
+        if ready:
+            _,origin,value,evidence,doubt=min(ready,key=lambda x:x[0])  # the first that does not wait, else the first
+            issue=('' if origin in ('existing_zh_tw','translation_memory','user_glossary','official_vanilla','instance_resourcepack')
+                   or (origin=='reference_pack_or_cfpa' and evidence in ('reference:tw','reference:para'))
+                   else '參考譯文對應的英文與目前版本不同，需核對' if origin=='stale_reference'
+                   else '跨版本參考：來自其他 Minecraft 版本的 CFPA，需核對版本差異' if origin=='cross_version_reference'
+                   else '簡中轉繁：需校對台灣用語、版本語意與名稱')
         extra={}
         prior=provenance.lookup(r) if origin=='existing_zh_tw' and value==r['current'] else None
         if prior and prior['origin']!='existing_zh_tw':
-            # Our own earlier output: keep its real source and doubts instead of calling it mod zh_tw.
+            # Our own earlier output: keep its real source and doubts instead of calling it mod zh_tw,
+            # and leave its wording as it was applied.
             origin=prior['origin'];evidence=prior['evidence'];issue=prior['issue']
             extra=dict(recovered=True,installed=True,unified_from=prior.get('unified_from'),ai_model=prior.get('model'))
             special['recovered']+=1
+        elif origin=='existing_zh_tw' and existing is None:
+            issue='既有繁中含簡體字，已轉為台灣繁體，請核對'
+        elif origin=='existing_zh_tw' and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value)):
+            value=taiwan_wording(value);issue='既有繁中已把大陸用語改為台灣用語，請核對'
         reason=keep_original_reason(original,r['key'],ns) if origin=='untranslated' else ''
         if reason:
             # Parameters, key names and similar strings stay as-is; they are neither gaps nor AI work.
@@ -775,6 +857,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             if r['en'] is None and r['current'] is None:issue='無需翻譯：'+evidence  # no en_us fallback in game
         supported=r['kind']=='language' or ('/en_us/' in r['source'] or '/zh_tw/' in r['source'])
         changed=value!=r['current'] and origin!='untranslated' and (origin!='keep_original' or bool(issue))
+        if doubt and changed and not extra:issue=(issue+'；' if issue else '')+doubt
+        if '數值和原文不同' in (issue or ''):extra['number_doubt']=True  # also kept by text applied earlier
         counts[origin]+=1
         if (NAME_KEY.match(r['key']) and isinstance(r['en'],str) and 2<len(r['en'].strip())<=40 and HAN.search(value)
                 and origin not in ('untranslated','keep_original','ai_translation')):
@@ -790,7 +874,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                   recovered_count=special['recovered'],renamed_count=special['renamed'])
     for name,expected in result['source_hashes'].items():
         if file_hash(contained(instance,name))!=expected:
-            result['status']='blocked';result['errors'].append([name,'掃描途中原檔變動，請重新掃描。'])
+            result['status']='blocked';result['errors'].append([name,'掃描途中檔案有變動（遊戲或啟動器可能正在更新），請稍後重新按「一鍵完整翻譯並套用」。'])
             break
     publish()
     notify(100,'來源整理完成','尚未套用；請在報告中核對譯文。')
@@ -831,7 +915,7 @@ def full_translation(instance, home, model, notify, cancelled=lambda:False, chec
     except GameRunningError as exc:
         result.update(status='awaiting_game',apply_error=str(exc))
     except Exception as exc:
-        result.update(status='apply_failed',apply_error=str(exc))
+        result.update(status='apply_failed',apply_error=explain_error(exc))
     write_json(Path(result['report'])/'session.json',result)
     checkpoint(result)
     return result
@@ -1140,7 +1224,55 @@ def set_language_record(instance, staged):
     return dict(file='options.txt',before=file_hash(src) if src.exists() else None,after=file_hash(dst),reviewed=True,verified=True)
 
 
+SPACE_MARGIN = 300*1024*1024
+INTERRUPTED = ('backed_up','rollback_incomplete','restoring')
+
+
+def require_space(instance, home, files):
+    """Stop before anything is written when the drives cannot hold the work: a staged copy and a
+    backup of every file to be changed (beside the program) and the rewritten files (in the modpack)."""
+    sizes=[p.stat().st_size for p in (contained(instance,f) for f in files) if p.is_file()]
+    needs={}
+    for folder,amount in ((home,2*sum(sizes)),(instance,max(sizes,default=0))):
+        drive=Path(folder).resolve().anchor or str(Path(folder).resolve())
+        needs[drive]=needs.get(drive,0)+amount
+    for drive,amount in needs.items():
+        free=shutil.disk_usage(drive).free
+        if free<amount+SPACE_MARGIN:
+            raise ValueError(f'硬碟空間不足：這次套用需要約 {(amount+SPACE_MARGIN)//1048576:,} MB，{drive} 只剩 {free//1048576:,} MB。'
+                             '請清出空間後按「重試套用」；譯文已保存，遊戲檔案沒有修改。')
+
+
+def interrupted_batches(home, instance=None):
+    """Batches whose writing or restoring stopped half-way (crash, power cut), newest first."""
+    found=[]
+    for p in sorted((Path(home)/'output').glob('*/原始備份/*/_備份紀錄/manifest.json'),reverse=True):
+        try:
+            record=json.loads(p.read_text(encoding='utf-8'))
+            if record.get('status') in INTERRUPTED and (instance is None or Path(record['instance']).resolve()==Path(instance).resolve()):
+                found.append((p.parents[1],record))
+        except (OSError,ValueError,KeyError):continue
+    return found
+
+
+def changed_since_scan(home, instance, what):
+    """Why a file no longer matches the scan, as the error to raise: a write that was cut short, or a later change."""
+    if interrupted_batches(home,instance):
+        return ValueError('上一次套用或還原中途中斷，模組包裡可能只寫入了一部分。'
+                          '請先到「備份與還原」還原標示「中斷」的那一批，再回來按「重試套用」。')
+    return ValueError('模組包的檔案在掃描後有變動（可能是啟動器更新或手動修改），請重新按「一鍵完整翻譯並套用」：'+what)
+
+
 def apply_session(session, home, notify):
+    """Back up and write this batch. The staged copies are working files and are removed afterwards,
+    whether the batch was written or stopped; the backup and its record are what is kept."""
+    work=[]
+    try:return stage_and_apply(session,home,notify,work)
+    finally:
+        for folder in work:shutil.rmtree(folder,ignore_errors=True)
+
+
+def stage_and_apply(session, home, notify, work):
     instance=Path(session['instance']); report=Path(session['report'])
     pack=session.get('apply_mode')=='pack'
     # Rewriting an embedded (jar-in-jar) library is too risky, so its text goes to KubeJS assets when
@@ -1163,7 +1295,7 @@ def apply_session(session, home, notify):
         except (OSError,ValueError,KeyError):pass
     for name,expected in session.get('source_hashes',{}).items():
         now=file_hash(contained(instance,name))
-        if now!=expected and now!=ours.get(name):raise ValueError('來源在掃描後有變更，請重新掃描：'+name)
+        if now!=expected and now!=ours.get(name):raise changed_since_scan(home,instance,name)
     changes=collections.defaultdict(list);pack_rows=[]
     for row in selected:
         original=row.get('en') or row.get('zh_cn') or row.get('current') or ''
@@ -1171,10 +1303,11 @@ def apply_session(session, home, notify):
         path,entry=target_for(row); contained(instance,path)
         if entry is not None and path.startswith('mods/') and (pack or is_nested(row)):pack_rows.append((path,entry,row));continue
         changes[path].append((entry,row))
+    require_space(instance,home,list(changes))
     staged=report/'staged'
     if staged.exists():
         staged=report/('staged-'+uuid.uuid4().hex[:8])
-    staged.mkdir()
+    staged.mkdir();work.append(staged)
     records=build_pack(instance,staged,pack_rows,session,notify) if pack_rows else []
     for i,(path,edits) in enumerate(changes.items()):
         notify(int(70*i/len(changes)),'驗證並準備套用',path)
@@ -1212,12 +1345,12 @@ def apply_session(session, home, notify):
                         if r['kind']=='language':
                             # Compare with the file as it is on disk, not with library text merged in above.
                             if (on_disk if merged else data).get(r['key'])!=r['current']:
-                                raise ValueError('原檔已變動，請重新掃描：'+path+' / '+r['key'])
+                                raise changed_since_scan(home,instance,path+' / '+r['key'])
                             data[r['key']]=r['proposed']
                         else:
                             keys=json.loads(r['key']);node=data
                             for key in keys[:-1]:node=node[key]
-                            if raw and node[keys[-1]]!=r['current']:raise ValueError('書本已變動，請重新掃描。')
+                            if raw and node[keys[-1]]!=r['current']:raise changed_since_scan(home,instance,path)
                             node[keys[-1]]=r['proposed']
                     content=(json.dumps(data,ensure_ascii=False,indent=2) if name.endswith('.json') else '\n'.join(f'{k}={v}' for k,v in data.items())+'\n').encode('utf-8')
                 modified[entry]=content
@@ -1250,34 +1383,65 @@ def apply_session(session, home, notify):
     write_json(report/'session.json',session)
     notify(92,'重新掃描實際遊戲資料','檢查套用後的語系與待查項目')
     try:
-        after=scan(instance,report/'after',lambda *_:None,lambda:False,scan_cache(home,instance))
+        after=scan(instance,report/'after',lambda *_:None,lambda:False,scan_cache(home,instance),details='summary')
         session['after_counts']=dict(after.counts)
     except Exception as exc:
-        session['errors'].append(['套用後稽核',str(exc)])
+        session['errors'].append(['套用後稽核',explain_error(exc)])
     write_json(report/'session.json',session)
     notify(100,'已套用已校對的文字',f'{len(selected):,} 筆；其他待查內容仍保留在報告')
     return session
 
 
+RESTORABLE = ('installed',)+INTERRUPTED
+
+
+def newer_batch_holding(backup, instance, file, current):
+    """The later batch whose result for `file` is what is on disk now, as its folder name, else ''."""
+    for manifest in sorted(backup.parent.glob('*/_備份紀錄/manifest.json'),reverse=True):
+        if manifest.parents[1].name<=backup.name:break
+        try:
+            record=json.loads(manifest.read_text(encoding='utf-8'))
+            if record.get('status') in RESTORABLE and Path(record['instance']).resolve()==instance and any(
+                    f['file']==file and f['after']==current for f in record['files']):
+                return manifest.parents[1].name
+        except (OSError,ValueError,KeyError):continue
+    return ''
+
+
 def restore_backup(backup: Path, expected_instance: Path):
+    """Put back the files one batch changed.
+
+    A batch whose writing or restoring was cut short (crash, power cut) can be restored too: each
+    file is either still original (left alone) or exactly what the batch wrote (put back). Anything
+    else was changed later, so nothing is touched.
+    """
     backup=backup.resolve()
     journal=backup/'_備份紀錄/manifest.json'
     record=json.loads(journal.read_text(encoding='utf-8'))
     instance=Path(record['instance']).resolve()
     if instance!=expected_instance.resolve():raise ValueError('備份不屬於目前選擇的模組包。')
-    if record['status']!='installed':raise ValueError('這份備份不是可還原的已套用批次。')
+    if record['status'] not in RESTORABLE:
+        raise ValueError({'restored':'這一批已經還原過了。','rolled_back':'這一批套用失敗時已自動復原，遊戲檔案不需要還原。',
+                          'backing_up':'這一批在備份階段就中斷，遊戲檔案沒有被修改，不需要還原。'}
+                         .get(record['status'],'這份備份不是可還原的已套用批次。'))
     ensure_game_closed(instance)
-    seen=set()
+    seen=set();todo=[]
     for row in record['files']:
         path=contained(instance,row['file']);source=contained(backup,row['file'])
         if str(path).casefold() in seen:raise ValueError('備份清冊包含重複路徑。')
         seen.add(str(path).casefold())
-        if file_hash(path)!=row['after']:raise ValueError('檔案後來有修改，已停止還原以免覆蓋：'+row['file'])
+        now=file_hash(path)
+        if now==row['before']:continue  # never written, or already put back before the interruption
+        if now!=row['after']:
+            newer=newer_batch_holding(backup,instance,row['file'],now)
+            if newer:raise ValueError(f'這個檔案後來又被較新的一批翻譯（{newer[:15]}）修改，請先還原較新的那一批，再還原這一批：'+row['file'])
+            raise ValueError('檔案後來有修改，已停止還原以免覆蓋：'+row['file'])
         if row['before'] is not None and file_hash(source)!=row['before']:raise ValueError('備份內容不符：'+row['file'])
+        todo.append(row)
     # Persist each restored item so an interrupted restore is diagnosable.
-    record.update(status='restoring',restored_files=[])
+    record.update(status='restoring',restored_files=list(record.get('restored_files') or []))
     write_json(journal,record)
-    for row in record['files']:
+    for row in todo:
         path=contained(instance,row['file'])
         if file_hash(path)!=row['after']:raise ValueError('還原途中檔案被修改：'+row['file'])
         if row['before'] is None:path.unlink()
@@ -1286,3 +1450,41 @@ def restore_backup(backup: Path, expected_instance: Path):
         record['restored_files'].append(row['file']);write_json(journal,record)
     record['status']='restored';write_json(journal,record)
     return dict(record,backup_path=str(backup))
+
+
+INSIDE_MODPACK = ('mods','config','kubejs','defaultconfigs','resourcepacks','datapacks','saves','shaderpacks','scripts','logs')
+
+
+def resolve_instance(chosen):
+    """(modpack root, note for the user) for the folder the user picked or pasted.
+
+    A folder inside a modpack (mods, config…) is corrected to the modpack itself; a folder that holds
+    several modpacks, a drive or the user's home folder is refused with what to pick instead.
+    """
+    text=str(chosen or '').strip()
+    if len(text)>=2 and text[0]==text[-1] and text[0] in ('"',"'"):text=text[1:-1].strip()
+    if not text:raise ValueError('請先選擇模組包資料夾。')
+    folder=Path(text)
+    if not folder.exists():raise ValueError('找不到這個資料夾，可能已被移動或改名：\n'+text)
+    note=''
+    if folder.is_file():
+        folder=folder.parent;note='你選的是檔案，已改用它所在的資料夾。'
+    folder=folder.resolve()
+    if folder.name.casefold() in INSIDE_MODPACK and is_instance(folder.parent):
+        note=f'你選的是模組包裡的「{folder.name}」，已改用模組包本身。';folder=folder.parent
+    if folder==Path(folder.anchor) or folder==Path.home().resolve():
+        raise ValueError('請選擇模組包自己的資料夾，不要選整個磁碟或使用者資料夾。')
+    if is_instance(folder):return folder,note
+    inside={}
+    try:
+        for child in sorted(folder.iterdir()):
+            game=next((c for c in (child,child/'.minecraft',child/'minecraft') if child.is_dir() and is_instance(c)),None)
+            if game:inside[child.name]=game
+    except OSError:pass
+    if len(inside)==1:
+        name,game=next(iter(inside.items()))
+        return game,f'你選的是外層資料夾，已改用裡面唯一的模組包「{name}」。'
+    if inside:
+        raise ValueError(f'這個資料夾裡有 {len(inside)} 個模組包（'+'、'.join(list(inside)[:4])+('…' if len(inside)>4 else '')
+                         +'），請選擇其中一個模組包，而不是外層資料夾。')
+    raise ValueError('這裡不像模組包資料夾。模組包的根資料夾裡應該有 mods、config 或 kubejs。')

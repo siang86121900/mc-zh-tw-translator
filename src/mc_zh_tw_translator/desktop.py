@@ -202,7 +202,7 @@ class Worker(QThread):
         try:self.result.emit(self.operation(self))
         except Exception as exc:
             logging.exception('Background operation failed')
-            self.failed.emit(str(exc))
+            self.failed.emit(jobs.explain_error(exc))
     def publish(self,session):
         # JSON crosses the thread boundary as an immutable snapshot.
         rows=session.get('rows',[])
@@ -301,7 +301,7 @@ class ReviewDialog(QDialog):
 
 class MainWindow(QMainWindow):
     def __init__(self,home):
-        super().__init__();self.home=home;self.session=None;self.worker=None;self.busy=False;self.mode='';self.page_index=0;self.update_info=None;self.ai_info=None
+        super().__init__();self.home=home;self.session=None;self.worker=None;self.busy=False;self.mode='';self.page_index=0;self.update_info=None;self.ai_info=None;self.ai_recommended=None
         self.settings=QSettings(str(home/'settings.ini'),QSettings.IniFormat)
         self.preview_seen=set();self.started_at=0;self.last_activity=0;self.update_worker=None
         self.background=[];self.quit_after_worker=False;self.filter_mode='all';self.live_session=False
@@ -334,7 +334,7 @@ class MainWindow(QMainWindow):
         b=button('譯名與用詞',lambda checked=False:self.navigate(5));b.setObjectName('nav');b.setCheckable(True)
         nav.insertWidget(4,b);self.navs.append(b)
         # Page 6 (shared translations) sits right under 開始翻譯.
-        b=button('現成翻譯',lambda checked=False:self.navigate(6));b.setObjectName('nav');b.setCheckable(True)
+        b=button('已翻譯整合包',lambda checked=False:self.navigate(6));b.setObjectName('nav');b.setCheckable(True)
         nav.insertWidget(3,b);self.navs.append(b)
         nav.addStretch();self.side_ai=label('AI 補翻：未連接','sub');nav.addWidget(self.side_ai)
         nav.addWidget(label('繁體中文 / 台灣','sub'));body.addWidget(sidebar)
@@ -517,7 +517,7 @@ class MainWindow(QMainWindow):
         elif index==6:self.mark_catalog_seen()
 
     def make_shared(self):
-        box=self.page('現成翻譯','已經翻好的整合包，選一個按「安裝翻譯」就完成。只含翻譯文字，不含模組檔；安裝前會先備份。')
+        box=self.page('已翻譯整合包','已經翻好的整合包，選一個按「安裝翻譯」就完成。只含翻譯文字，不含模組檔；安裝前會先備份。')
         head=QHBoxLayout();self.patch_status=label('','sub');head.addWidget(self.patch_status,1)
         self.catalog_refresh=button('重新整理',self.refresh_catalog);head.addWidget(self.catalog_refresh,0,Qt.AlignTop);box.addLayout(head)
         self.catalog_box=QVBoxLayout();self.catalog_box.setSpacing(12);box.addLayout(self.catalog_box)
@@ -539,8 +539,10 @@ class MainWindow(QMainWindow):
     def update_catalog_badge(self,include_new=True):
         updates=sum(p['status']=='update' for p in self.catalog or [])
         fresh=sum(bool(p.get('new')) and p['status']!='applied' for p in self.catalog or []) if include_new else 0
-        parts=([f'{fresh} 個新'] if fresh else [])+([f'{updates} 個更新'] if updates else [])
-        self.navs[6].setText('現成翻譯'+(f"（{'、'.join(parts)}）" if parts else ''))
+        parts=([f'{fresh} 個新上架'] if fresh else [])+([f'{updates} 個有更新'] if updates else [])
+        # The sidebar is narrow: one number there, what it counts in the tooltip and on the page itself.
+        self.navs[6].setText('已翻譯整合包'+(f'（{fresh+updates}）' if parts else ''))
+        self.navs[6].setToolTip('、'.join(parts))
 
     def clear_catalog(self):
         self.pack_buttons=[]
@@ -556,7 +558,7 @@ class MainWindow(QMainWindow):
         self.catalog_box.addWidget(f)
 
     def refresh_catalog(self):
-        self.catalog=[];self.catalog_message('正在讀取現成翻譯…','')
+        self.catalog=[];self.catalog_message('正在讀取已翻譯整合包…','')
         self.catalog_refresh.setEnabled(False)
         worker=Worker(lambda w:patches.fetch_catalog())
         worker.result.connect(self.catalog_loaded)
@@ -572,11 +574,11 @@ class MainWindow(QMainWindow):
         fresh=[p for p in self.catalog if p['new'] and p['status']!='applied']
         mine=[p for p in fresh if p['status'] in ('exact','update')]
         if mine and self.pages.currentIndex()!=6:
-            self.notify_finished('有新的現成翻譯',f"你電腦上的「{mine[0]['name']}」有可以安裝的翻譯"+(f"，另有 {len(mine)-1} 個" if len(mine)>1 else '')+'。')
+            self.notify_finished('有新的整合包翻譯',f"你電腦上的「{mine[0]['name']}」有可以安裝的翻譯"+(f"，另有 {len(mine)-1} 個" if len(mine)>1 else '')+'。')
         self.update_catalog_badge()
         if self.pages.currentIndex()==6:self.mark_catalog_seen()
         if not self.catalog:
-            self.catalog_message('目前還沒有現成翻譯','有新的整合包翻譯發布時，會出現在這裡。');return
+            self.catalog_message('目前還沒有已翻譯整合包','有新的整合包翻譯發布時，會出現在這裡。');return
         self.clear_catalog()
         states={'update':('翻譯有更新','progress'),'exact':('可安裝','progress'),'applied':('已是最新','done'),
                 'other_version':('整合包版本不同','todo'),'not_installed':('未安裝整合包','todo')}
@@ -769,16 +771,24 @@ class MainWindow(QMainWindow):
         self.ai_models=QComboBox();self.ai_models.setPlaceholderText('登入後載入帳號可用模型');b.addWidget(self.ai_models)
         self.ai_model_detail=label('模型會影響上下文與術語判斷，較強不代表保證正確；目前沒有本專案的模型品質排行榜。','sub');b.addWidget(self.ai_model_detail)
         # Differences shown are only what the official model list and the account's quota report.
-        self.ai_compare=QTableWidget(0,4);self.ai_compare.setHorizontalHeaderLabels(['模型','官方說明','翻譯時的推理強度','額度'])
+        self.ai_compare=QTableWidget(0,4);self.ai_compare.setHorizontalHeaderLabels(['模型','官方說明','推理強度','額度'])
         self.ai_compare.verticalHeader().hide();self.ai_compare.setShowGrid(False);self.ai_compare.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.ai_compare.setSelectionMode(QAbstractItemView.NoSelection);self.ai_compare.setWordWrap(False);self.ai_compare.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch)
+        self.ai_compare.setSelectionMode(QAbstractItemView.NoSelection)
+        # Names, effort and quota keep their own width; the description takes the rest and wraps in a
+        # narrow window instead of shrinking to "…".
+        for c in (0,2,3):self.ai_compare.horizontalHeader().setSectionResizeMode(c,QHeaderView.ResizeToContents)
+        self.ai_compare.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch)
         self.ai_compare.horizontalHeader().setDefaultAlignment(Qt.AlignLeft|Qt.AlignVCenter)
-        self.ai_compare.setColumnWidth(0,200);self.ai_compare.setColumnWidth(2,150);self.ai_compare.setColumnWidth(3,230)
+        # Several columns resize in one layout pass; fit the rows once, after the widths have settled.
+        self.compare_timer=QTimer(self);self.compare_timer.setSingleShot(True);self.compare_timer.setInterval(0)
+        self.compare_timer.timeout.connect(self.fit_model_compare)
+        self.ai_compare.horizontalHeader().sectionResized.connect(lambda *_:self.compare_timer.start())
+        self.ai_compare.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);self.ai_compare.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.ai_compare.hide();b.addWidget(self.ai_compare)
         self.ai_models.currentIndexChanged.connect(self.select_ai_model)
         b.addWidget(label('只列官方回傳的可用模型，使用該模型建議的推理設定。若模型不可用會停止，不偷偷換模型。','sub'))
-        b.addWidget(label('建議：遊戲文字多是短句，官方描述為「快速、經濟」的模型（例如 Luna）通常就夠用，也比最高階模型省很多額度。'
-                          '補翻時會顯示依本次實際用量推算的剩餘額度需求。','sub'))
+        # Filled from the account's own model list (see ai_connected); no model name is built in.
+        self.ai_recommend=label('','sub');b.addWidget(self.ai_recommend)
         self.ai_model_card=f;box.addWidget(f)
         self.ai_stop_btn=button('停止登入／補翻',self.cancel_job);self.ai_stop_btn.setEnabled(False);box.addWidget(self.ai_stop_btn,alignment=Qt.AlignLeft)
         box.addStretch()
@@ -831,12 +841,20 @@ class MainWindow(QMainWindow):
         if not q:return '共用 Codex 額度'
         return f"專屬額度剩 {q['remaining']:g}%"+('（無法使用）' if q['remaining']<=10 else '')
 
+    def is_recommended(self,model):
+        return bool(model and self.ai_recommended and model['model']==self.ai_recommended['model'])
+
     def select_ai_model(self,*_):
+        """The user picked a model; only such a choice is remembered over the suggestion."""
+        model=self.ai_models.currentData()
+        if model:self.settings.setValue('ai_model',model['model']);self.settings.setValue('ai_model_chosen','true')
+        self.show_ai_model()
+
+    def show_ai_model(self):
         model=self.ai_models.currentData()
         if model:
-            self.settings.setValue('ai_model',model['model'])
             effort=self.EFFORTS.get(model.get('defaultReasoningEffort'),model.get('defaultReasoningEffort') or '官方預設')
-            self.ai_model_detail.setText(f"官方說明：{model.get('description') or model['model']}\n"
+            self.ai_model_detail.setText(f"官方說明：{ai.describe_model(model) or model['model']}\n"
                                          f"翻譯時使用官方建議的推理強度「{effort}」；推理越深通常越慢、用量可能越多。{self.model_quota_text(model)}。\n"
                                          '官方沒有提供各模型的翻譯品質或確切耗量數字，譯文仍需校對。')
         self.update_ai_controls()
@@ -844,12 +862,24 @@ class MainWindow(QMainWindow):
     def fill_model_compare(self,models):
         self.ai_compare.setRowCount(len(models));self.ai_compare.setVisible(bool(models))
         for i,m in enumerate(models):
-            name=(m.get('displayName') or m['model'])+('（預設）' if m.get('isDefault') else '')
+            name=(m.get('displayName') or m['model'])+('（建議）' if self.is_recommended(m) else '')+('（官方預設）' if m.get('isDefault') else '')
             effort=self.EFFORTS.get(m.get('defaultReasoningEffort'),m.get('defaultReasoningEffort') or '—')
-            for j,text in enumerate((name,m.get('description') or '',effort,self.model_quota_text(m))):
+            described=ai.describe_model(m);official=str(m.get('description') or '').strip()
+            for j,text in enumerate((name,described,effort,self.model_quota_text(m))):
                 item=QTableWidgetItem(text);item.setToolTip(text);self.ai_compare.setItem(i,j,item)
-        for i in range(len(models)):self.ai_compare.setRowHeight(i,38)
-        self.ai_compare.setFixedHeight(38*min(8,len(models))+self.ai_compare.horizontalHeader().sizeHint().height()+4)
+                if j==1 and described!=official:item.setToolTip(described+'\n官方原文：'+official)
+        self.fit_model_compare()
+
+    def fit_model_compare(self):
+        """Rows grow with wrapped descriptions and the table shows every model without its own scroll bar."""
+        total=self.ai_compare.horizontalHeader().sizeHint().height()+4
+        # Measured here because the view's own row hint ignores the style sheet's item padding.
+        metrics=self.ai_compare.fontMetrics();width=max(60,self.ai_compare.columnWidth(1)-28)
+        for i in range(self.ai_compare.rowCount()):
+            item=self.ai_compare.item(i,1)
+            text=metrics.boundingRect(0,0,width,10000,Qt.TextWordWrap,item.text() if item else '').height()
+            height=max(38,text+18);self.ai_compare.setRowHeight(i,height);total+=height
+        self.ai_compare.setFixedHeight(total)
 
     @staticmethod
     def window_text(q):
@@ -887,14 +917,19 @@ class MainWindow(QMainWindow):
     def logout_ai(self):self.run_worker('ai_logout',lambda w:self.ai_operation('logout',w),self.ai_connected)
 
     def ai_connected(self,result):
-        self.ai_info=result;account=result.get('account');saved=self.settings.value('ai_model','')
+        self.ai_info=result;account=result.get('account');models=result.get('models',[])
+        # Until v0.5.0 the automatic default was saved like a choice; only a pick made by the user counts.
+        saved=self.settings.value('ai_model','') if str(self.settings.value('ai_model_chosen','false')).lower()=='true' else ''
+        self.ai_recommended,reason=ai.recommended_model(models,result.get('model_quota'))
         self.ai_models.blockSignals(True);self.ai_models.clear();default_index=0
-        for i,model in enumerate(result.get('models',[])):
-            self.ai_models.addItem(model.get('displayName') or model['model'],model)
-            if model.get('isDefault'):default_index=i
+        for i,model in enumerate(models):
+            self.ai_models.addItem((model.get('displayName') or model['model'])+('（建議）' if self.is_recommended(model) else ''),model)
+            if self.is_recommended(model):default_index=i
         chosen=next((i for i in range(self.ai_models.count()) if self.ai_models.itemData(i)['model']==saved),default_index)
         if self.ai_models.count():self.ai_models.setCurrentIndex(chosen)
-        self.ai_models.blockSignals(False);self.select_ai_model()
+        self.ai_models.blockSignals(False);self.show_ai_model()
+        name=self.ai_recommended and (self.ai_recommended.get('displayName') or self.ai_recommended['model'])
+        self.ai_recommend.setText(f'建議使用「{name}」：{reason}沒有自己選過模型時，預設就用這個。\n補翻時會顯示依本次實際用量推算的剩餘額度需求。' if name else '')
         self.ai_status.setText(('已連接 '+str(account.get('email') or 'ChatGPT')+' · '+str(account.get('planType') or '未知方案')) if account else '尚未連接 ChatGPT。')
         self.ai_quota.setText(result.get('warning') or 'Codex 額度：'+'　'.join(self.window_text(q) for q in result.get('quota',[])))
         self.fill_model_compare(result.get('models',[]))
@@ -1028,7 +1063,15 @@ class MainWindow(QMainWindow):
                     if w:w.deleteLater()
         try:found=jobs.outdated_translations(self.home)
         except Exception:logging.exception('Cannot check translated modpacks');found=[]
-        self.outdated_card.setVisible(bool(found))
+        try:cut=jobs.interrupted_batches(self.home)
+        except Exception:logging.exception('Cannot check interrupted batches');cut=[]
+        self.outdated_card.setVisible(bool(found or cut))
+        if cut:
+            self.outdated_box.addWidget(label('上一次套用或還原沒有做完','section'))
+            names='、'.join(sorted({Path(r['instance']).name for _,r in cut}))
+            self.outdated_box.addWidget(label(f'「{names}」可能只寫入了一部分（例如中途當機或斷電）。原檔都有備份，'
+                                              '請到「備份與還原」選擇標示「中斷」的那一批按還原，之後再重新套用。','sub'))
+            self.outdated_box.addWidget(button('前往備份與還原',lambda:self.navigate(2),True),alignment=Qt.AlignLeft)
         if not found:return
         head=label('整合包已更新，翻譯需要重新套用','section');self.outdated_box.addWidget(head)
         for x in found:
@@ -1036,7 +1079,7 @@ class MainWindow(QMainWindow):
                        'CurseForge 更新時會換掉模組檔，之前的翻譯可能已被覆蓋。','sub');self.outdated_box.addWidget(text)
             row=QHBoxLayout()
             row.addWidget(button('重新翻譯並套用',lambda checked=False,p=x['path']:self.retranslate(p),True))
-            row.addWidget(button('查看現成翻譯',lambda:self.navigate(6)))
+            row.addWidget(button('查看已翻譯整合包',lambda:self.navigate(6)))
             row.addWidget(button('略過',lambda checked=False,x=x:(jobs.dismiss_outdated(self.home,x['key'],x['fileID']),self.check_outdated())))
             row.addStretch();self.outdated_box.addLayout(row)
 
@@ -1065,15 +1108,25 @@ class MainWindow(QMainWindow):
                 self.update_stats();self.fill_table()
         QMessageBox.warning(self,'需要處理',text)
 
-    def start_job(self):
+    def checked_instance(self):
+        """The modpack folder to work on, corrected when the user picked a folder inside it; None when unusable."""
         if not self.path.text().strip():self.choose_folder()
-        if not self.path.text().strip():return
-        instance=self.instance_path();self.progress.setValue(0);set_pill(self.status,'處理中','progress')
+        if not self.path.text().strip():return None,''
+        try:instance,note=jobs.resolve_instance(self.path.text())
+        except ValueError as exc:
+            QMessageBox.warning(self,'請重新選擇模組包',str(exc));return None,''
+        if str(instance)!=self.path.text().strip():self.path.setText(str(instance))
+        return instance,note
+
+    def start_job(self):
+        instance,_=self.checked_instance()
+        if not instance:return
+        self.progress.setValue(0);set_pill(self.status,'處理中','progress')
         self.run_worker('plan',lambda w:jobs.plan(instance,self.home,w.progress.emit,lambda:w.cancelled,checkpoint=w.publish),self.job_done)
 
     def full_translation_job(self):
-        if not self.path.text().strip(): self.choose_folder()
-        if not self.path.text().strip(): return
+        instance,note=self.checked_instance()
+        if not instance:return
         # AI runs only when the user ticked the option and the account can currently be used.
         usable=self.ai_connected_now() and not (self.ai_info or {}).get('warning')
         model=self.ai_models.currentData() if usable and self.use_ai.isChecked() else None
@@ -1083,10 +1136,11 @@ class MainWindow(QMainWindow):
             ai_line='AI 目前無法使用（'+((self.ai_info or {}).get('warning') or '尚未選擇模型')+'），這次只使用參考來源；缺漏會留在報告。'
         else:
             ai_line='這次不使用 AI；參考來源缺漏的文字會留在報告，之後可在報告頁補翻。'
-        prompt=('這會掃描整個模組包、翻譯可辨識的玩家文字、建立備份並直接套用。\n'
+        prompt=(f'要翻譯並寫入的模組包：「{instance.name}」\n{instance}\n'+(note+'\n' if note else '')
+                +'\n這會掃描整個模組包、翻譯可辨識的玩家文字、建立備份並直接套用。\n'
                 +ai_line+'\n\n遊戲必須先關閉；圖片文字、硬編碼程式和無法確認的特殊格式會列入報告。\n是否繼續？')
         if QMessageBox.question(self,'一鍵完整翻譯',prompt)!=QMessageBox.Yes:return
-        instance=self.instance_path();self.progress.setValue(0);set_pill(self.status,'處理中','progress')
+        self.progress.setValue(0);set_pill(self.status,'處理中','progress')
         if jobs.is_instance(instance):self.remember_instance(instance)
         self.run_worker('full_translate',lambda w:self.full_translation_operation(instance,model,w),self.full_translation_done)
 
@@ -1321,8 +1375,10 @@ class MainWindow(QMainWindow):
         for p in sorted((self.home/'output').glob('*/原始備份/*/_備份紀錄/manifest.json'),reverse=True):
             try:
                 data=json.loads(p.read_text(encoding='utf-8'))
-                state,role={'installed':('可還原','done'),'restored':('已還原','todo'),'restoring':('還原中斷','blocked'),
-                            'backed_up':('已備份','progress'),'rolled_back':('已復原失敗操作','todo')}.get(data['status'],(data['status'],'todo'))
+                state,role={'installed':('可還原','done'),'restored':('已還原','todo'),'restoring':('還原中斷，可繼續還原','blocked'),
+                            'backed_up':('套用中斷，可還原','blocked'),'rollback_incomplete':('復原未完成，可還原','blocked'),
+                            'backing_up':('備份時中斷，遊戲檔案未修改','todo'),
+                            'rolled_back':('套用失敗，已自動復原','todo')}.get(data['status'],(data['status'],'todo'))
                 added=sum(f.get('before') is None for f in data['files'])
                 row=QWidget();line=QHBoxLayout(row);line.setContentsMargins(14,10,14,10);text=QVBoxLayout();text.setSpacing(2)
                 text.addWidget(label(Path(data['instance']).name,'section'))
@@ -1342,9 +1398,14 @@ class MainWindow(QMainWindow):
         item=self.backups.currentItem()
         if not item:return
         backup,data=item.data(Qt.UserRole)
-        if QMessageBox.question(self,'還原這一批翻譯？',f"將還原 {len(data['files'])} 個檔案：\n{data['instance']}\n\n本批新增的翻譯檔也會移除；有後續修改時會停止。")!=QMessageBox.Yes:return
+        if data['status'] not in jobs.RESTORABLE:
+            QMessageBox.information(self,'這一批不需要還原','這一批沒有留下寫入模組包的修改（已還原、已自動復原，或在備份階段就中斷）。');return
+        cut=data['status'] in jobs.INTERRUPTED
+        if QMessageBox.question(self,'還原這一批翻譯？',('這一批上次沒有做完。程式會逐一檢查：還是原樣的檔案不動，已寫入的檔案還原。\n\n' if cut else '')
+                                +f"將還原 {len(data['files'])} 個檔案：\n{data['instance']}\n\n本批新增的翻譯檔也會移除；有後續修改時會停止。")!=QMessageBox.Yes:return
         self.run_worker('restore',lambda w:jobs.restore_backup(Path(backup),Path(data['instance'])),self.restore_done)
     def restore_done(self,result):
+        self.check_outdated()
         if self.session and self.session.get('backup')==result['backup_path']:
             self.session['status']='restored';self.session['installed_count']=0
             for row in self.session['rows']:
@@ -1449,9 +1510,13 @@ def main():
     font=QFont();font.setFamilies(['Segoe UI','Microsoft JhengHei UI','Microsoft JhengHei'])
     font.setPointSize(10);font.setStyleHint(QFont.SansSerif);font.setHintingPreference(QFont.PreferFullHinting)
     app.setFont(font);app.setStyle('Fusion')
-    home=app_home();logging.basicConfig(filename=home/'application.log',encoding='utf-8',level=logging.INFO)
+    home=app_home()
+    from logging.handlers import RotatingFileHandler
+    logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s:%(name)s:%(message)s',
+                        handlers=[RotatingFileHandler(home/'application.log',maxBytes=1024*1024,backupCount=2,encoding='utf-8')])
     lock=QLockFile(str(home/'application.lock'))
     if not lock.tryLock(50):QMessageBox.information(None,'程式已開啟','請切換到已開啟的 MC Translator 視窗。');return
+    updater.clean_leftovers(home)
     window=MainWindow(home);window.show()
     smoke_dest=sys.argv[sys.argv.index('--smoke-test')+1] if '--smoke-test' in sys.argv else os.environ.get('MC_TRANSLATOR_SMOKE_DEST')
     if smoke_dest:
