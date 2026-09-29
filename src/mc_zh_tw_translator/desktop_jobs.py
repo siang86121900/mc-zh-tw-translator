@@ -306,6 +306,29 @@ def is_instance(folder):
     return folder.is_dir() and any((folder/x).is_dir() for x in ('mods','kubejs','config'))
 
 
+def curseforge_instances():
+    """CurseForge's own instance list, which also covers a moved or custom instance folder.
+
+    Returns dicts with name, path, projectID, fileID and gameVersion; projectID/fileID are 0
+    for instances the user created by hand.
+    """
+    appdata=Path(os.environ.get('APPDATA',Path.home()/'AppData/Roaming'))
+    try:
+        data=json.loads((appdata/'CurseForge/agent/GameInstances/MinecraftGameInstance.json').read_text(encoding='utf-8-sig'))
+    except (OSError,ValueError):
+        return []
+    result=[]
+    for x in data if isinstance(data,list) else []:
+        try:
+            path=Path(x['installPath'])
+            if not is_instance(path):continue
+            result.append(dict(name=x.get('name') or path.name,path=path,projectID=int(x.get('projectID') or 0),
+                               fileID=int(x.get('fileID') or 0),gameVersion=x.get('gameVersion') or ''))
+        except (KeyError,TypeError,ValueError,OSError):
+            continue
+    return result
+
+
 def discover_instances(extra=()):
     """Modpack folders from common launcher locations plus folders the user picked before.
 
@@ -314,6 +337,8 @@ def discover_instances(extra=()):
     """
     home=Path.home(); appdata=Path(os.environ.get('APPDATA',home/'AppData/Roaming'))
     found={}
+    for x in curseforge_instances():
+        found.setdefault(str(x['path']).rstrip('\\/').casefold(),('CurseForge',x['name'],x['path']))
     for launcher,pattern in LAUNCHER_ROOTS:
         root=Path(pattern.format(home=home,appdata=appdata))
         try:
@@ -820,6 +845,26 @@ def build_pack(instance, staged, pack_rows, session, notify):
     return records
 
 
+def rewrite_archive(z, dst, modified, label):
+    """Copy archive z to dst with `modified` entries replaced/added; everything else byte-identical.
+
+    Jar signatures are dropped (they would be invalid) and the result is verified entry by entry.
+    """
+    if len(z.namelist())!=len(set(z.namelist())):raise ValueError('原始壓縮檔有重複項目，需先修復：'+label)
+    with zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED) as w:
+        for info in z.infolist():
+            if info.filename not in modified and not is_jar_signature_file(info.filename):
+                # writestr() rewrites the ZipInfo's offsets; passing the source archive's own
+                # object would make later reads from that archive land in the wrong place.
+                w.writestr(copy.copy(info),z.read(info.filename))
+        for n,b in modified.items():w.writestr(n,b)
+    with zipfile.ZipFile(dst) as check:
+        if check.testzip():raise ValueError('ZIP 完整性驗證失敗：'+label)
+        for n in z.namelist():
+            if n not in modified and not is_jar_signature_file(n) and check.read(n)!=z.read(n):
+                raise ValueError('非翻譯內容被改動：'+n)
+
+
 def set_language_record(instance, staged):
     """Stage options.txt with lang:zh_tw so the game opens in Traditional Chinese after applying."""
     src=instance/'options.txt';text=src.read_text(encoding='utf-8') if src.exists() else ''
@@ -895,20 +940,7 @@ def apply_session(session, home, notify):
                     content=(json.dumps(data,ensure_ascii=False,indent=2) if name.endswith('.json') else '\n'.join(f'{k}={v}' for k,v in data.items())+'\n').encode('utf-8')
                 modified[entry]=content
             dst.parent.mkdir(parents=True,exist_ok=True)
-            if z:
-                if len(z.namelist())!=len(set(z.namelist())):raise ValueError('原始壓縮檔有重複項目，需先修復：'+path)
-                with zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED) as w:
-                    for info in z.infolist():
-                        if info.filename not in modified and not is_jar_signature_file(info.filename):
-                            # writestr() rewrites the ZipInfo's offsets; passing the source archive's own
-                            # object would make later reads from that archive land in the wrong place.
-                            w.writestr(copy.copy(info),z.read(info.filename))
-                    for n,b in modified.items():w.writestr(n,b)
-                with zipfile.ZipFile(dst) as check:
-                    if check.testzip():raise ValueError('ZIP 完整性驗證失敗：'+path)
-                    for n in z.namelist():
-                        if n not in modified and not is_jar_signature_file(n) and check.read(n)!=z.read(n):
-                            raise ValueError('非翻譯內容被改動：'+n)
+            if z:rewrite_archive(z,dst,modified,path)
             else:dst.write_bytes(modified[None])
         finally:
             if z:z.close()

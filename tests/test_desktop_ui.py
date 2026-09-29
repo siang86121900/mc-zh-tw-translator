@@ -106,7 +106,7 @@ class DesktopUiTests(unittest.TestCase):
             window.session=dict(rows=[dict(origin='untranslated',supported=True)],report=d)
             with patch.object(QMessageBox,'question',return_value=QMessageBox.No),patch.object(window,'run_worker') as run:
                 window.ai_supplement();run.assert_not_called()
-            self.assertEqual(window.pages.count(),6);window.close()
+            self.assertEqual(window.pages.count(),7);window.close()
 
     def test_ai_guard_warning_stops_before_confirmation(self):
         with tempfile.TemporaryDirectory() as d:
@@ -183,6 +183,34 @@ class DesktopUiTests(unittest.TestCase):
             self.assertEqual({r['proposed'] for r in window.session['rows']},{'恐狼'})
             self.assertEqual(window.term_table.rowCount(),1);self.assertEqual(window.conflicts.rowCount(),0)
             self.assertFalse(window.set_language.isChecked())  # optional, off unless the user ticks it
+            window.close()
+
+    def test_closing_during_background_check_quits_once_it_finishes(self):
+        from mc_zh_tw_translator.desktop import Worker
+        with tempfile.TemporaryDirectory() as d:
+            window=MainWindow(Path(d));window.show()
+            window.start_background(lambda w:time.sleep(.3),lambda _:None)
+            with patch.object(QApplication,'quit') as quit_app:
+                window.close();self.assertFalse(window.isVisible());quit_app.assert_not_called()
+                for _ in range(300):
+                    self.app.processEvents();time.sleep(.01)
+                    if quit_app.called:break
+                quit_app.assert_called_once()
+
+    def test_shared_page_lists_catalog_with_install_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            pack=dict(name='Demo',projectID=7,fileID=8,version='1.0',gameVersion='1.21.1',translator='我',updated='2026-09-29',
+                      notes='',url='https://github.com/x',sha256='a'*64,size=1)
+            mine=[dict(name='Demo',path=Path(d),projectID=7,fileID=8,gameVersion='1.21.1')]
+            with patch('mc_zh_tw_translator.patches.fetch_catalog',return_value=[pack]),\
+                 patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=mine):
+                window=MainWindow(Path(d));window.navigate(6)
+                for _ in range(200):
+                    self.app.processEvents();time.sleep(.01)
+                    if window.catalog:break
+            self.assertTrue(window.navs[6].isChecked())
+            self.assertEqual(window.catalog[0]['status'],'exact')
+            self.assertEqual(window.catalog_list.count(),1)
             window.close()
 
 if __name__=='__main__':unittest.main()
