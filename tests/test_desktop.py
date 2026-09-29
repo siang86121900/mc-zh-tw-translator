@@ -140,12 +140,29 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(UserGlossary(self.home).terms_in('Benimaru Boss'),{'Benimaru':'紅丸'})
         row=lambda zh,origin='same_source_zh_cn',key='entity.a.direwolf':dict(en='Direwolf',proposed=zh,origin=origin,supported=True,
                                                                               current=None,key=key,source='s')
-        session=dict(rows=[row('牙狼族'),row('牙狼族'),row('恐狼','reference_pack_or_cfpa'),row('无','same_source_zh_cn','gui.a.none')])
+        session=dict(rows=[row('牙狼族'),row('牙狼族'),dict(row('恐狼','reference_pack_or_cfpa'),evidence='reference:tw'),row('无','same_source_zh_cn','gui.a.none')])
         conflict=conflicting_terms(session)[0]
         self.assertEqual(conflict['suggested'],'恐狼')  # a more trusted source beats a larger count
         self.assertEqual(len(conflicting_terms(session)),1)  # UI words (gui.*) are never listed
         self.assertEqual(apply_term(session,'Direwolf','恐狼'),3)
         self.assertEqual([r['proposed'] for r in session['rows']],['恐狼','恐狼','恐狼','无'])
+
+    def test_source_order_prefers_people_written_taiwan_chinese(self):
+        from mc_zh_tw_translator.desktop_jobs import UserGlossary
+        (self.lang/'en_us.json').write_text(json.dumps({'demo.a':'Settings','demo.b':'Quality','demo.c':'Mode','demo.d':'Hello %s'}),encoding='utf-8')
+        (self.lang/'zh_tw.json').write_text(json.dumps({'demo.a':'設定值','demo.b':'品質'}),encoding='utf-8')
+        (self.lang/'zh_cn.json').write_text(json.dumps({'demo.a':'设置','demo.b':'质量','demo.c':'模式','demo.d':'你好 %s'}),encoding='utf-8')
+        tw={'demo':{'demo.a':'設定','demo.c':'舊模式'},
+            '__pairs__':{'demo':{'demo.a':[('設定','Settings')],'demo.c':[('舊模式','Old Mode')]}}}
+        UserGlossary(self.home).set('Hello %s','哈囉 %s')
+        result=plan(self.instance,self.home,lambda *_:None,references=([tw,{}],{'sources':['tw','cn']}))
+        rows={r['key']:r for r in result['rows']}
+        # Reference zh_tw whose English matches this version beats the mod's own zh_tw.
+        self.assertEqual((rows['demo.a']['origin'],rows['demo.a']['proposed']),('reference_pack_or_cfpa','設定'))
+        self.assertNotIn('demo.b',rows)  # the mod's own correct zh_tw stays as it is
+        # Reference zh_tw written for different English only comes after the converted zh_cn.
+        self.assertEqual((rows['demo.c']['origin'],rows['demo.c']['proposed']),('same_source_zh_cn','模式'))
+        self.assertEqual(rows['demo.d']['origin'],'user_glossary')  # the user's own decision comes first
 
     def test_source_order_uses_memory_and_rejects_simplified_zh_tw(self):
         from mc_zh_tw_translator.desktop_jobs import TranslationMemory

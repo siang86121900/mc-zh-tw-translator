@@ -20,7 +20,7 @@ from pathlib import Path
 from full_translation_audit import Audit, parse, placeholders, at
 from opencc import OpenCC
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy
-from .desktop_references import refresh
+from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
 from .verifier import VerifyResult, check_java_zipfs
 
@@ -30,7 +30,7 @@ SOURCE_NAMES = {'same_source_zh_cn':'同檔簡中', 'instance_zh_cn':'模組包�
                 'ai_translation':'AI 補譯', 'manual':'使用者修訂', 'untranslated':'缺少來源',
                 'keep_original':'無需翻譯','instance_resourcepack':'已安裝資源包',
                 'not_installed':'未安裝模組（略過）','user_glossary':'自訂譯名','not_display':'程式內部字串',
-                'cross_version_reference':'跨版本參考','official_vanilla':'官方原版譯名'}
+                'cross_version_reference':'跨版本參考','official_vanilla':'官方原版譯名','stale_reference':'參考庫（版本不同）'}
 HAN = re.compile('[\u3400-\u9fff]')
 FORMAT = re.compile(r'§[0-9a-fk-or]|\$\([^)]+\)|\{[\w.]+\}', re.I)
 TRANSLATION_PACK = re.compile(r'(?:instance!/)?(?:config/openloader/|resourcepacks/)')
@@ -204,9 +204,18 @@ def internal_reason(text):
 # Keys that name a thing (item, block, mob...); a name should read the same in every mod, while UI words
 # such as "None" or "Default" legitimately differ by context and are left alone.
 NAME_KEY = re.compile(r'^(?:item|block|entity|effect|enchantment|biome|fluid|mob_effect)\.')
-# Trust order when two sources name the same thing differently (most authoritative first).
-ORIGIN_TRUST = ['official_vanilla','user_glossary','translation_memory','manual','existing_zh_tw','reference_pack_or_cfpa',
-                'instance_resourcepack','instance_zh_cn','same_source_zh_cn','cross_version_reference','glossary','ai_translation']
+# Trust order when two sources name the same thing differently; mirrors the source order in plan().
+ORIGIN_TRUST = ['manual','translation_memory','user_glossary','reference_human','instance_resourcepack','existing_zh_tw',
+                'official_vanilla','instance_zh_cn','same_source_zh_cn','reference_converted','stale_reference',
+                'cross_version_reference','glossary','ai_translation']
+
+
+def trust_rank(row):
+    origin=row.get('origin')
+    if origin=='reference_pack_or_cfpa':
+        # People-written zh_tw packs rank above CFPA, which is converted from simplified Chinese.
+        origin='reference_human' if row.get('evidence') in ('reference:tw','reference:para') else 'reference_converted'
+    return ORIGIN_TRUST.index(origin) if origin in ORIGIN_TRUST else len(ORIGIN_TRUST)
 
 
 def conflicting_terms(session, limit=500):
@@ -223,7 +232,7 @@ def conflicting_terms(session, limit=500):
         # (wall_torch vs torch, umvuthana vs umvuthana_follower) is a different thing that may be named apart on purpose.
         key=(original.strip().casefold(),r['key'].split('.',2)[-1]);zh=r['proposed'].strip();display.setdefault(key,original.strip())
         variants[key][zh]+=1
-        rank=ORIGIN_TRUST.index(r['origin']) if r['origin'] in ORIGIN_TRUST else len(ORIGIN_TRUST)
+        rank=trust_rank(r)
         trust[key][zh]=min(rank,trust[key].get(zh,rank))
     rows=[]
     for key,counter in variants.items():
@@ -460,13 +469,14 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             instance_cn.setdefault((m[1],r['key']),[]).append((r['source'],r['zh_cn']))
     # Translation resource packs installed in this modpack (often community work) come before
     # online references; zh_tw is used as-is and zh_cn is converted to Taiwan wording.
-    instance_rp={}
+    instance_rp_tw={};instance_rp_cn={}
     for r in audit.rows:
         m=re.search(r'assets/([^/]+)/lang/',r['source'])
         if r['kind']!='language' or not m or not re.match(r'(?:instance!/)?resourcepacks/',r['source']):continue
-        for value in (r['current'],cc.convert(r['zh_cn']) if isinstance(r['zh_cn'],str) else None):
-            if isinstance(value,str) and HAN.search(value):
-                instance_rp.setdefault((m[1],r['key']),[]).append((r['source'],value));break
+        if isinstance(r['current'],str) and HAN.search(r['current']):
+            instance_rp_tw.setdefault((m[1],r['key']),[]).append((r['source'],r['current']))
+        if isinstance(r['zh_cn'],str) and HAN.search(r['zh_cn']):
+            instance_rp_cn.setdefault((m[1],r['key']),[]).append((r['source'],r['zh_cn']))
     counts=collections.Counter()
     memory=TranslationMemory(home);user_terms=UserGlossary(home)
     ref_kinds=(result.get('references') or {}).get('sources') or ['tw','cn']
@@ -505,23 +515,35 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if installed is not None and ref and ref not in (ns,'minecraft') and ref not in installed:
             # e.g. Traveler's Titles names for biomes of mods that are not installed.
             counts['not_installed']+=1;continue
-        # Source order (AGENTS.md): correct zh_tw → same-file zh_cn → pack/CFPA references →
-        # confirmed translation memory → glossary; AI only runs later for what is still missing.
+        # Source order: most accurate Taiwan wording first (see README 翻譯邏輯 / AGENTS.md).
+        # Decisions the user made → people-written zh_tw (reference packs whose English matches this
+        # version, the modpack's zh_tw packs, the mod's own zh_tw) → Mojang's official names →
+        # converted zh_cn (modpack, same mod, CFPA) → unverified candidates → glossary → AI later.
         existing=r['current'] if isinstance(r['current'],str) and S2T.convert(r['current'])==r['current'] else None
-        options=[('existing_zh_tw',existing,r['source']),('same_source_zh_cn',r['zh_cn'],r['source'])]
-        options += [('instance_zh_cn',v,p) for p,v in instance_cn.get((ns,r['key']),[]) if p!=r['source']]
-        options += [('instance_resourcepack',v,p) for p,v in instance_rp.get((ns,r['key']),[]) if p!=r['source']]
+        human_tw=[];converted_cn=[];stale_tw=[];cross=[]
         if ns:
             for n,ref in enumerate(refs):
                 kind=ref_kinds[n] if n<len(ref_kinds) else 'reference'
-                if kind=='vanilla':continue  # official names are used at the glossary step below
-                origin='cross_version_reference' if kind.startswith('cn-') else 'reference_pack_or_cfpa'
-                options.append((origin,ref.get(ns,{}).get(r['key']),'reference:'+kind))
-        options.append(('translation_memory',memory.lookup(ns,r['key'],original),'translation_memory.json'))
-        options.append(('user_glossary',user_terms.lookup(original),'user_glossary.json'))
+                if kind=='vanilla':continue
+                if kind in HUMAN_TW_KINDS:
+                    value,matches=pick_reference(ref,ns,r['key'],r['en'])
+                    (stale_tw if matches is False else human_tw).append(('reference_pack_or_cfpa',value,'reference:'+kind))
+                elif kind.startswith('cn-'):cross.append(('cross_version_reference',ref.get(ns,{}).get(r['key']),'reference:'+kind))
+                else:converted_cn.append(('reference_pack_or_cfpa',ref.get(ns,{}).get(r['key']),'reference:'+kind))
+        options=[('translation_memory',memory.lookup(ns,r['key'],original),'translation_memory.json'),
+                 ('user_glossary',user_terms.lookup(original),'user_glossary.json')]
+        options+=human_tw
+        options+=[('instance_resourcepack',v,p) for p,v in instance_rp_tw.get((ns,r['key']),[]) if p!=r['source']]
+        options.append(('existing_zh_tw',existing,r['source']))
         if vanilla:
             options.append(('official_vanilla',vanilla['minecraft'].get(r['key']) if ns=='minecraft' else None,'Minecraft 官方 zh_tw'))
             options.append(('official_vanilla',vanilla['__terms__'].get(original.strip().casefold()),'Minecraft 官方 zh_tw 譯名'))
+        options+=[('instance_zh_cn',v,p) for p,v in instance_cn.get((ns,r['key']),[]) if p!=r['source']]
+        options+=[('instance_zh_cn',v,p) for p,v in instance_rp_cn.get((ns,r['key']),[]) if p!=r['source']]
+        options.append(('same_source_zh_cn',r['zh_cn'],r['source']))
+        options+=converted_cn
+        options+=[('stale_reference',v,s) for _,v,s in stale_tw]
+        options+=cross
         options.append(('glossary',MINECRAFT_GLOSSARY.get(original.lower()),'MINECRAFT_GLOSSARY'))
         if existing is None and isinstance(r['current'],str):
             # A zh_tw that still contains simplified characters is only a last-resort candidate.
@@ -532,9 +554,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 value=cc.convert(candidate) if name in ('same_source_zh_cn','instance_zh_cn') else candidate
                 if not validate_text(original,value):continue
                 origin=name;evidence=source
-                issue=('' if name in ('existing_zh_tw','translation_memory','user_glossary','official_vanilla')
+                issue=('' if name in ('existing_zh_tw','translation_memory','user_glossary','official_vanilla','instance_resourcepack')
+                       or (name=='reference_pack_or_cfpa' and source in ('reference:tw','reference:para'))
+                       else '參考譯文對應的英文與目前版本不同，需核對' if name=='stale_reference'
                        else '跨版本參考：來自其他 Minecraft 版本的 CFPA，需核對版本差異' if name=='cross_version_reference'
-                       else '需校對台灣用語、版本語意與名稱')
+                       else '簡中轉繁：需校對台灣用語、版本語意與名稱')
                 break
         if origin=='existing_zh_tw' and existing is None:
             issue='既有繁中含簡體字，已轉為台灣繁體，請核對'

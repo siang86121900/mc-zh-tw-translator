@@ -56,11 +56,38 @@ def build_scoped(raw: bytes, locale: str, progress=lambda _:None, cancelled=lamb
                     continue
                 result.setdefault(namespace, {}).update({k: cc.convert(v) if locale=='zh_cn' else v
                                                         for k,v in values.items() if isinstance(v,str)})
+                if locale == 'zh_tw':
+                    # Keep every version folder's (zh_tw, English) pair so matching can pick the translation
+                    # whose English equals the installed mod's text instead of whichever folder sorts last.
+                    sibling = name[:-len('zh_tw.json')]+'en_us.json'
+                    english = json.loads(z.read(sibling).decode('utf-8-sig')) if sibling in names else {}
+                    pairs = result.setdefault('__pairs__', {}).setdefault(namespace, {})
+                    for k, v in values.items():
+                        if isinstance(v, str):
+                            pairs.setdefault(k, []).append((v, english.get(k) if isinstance(english, dict) else None))
             except (ValueError, UnicodeError):
                 continue
-    if not result:
+    if not [k for k in result if not k.startswith('__')]:
         raise ValueError('參考庫中找不到有效語系資料。')
     return result
+
+
+def pick_reference(ref: dict, namespace: str, key: str, english):
+    """(translation, English matches current version) for one key of a zh_tw reference pack.
+
+    A version whose English equals the installed text wins; otherwise the newest folder is returned
+    as an unverified candidate. Packs without English (CFPA zh_cn) report None for the match flag.
+    """
+    pairs = ref.get('__pairs__', {}).get(namespace, {}).get(key)
+    if not pairs:
+        value = ref.get(namespace, {}).get(key)
+        return value, None
+    if isinstance(english, str):
+        for zh, en in pairs:
+            if isinstance(en, str) and en.strip() == english.strip():
+                return zh, True
+        return pairs[-1][0], False
+    return pairs[-1][0], None
 
 
 def refresh(instance: Path, cache: Path, progress, cancelled) -> tuple[list[dict], dict]:
@@ -155,6 +182,10 @@ def refresh(instance: Path, cache: Path, progress, cancelled) -> tuple[list[dict
                      para_commit=para_commit, cross_version_assets=[x['name'] for x in older],
                      vanilla=vanilla.get('__source__') if vanilla else None, sources=sources, notes=notes,
                      sha256=hashes, entries=[sum(len(v) for k,v in x.items() if not k.startswith('__')) for x in dbs])
+
+
+# Reference packs that are already Traditional Chinese written by people (vs. converted zh_cn).
+HUMAN_TW_KINDS = ('tw', 'para')
 
 
 def launcher_roots() -> list[Path]:

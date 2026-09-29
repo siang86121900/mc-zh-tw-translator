@@ -19,13 +19,23 @@
 
 ## 翻譯來源與品質
 - 每次翻譯前更新參考庫：`TeamKugimiya/ModsTranslationPack` 最新 main 對應 `data/ref_pack.json`；`CFPAOrg/Minecraft-Mod-Language-Package` 最新 autobuild 資產對應 `data/cfpa_zh_cn.zip`／`cfpa_cache.json`。重建 scoped／合併快取，記錄 commit、資產時間或雜湊及實際條目數。固定 tag、日期或舊條目數不能證明最新；無法確認時如實回報。
-- 每個 key 必須依序查找，禁止跳過前一層：
-  1. 同一檔案、同一模組版本、同一 namespace 的可信 zh_tw；
-  2. 同一檔案、同一模組版本、同一 namespace 的 zh_cn，先以 `s2twp` 轉繁，再依台灣術語與上下文人工校正；
-  3. 最新繁中參考庫／同 namespace CFPA；
-  4. 已人工確認的翻譯記憶 `data/approved_translation_memory.json`；
-  5. Minecraft 術語表；
-  6. 上述來源都沒有時，由目前對話中的 AI 根據同模組語境、英文語意與術語補譯，標記 `ai_translation`，再逐項校對。低信心的合理譯法可在通過內容與格式檢查後套用，並在最終報告指出疑點；真正無法辨識的文字、非顯示字串或機器識別值不得硬翻，須記錄保留原因。
+- 每個 key 以「最準確的台灣用詞」為原則依序查找，找到就停，禁止跳過前一層（桌面程式 `desktop_jobs.plan` 依此實作）：
+  1. 使用者已確認的翻譯記憶（同模組、同 key、同原文；代理作業另可用 `data/approved_translation_memory.json`）；
+  2. 使用者在「譯名與用詞」固定的自訂譯名（整句完全相同才套用）；
+  3. 最新 ModsTranslationPack 繁中，且其英文與目前模組版本相同；
+  4. 最新 ParaTranslationPack 繁中，且其英文與目前模組版本相同；
+  5. 同一 instance 已安裝的繁中資源包（zh_tw）；
+  6. 同一檔案、同一模組版本、同一 namespace 的可信 zh_tw（含簡體字者不算）；
+  7. Minecraft 官方 zh_tw（`minecraft` namespace 同 key，或原版物品、方塊、生物等整句名稱）；
+  8. 同一 instance 的 KubeJS／OpenLoader／資源包 zh_cn，以 `s2twp` 轉繁；
+  9. 同一檔案、同一模組版本、同一 namespace 的 zh_cn，以 `s2twp` 轉繁；
+  10. 最新同版本 CFPA，以 `s2twp` 轉繁；
+  11. 英文與目前版本不同的繁中參考庫譯文（標示版本不同、需核對）；
+  12. 其他 Minecraft 版本的 CFPA（標示跨版本參考、需核對）；
+  13. Minecraft 術語表；
+  14. 含簡體字的既有 zh_tw，轉繁後標示待核對；
+  15. 上述來源都沒有時，先判定是否無需翻譯；其餘由目前對話中的 AI 根據同模組語境、英文語意與術語補譯，標記 `ai_translation`，再逐項校對。低信心的合理譯法可在通過內容與格式檢查後套用，並在最終報告指出疑點；真正無法辨識的文字、非顯示字串或機器識別值不得硬翻，須記錄保留原因。
+  人工撰寫的繁中優先於簡中轉繁；簡中轉繁的結果仍須依台灣術語與上下文校正。
   同一 instance 的 KubeJS／資源包／OpenLoader zh_cn 必須納入整包流程的來源鏈；核對模組、namespace、key，不能混用不同模組的通用 key。每次翻譯報告必須記錄各來源命中數，API 數量必須為 0。
 - 衝突依版本、來源距離與英文語意判斷。既有 zh_tw 若仍為英文、簡體或錯譯，不算可用翻譯；不確定或機翻不自然時重查簡中。
 - 簡中轉繁與參考庫不是準確保證，同樣要校對版本差異、台灣用語、名稱一致性與語意。來源類別與信心／校對狀態分開記錄；AI 自行產生或自行校對的內容不能冒稱人工譯者確認，也不能改掉其 AI 來源標記。

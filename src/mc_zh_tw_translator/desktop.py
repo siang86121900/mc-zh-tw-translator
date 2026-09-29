@@ -502,7 +502,7 @@ class MainWindow(QMainWindow):
         f,b=card();head=QHBoxLayout();title=label('用詞不一致（目前報告）','section');title.setWordWrap(False);head.addWidget(title);head.addStretch()
         self.conflict_count=label('','pill');head.addWidget(self.conflict_count);b.addLayout(head)
         b.addWidget(label('只列物品、方塊、生物、效果等「名稱」在不同模組翻得不一樣的情況；按鍵、選單等通用詞在不同情境本來就可能不同，不會列出。'
-                          '已依來源可信度預先選好建議譯法（官方譯名 → 你的譯名 → 翻譯記憶 → 既有繁中 → 參考庫 → 模組簡中），可直接全部採用，或個別改選。','sub'))
+                          '已依翻譯來源的同一套順序預先選好建議譯法（你確認過的 → 台灣翻譯組人工繁中 → 模組繁中 → 官方譯名 → 簡中轉繁），可直接全部採用，或個別改選。','sub'))
         self.adopt_all_btn=button('全部採用建議',self.adopt_all_terms,True);b.addWidget(self.adopt_all_btn,alignment=Qt.AlignLeft)
         self.conflicts=QTableWidget(0,3);self.conflicts.setHorizontalHeaderLabels(['英文','目前的譯法（次數）','統一為'])
         self.conflicts.verticalHeader().hide();self.conflicts.setShowGrid(False);self.conflicts.setEditTriggers(QAbstractItemView.NoEditTriggers)
