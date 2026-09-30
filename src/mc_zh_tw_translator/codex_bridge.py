@@ -165,7 +165,7 @@ def recommended_model(models, quotas=None):
     """
     def usable(m):
         q = (quotas or {}).get(str(m['model']).casefold())
-        return not q or q['remaining'] > 10
+        return not q or q['remaining'] > QUOTA_FLOOR
     ready = [m for m in models if usable(m)]
     for older in (False, True):
         for m in ready:
@@ -174,6 +174,9 @@ def recommended_model(models, quotas=None):
                 return m, '官方描述為快速、省額度的模型；遊戲文字多是短句，通常就夠用，也比高階模型省額度。'
     default = next((m for m in ready if m.get('isDefault')), ready[0] if ready else None)
     return default, ('官方說明裡沒有標示為快速、省額度的可用模型，建議先用官方預設模型。' if default else '')
+
+
+QUOTA_FLOOR = 5  # % left in a quota window at or below which AI stops and keeps its progress
 
 
 def quota_guard(account, limits, model=None):
@@ -208,10 +211,10 @@ def quota_guard(account, limits, model=None):
             used = window.get('usedPercent')
             if type(used) not in (int, float) or not math.isfinite(used) or not 0 <= used <= 100:
                 raise BridgeError('額度資料不完整，暫不補翻。')
-            if used >= 90:
+            if used >= 100 - QUOTA_FLOOR:
                 if bucket.get('normalModelSlug'):
-                    raise BridgeError(f"「{bucket['normalModelSlug']}」模型的專屬額度剩 10% 或以下，請在「AI 帳號與模型」改選其他模型。")
-                raise BridgeError('原方案額度剩餘 10% 或以下，已保留進度並提前停止。')
+                    raise BridgeError(f"「{bucket['normalModelSlug']}」模型的專屬額度剩 {QUOTA_FLOOR}% 或以下，請在「AI 帳號與模型」改選其他模型。")
+                raise BridgeError(f'原方案額度剩餘 {QUOTA_FLOOR}% 或以下，已保留進度並提前停止。')
             windows.append(dict(remaining=100-used, minutes=window.get('windowDurationMins'), resets=window.get('resetsAt')))
     return windows
 
@@ -482,7 +485,7 @@ def usage_estimate(start, now, completed, left):
     if used <= 0: return f"；5 小時額度剩 {current['remaining']:g}%"
     need = used / completed * left
     return (f"；5 小時額度剩 {current['remaining']:g}%，照目前用量剩下約需 {need:.0f}%"
-            + ('，可能不夠，會在剩 10% 時暫停' if need > current['remaining'] - 10 else ''))
+            + (f'，可能不夠，會在剩 {QUOTA_FLOOR}% 時暫停' if need > current['remaining'] - QUOTA_FLOOR else ''))
 
 
 def answers_by_id(response, batch):
@@ -520,7 +523,7 @@ def doubt_rows(session):
             and not r.get('ai_review') and not str(r.get('review_method') or '').startswith('user_confirmed')]
 
 
-PARALLEL = 2         # batches being written at the same time; each one more can overshoot the 10% floor by one more batch
+PARALLEL = 2         # batches being written at the same time; each one more can overshoot QUOTA_FLOOR by one more batch
 PARALLEL_FLOOR = 20  # % left in any quota window at or below which batches go one at a time
 
 

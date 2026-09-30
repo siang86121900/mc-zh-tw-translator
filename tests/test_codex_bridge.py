@@ -41,8 +41,11 @@ class CodexBridgeTests(unittest.TestCase):
     def test_no_extra_credits_or_unknown_quota(self):
         account=dict(type='chatgpt',planType='plus')
         self.assertEqual(ai.quota_guard(account,limits())[0]['remaining'],80)
-        for value in ({},limits(90),limits(100),limits(20,True)):
+        for value in ({},limits(95),limits(100),limits(20,True)):
             with self.assertRaises(ai.BridgeError):ai.quota_guard(account,value)
+        # 10% left is still enough for a translation run; it stops at 5%.
+        self.assertEqual(ai.quota_guard(account,limits(90))[0]['remaining'],10)
+        self.assertEqual(ai.quota_guard(account,limits(94.5))[0]['remaining'],5.5)
         self.assertTrue(ai.quota_guard(account, {'rateLimits': {'primary': {'usedPercent': 20}}}))
         for used in (None,True,-1,float('nan'),'0'):
             with self.assertRaises(ai.BridgeError):ai.quota_guard(account,limits(used))
@@ -69,7 +72,7 @@ class CodexBridgeTests(unittest.TestCase):
         self.assertEqual(ai.recommended_model(models)[0]['model'],'fast')  # current before older, whatever the order
         used_up={'fast':dict(remaining=0)}
         self.assertEqual(ai.recommended_model(models,used_up)[0]['model'],'old-fast')  # its own quota is gone
-        self.assertEqual(ai.recommended_model(models,{'fast':dict(remaining=0),'old-fast':dict(remaining=10)})[0]['model'],'top')
+        self.assertEqual(ai.recommended_model(models,{'fast':dict(remaining=0),'old-fast':dict(remaining=5)})[0]['model'],'top')
         plain=[dict(model='a'),dict(model='b',isDefault=True)]
         model,reason=ai.recommended_model(plain)
         self.assertEqual(model['model'],'b');self.assertIn('官方預設',reason)  # nothing described as fast
@@ -219,12 +222,12 @@ class SeveralBatchesAtOnceTests(unittest.TestCase):
                    'thread-2':[dict(method='account/rateLimits/updated',params=limits(95))]})
         first,second=wire.translate_many(REQUESTS,MODEL)
         self.assertEqual(first,dict(translations=FIRST))
-        self.assertIsInstance(second,ai.BridgeError);self.assertIn('10%',str(second))
+        self.assertIsInstance(second,ai.BridgeError);self.assertIn(f'{ai.QUOTA_FLOOR}%',str(second))
         stopped=[v['params'] for v in wire.sent if v.get('method')=='turn/interrupt']
         self.assertEqual(stopped,[dict(threadId='thread-2',turnId='turn-thread-2')])
 
     def test_quota_already_low_sends_nothing(self):
-        wire=Wire({},used=90)
+        wire=Wire({},used=95)
         with self.assertRaises(ai.BridgeError):wire.translate_many(REQUESTS,MODEL)
         self.assertEqual(wire.count('thread/start'),0)
 
