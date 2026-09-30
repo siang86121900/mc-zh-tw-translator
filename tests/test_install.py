@@ -117,12 +117,12 @@ class AddedModTests(unittest.TestCase):
         z,manifest=patches.read_patch(self.patch)
         with z:names=z.namelist()
         mod,=manifest['added_mods']
-        # the hash is the one of the file before it was translated: that is what CurseForge serves
+        # the mod file itself is never changed by translating, so its hash is the one CurseForge serves
         self.assertEqual((mod['fileName'],mod['projectID'],mod['fileID'],mod['size'],mod['sha256'],mod['url']),
                          ('imblocker-5.jar',2,2005,len(self.jar),patches.sha256(self.jar),self.url))
-        self.assertNotEqual(patches.file_hash(self.translator/'mods/imblocker-5.jar'),mod['sha256'])
+        self.assertEqual(patches.file_hash(self.translator/'mods/imblocker-5.jar'),mod['sha256'])
         self.assertFalse(any(n.endswith(('.jar','.class')) for n in names))
-        self.assertTrue(any(n.startswith('payload/mods/imblocker-5.jar/assets/imblocker/lang/zh_tw') for n in names))
+        self.assertTrue(any(n.startswith('payload/resourcepacks/MCTranslator-zh_tw.zip/assets/imblocker/lang/zh_tw') for n in names))
         left,=self.exported['left_out_mods']
         self.assertEqual(left['name'],'handmade.jar');self.assertIn('不是從 CurseForge 安裝',left['reason'])
 
@@ -131,20 +131,20 @@ class AddedModTests(unittest.TestCase):
         result=self.install(server,notify=lambda *a:seen.append(a))
         self.assertEqual(server.asked,[self.url])
         self.assertEqual((result['mods']['installed'],result['mods']['skipped']),(['imblocker-5.jar'],[]))
-        self.assertIn('mods/imblocker-5.jar',result['applied']);self.assertEqual(result['skipped'],[])
-        with zipfile.ZipFile(self.friend/'mods/imblocker-5.jar') as z:
+        self.assertIn('resourcepacks/MCTranslator-zh_tw.zip',result['applied']);self.assertEqual(result['skipped'],[])
+        with zipfile.ZipFile(self.friend/'resourcepacks/MCTranslator-zh_tw.zip') as z:
             self.assertEqual(json.loads(z.read('assets/imblocker/lang/zh_tw.json'))['imblocker.a'],'輸入法')
-            self.assertEqual(z.read('imblocker/Main.class'),b'\xca\xfe\xba\xbe')
+        self.assertEqual((self.friend/'mods/imblocker-5.jar').read_bytes(),self.jar)  # the downloaded mod stays as CurseForge serves it
         self.assertTrue(any(title.startswith('下載加裝的模組') for _,title,_ in seen))
         # a second install neither downloads nor writes again
         again=self.install(Served({}))
         self.assertEqual((again['mods']['installed'],again['mods']['present'],again['applied']),([],['imblocker-5.jar'],[]))
-        # both writes can be undone, newest first, and the added mod is gone afterwards
+        # both writes can be undone; the translation never touches the added mod, so either can go first
         from mc_zh_tw_translator.desktop_jobs import restore_backup
         mods,translation=sorted(Path(b) for b in (result['mods']['backup'],result['backup']))
-        with self.assertRaisesRegex(ValueError,'請先還原較新的那一批'):restore_backup(mods,self.friend)
-        restore_backup(translation,self.friend);restore_backup(mods,self.friend)
+        restore_backup(mods,self.friend);restore_backup(translation,self.friend)
         self.assertFalse((self.friend/'mods/imblocker-5.jar').exists())
+        self.assertFalse((self.friend/'resourcepacks/MCTranslator-zh_tw.zip').exists())
         self.assertEqual((self.friend/'mods/real.jar').read_bytes(),untouched)
 
     def test_another_file_than_the_translators_is_not_installed(self):
@@ -311,7 +311,7 @@ class InstallTests(unittest.TestCase):
             result=patches.apply_patch(self.friend,self.patch,self.home,set_language=True)
         self.assertEqual((len(result['applied']),result['skipped'],result['language_set']),(2,[],True))
         self.assertEqual(json.loads((self.friend/'kubejs/assets/demo/lang/zh_tw.json').read_text(encoding='utf-8'))['demo.hello'],'你好 %s')
-        self.assertEqual((self.friend/'options.txt').read_text(encoding='utf-8'),'lang:zh_tw\n')
+        self.assertEqual((self.friend/'options.txt').read_text(encoding='utf-8'),'lang:zh_tw\nresourcePacks:["vanilla","file/MCTranslator-zh_tw.zip"]\n')
 
     def test_half_downloaded_mod_is_never_taken_for_ready(self):
         (self.friend/'mods').mkdir(parents=True);shutil.copytree(self.original/'kubejs',self.friend/'kubejs')

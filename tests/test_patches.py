@@ -51,27 +51,30 @@ class PatchTests(unittest.TestCase):
         with zipfile.ZipFile(out['path']) as z:
             names=z.namelist();manifest=json.loads(z.read('manifest.json'))
         self.assertEqual(manifest['modpack']['projectID'],123)
-        self.assertIn('payload/mods/real.jar/assets/real/lang/zh_tw.json',names)
+        self.assertIn('payload/resourcepacks/MCTranslator-zh_tw.zip/assets/real/lang/zh_tw.json',names)
         self.assertFalse(any(n.endswith('.class') or 'options.txt' in n for n in names))
         self.assertIn('payload/kubejs/assets/demo/lang/zh_tw.json',names)
-        jar=next(f for f in manifest['files'] if f['file']=='mods/real.jar')
-        self.assertEqual(list(jar['entries']),['assets/real/lang/zh_tw.json'])
+        self.assertFalse(any(f['file'].startswith('mods/') for f in manifest['files']))  # mods are never changed or carried
+        pack=next(f for f in manifest['files'] if f['file']=='resourcepacks/MCTranslator-zh_tw.zip')
+        self.assertEqual(list(pack['entries']),['assets/real/lang/zh_tw.json'])
+        self.assertEqual(list(pack['requires']['assets/real/lang/zh_tw.json']),['mods/real.jar'])  # tied to the mod version
 
     def test_friend_applies_patch_and_can_restore(self,_):
         self.translate()
         out=patches.export_patch(self.translator,self.home)
         friend_home=Path(self.temp.name)/'friend-app'
         result=patches.apply_patch(self.friend,Path(out['path']),friend_home,set_language=True)
-        self.assertEqual(sorted(result['applied']),['kubejs/assets/demo/lang/zh_tw.json','mods/real.jar'])
-        with zipfile.ZipFile(self.friend/'mods/real.jar') as z:
+        self.assertEqual(sorted(result['applied']),['kubejs/assets/demo/lang/zh_tw.json','resourcepacks/MCTranslator-zh_tw.zip'])
+        self.assertEqual((self.friend/'mods/real.jar').read_bytes(),self.friend_jar)  # the friend's mod stays the official file
+        with zipfile.ZipFile(self.friend/'resourcepacks/MCTranslator-zh_tw.zip') as z:
             self.assertEqual(json.loads(z.read('assets/real/lang/zh_tw.json'))['real.a'],'真實')
-            self.assertEqual(z.read('real/Main.class'),b'\xca\xfe\xba\xbe')
-            self.assertNotIn('META-INF/CERT.SF',z.namelist())
-        self.assertIn('lang:zh_tw',(self.friend/'options.txt').read_text(encoding='utf-8'))
+        options=(self.friend/'options.txt').read_text(encoding='utf-8')
+        self.assertIn('lang:zh_tw',options);self.assertIn('file/MCTranslator-zh_tw.zip',options)
         again=patches.apply_patch(self.friend,Path(out['path']),friend_home)
-        self.assertEqual((again['applied'],sorted(again['already'])),([],['kubejs/assets/demo/lang/zh_tw.json','mods/real.jar']))
+        self.assertEqual((again['applied'],sorted(again['already'])),([],['kubejs/assets/demo/lang/zh_tw.json','resourcepacks/MCTranslator-zh_tw.zip']))
         restore_backup(Path(result['backup']),self.friend)
         self.assertEqual((self.friend/'mods/real.jar').read_bytes(),self.friend_jar)
+        self.assertFalse((self.friend/'resourcepacks/MCTranslator-zh_tw.zip').exists())
         self.assertFalse((self.friend/'kubejs/assets/demo/lang/zh_tw.json').exists())
 
     def test_different_mod_version_is_skipped_not_overwritten(self,_):
@@ -81,7 +84,8 @@ class PatchTests(unittest.TestCase):
         changed=(self.friend/'mods/real.jar').read_bytes()
         result=patches.apply_patch(self.friend,Path(out['path']),Path(self.temp.name)/'friend-app')
         self.assertEqual(result['applied'],['kubejs/assets/demo/lang/zh_tw.json'])
-        self.assertEqual([s['file'] for s in result['skipped']],['mods/real.jar'])
+        self.assertEqual([s['file'] for s in result['skipped']],['mods/real.jar'])  # names the mod whose version differs
+        self.assertFalse((self.friend/'resourcepacks/MCTranslator-zh_tw.zip').exists())
         self.assertEqual((self.friend/'mods/real.jar').read_bytes(),changed)
 
     def test_renamed_mod_file_is_found_by_hash(self,_):
@@ -89,7 +93,7 @@ class PatchTests(unittest.TestCase):
         out=patches.export_patch(self.translator,self.home)
         (self.friend/'mods/real.jar').rename(self.friend/'mods/real-renamed.jar')
         result=patches.apply_patch(self.friend,Path(out['path']),Path(self.temp.name)/'friend-app')
-        self.assertIn('mods/real-renamed.jar',result['applied'])
+        self.assertIn('resourcepacks/MCTranslator-zh_tw.zip',result['applied'])
 
     def test_patch_with_code_or_traversal_is_rejected(self,_):
         bad=Path(self.temp.name)/'bad.zip'
@@ -99,6 +103,11 @@ class PatchTests(unittest.TestCase):
             with zipfile.ZipFile(bad,'w') as z:
                 z.writestr('manifest.json',json.dumps(dict(format=patches.PATCH_FORMAT,files=[item])));z.writestr(payload,'x')
             with self.assertRaises(ValueError):patches.read_patch(bad)
+
+    def test_only_the_zh_tw_quest_file_may_be_shared(self,_):
+        self.assertTrue(patches.allowed_file('config/ftbquests/quests/lang/zh_tw.snbt',False))
+        for other in ('config/ftbquests/quests/lang/en_us.snbt','config/ftbquests/quests/chapters/a.snbt','config/x/lang/zh_tw.snbt'):
+            self.assertFalse(patches.allowed_file(other,False),other)
 
     def test_export_skips_files_changed_after_apply(self,_):
         self.translate()
@@ -197,8 +206,9 @@ class PatchTests(unittest.TestCase):
         (lang/'zh_cn.json').write_text(json.dumps({'lib.pack':'整合包文字'}),encoding='utf-8')
         done=self.translate()
         self.assertEqual(done['status'],'installed')
-        merged=json.loads((lang/'zh_tw.json').read_text(encoding='utf-8'))
-        self.assertEqual((merged['lib.a'],merged['lib.pack']),('函式庫','整合包文字'))
+        self.assertEqual(json.loads((lang/'zh_tw.json').read_text(encoding='utf-8')),{'lib.pack':'整合包文字'})
+        with zipfile.ZipFile(self.translator/'resourcepacks/MCTranslator-zh_tw.zip') as z:  # the library's own text
+            self.assertEqual(json.loads(z.read('assets/lib/lang/zh_tw.json')),{'lib.a':'函式庫','lib.own':'自帶'})
 
     def test_modpack_update_after_translation_is_noticed(self,_):
         from mc_zh_tw_translator import desktop_jobs as jobs

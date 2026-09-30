@@ -11,6 +11,9 @@ from mc_zh_tw_translator.desktop_references import minecraft_version
 from mc_zh_tw_translator.updater import check_update, download_update, version_tuple
 
 
+OPTIONS = 'fov:0.0\nlang:en_us\nresourcePacks:["vanilla","fabric"]\n'
+
+
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -76,56 +79,84 @@ class WorkflowTests(unittest.TestCase):
             if r['supported'] and r['changed']:r['reviewed']=True
         return result
 
-    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
-    def test_pack_mode_writes_kubejs_without_touching_mods_and_restores(self,_):
+    def pack(self):
         import zipfile
+        with zipfile.ZipFile(self.instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:
+            return {n:z.read(n) for n in z.namelist()}
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_mod_text_goes_to_a_resource_pack_that_is_switched_on_and_restores(self,_):
         jar=self.make_mod();before=jar.read_bytes()
-        (self.instance/'mods/kubejs-neoforge.jar').write_bytes(b'')  # KubeJS present -> KubeJS assets
-        (self.instance/'options.txt').write_text('fov:0.0\nlang:en_us\n',encoding='utf-8')
-        result=self.confirm_all(self.make_plan());result.update(apply_mode='pack',set_language=True)
+        (self.instance/'options.txt').write_text(OPTIONS,encoding='utf-8')
+        result=self.confirm_all(self.make_plan());result.update(set_language=True)
         done=apply_session(result,self.home,lambda *_:None)
-        self.assertEqual(jar.read_bytes(),before)  # mod jar untouched
-        lang=json.loads((self.instance/'kubejs/assets/real/lang/zh_tw.json').read_text(encoding='utf-8'))
-        self.assertEqual(lang,{'real.a':'真實','real.b':'保留我'})  # mod's own zh_tw kept, new key added
-        self.assertEqual(json.loads((self.instance/'kubejs/assets/lib/lang/zh_tw.json').read_text(encoding='utf-8')),{'lib.a':'函式庫'})
-        self.assertIn('lang:zh_tw',(self.instance/'options.txt').read_text(encoding='utf-8'))
-        self.assertTrue(done['language_set'])
+        self.assertEqual(jar.read_bytes(),before)  # CurseForge would put a changed mod back; the mod stays untouched
+        files=self.pack()
+        self.assertEqual(json.loads(files['assets/real/lang/zh_tw.json']),{'real.a':'真實','real.b':'保留我'})  # mod's own zh_tw kept
+        self.assertEqual(json.loads(files['assets/lib/lang/zh_tw.json']),{'lib.a':'函式庫'})  # embedded library text too
+        self.assertEqual(json.loads(files['pack.mcmeta'])['pack']['pack_format'],34)
+        sources=json.loads(files['mctranslator.json'])['sources']
+        self.assertEqual(list(sources['assets/real/lang/zh_tw.json']),['mods/real.jar'])
+        options=(self.instance/'options.txt').read_text(encoding='utf-8')
+        self.assertIn('lang:zh_tw',options);self.assertIn('resourcePacks:["vanilla","fabric","file/MCTranslator-zh_tw.zip"]',options)
+        self.assertTrue(done['language_set']);self.assertEqual(done['resource_pack'],'resourcepacks/MCTranslator-zh_tw.zip')
         restore_backup(Path(done['backup']),self.instance)
-        self.assertFalse((self.instance/'kubejs/assets/real/lang/zh_tw.json').exists())
-        self.assertIn('lang:en_us',(self.instance/'options.txt').read_text(encoding='utf-8'))
+        self.assertFalse((self.instance/'resourcepacks/MCTranslator-zh_tw.zip').exists())
+        self.assertEqual((self.instance/'options.txt').read_text(encoding='utf-8'),OPTIONS)
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
-    def test_pack_mode_without_kubejs_builds_translation_mod(self,_):
-        import zipfile, shutil
-        shutil.rmtree(self.instance/'kubejs')
-        self.make_mod();result=self.confirm_all(self.make_plan());result['apply_mode']='pack'
+    def test_second_run_sees_the_resource_pack_and_writes_nothing(self,_):
+        self.make_mod()
+        apply_session(self.confirm_all(self.make_plan()),self.home,lambda *_:None)
+        again=self.make_plan()
+        rows=[r for r in again['rows'] if r['source'].startswith('mods/')]
+        self.assertTrue(rows)
+        self.assertFalse([r['key'] for r in rows if r['changed']])  # the pack's text is what the game shows
+        self.assertEqual({r['origin'] for r in rows if r['key']=='real.a'},{'same_source_zh_cn'})  # label kept
+        self.assertFalse(any(r['source'].startswith('resourcepacks/MCTranslator') for r in again['rows']))
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_a_second_copy_of_text_inside_a_mod_does_not_fight_the_main_copy(self,_):
+        import zipfile
+        (self.instance/'mods').mkdir()
+        with zipfile.ZipFile(self.instance/'mods/cook.jar','w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="cook"\n')
+            z.writestr('assets/cook/lang/en_us.json',json.dumps({'cook.a':'Sashimi','cook.b':'Tea'}))
+            z.writestr('assets/cook/lang/zh_cn.json',json.dumps({'cook.a':'刺身','cook.b':'茶'},ensure_ascii=False))
+            # kaleidoscope_cookery keeps an older copy of its text for other game versions
+            z.writestr('legacy_pack/assets/cook/lang/en_us.json',json.dumps({'cook.a':'Old sashimi','cook.c':'Old only'}))
+            z.writestr('legacy_pack/assets/cook/lang/zh_cn.json',json.dumps({'cook.a':'旧刺身','cook.c':'只有旧版'},ensure_ascii=False))
+        result=self.confirm_all(self.make_plan())
+        self.assertEqual(result['source_counts']['duplicate_copy'],1)
         apply_session(result,self.home,lambda *_:None)
-        with zipfile.ZipFile(self.instance/'mods/mctranslator_zh_tw.jar') as z:
-            toml=z.read('META-INF/neoforge.mods.toml').decode('utf-8')
-            self.assertIn('modLoader="lowcodefml"',toml);self.assertIn('modId="real"',toml);self.assertIn('ordering="AFTER"',toml)
-            self.assertEqual(json.loads(z.read('assets/real/lang/zh_tw.json'))['real.a'],'真實')
+        self.assertEqual(json.loads(self.pack()['assets/cook/lang/zh_tw.json']),{'cook.a':'刺身','cook.b':'茶','cook.c':'只有舊版'})
+        again=self.make_plan()
+        self.assertFalse([r['key'] for r in again['rows'] if r['source'].startswith('mods/') and r['changed']])
 
-    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
-    def test_jar_mode_skips_nested_rows_and_leaves_inner_jar(self,_):
-        import zipfile
-        self.make_mod();result=self.confirm_all(self.make_plan())
-        done=apply_session(result,self.home,lambda *_:None)
-        self.assertEqual(done['nested_skipped'],1)
-        with zipfile.ZipFile(self.instance/'mods/real.jar') as z:
-            self.assertIn('assets/real/lang/zh_tw.json',z.namelist())
-            self.assertNotIn('META-INF/jarjar/lib.jar!/assets/lib/lang/zh_tw.json',z.namelist())
+    def test_chinese_written_in_the_english_file_is_converted_at_once(self):
+        lang=self.instance/'config/ftbquests/quests/lang';lang.mkdir(parents=True)
+        (lang/'en_us.snbt').write_text('{\n\tquest.A.title: "食人魔萨满"\n}\n',encoding='utf-8')
+        row=next(r for r in self.make_plan()['rows'] if r['key']=='quest.A.title')
+        self.assertEqual((row['proposed'],row['origin']),('食人魔薩滿','same_source_zh_cn'))
 
-    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
-    def test_default_mode_writes_mods_and_sends_nested_text_to_kubejs(self,_):
-        import zipfile
-        self.make_mod();(self.instance/'mods/kubejs-neoforge.jar').write_bytes(b'')
+    def test_language_switch_alone_leaves_resource_packs_alone(self):
+        from mc_zh_tw_translator.desktop_jobs import options_record
         (self.instance/'options.txt').write_text('lang:en_us\n',encoding='utf-8')
-        done=apply_session(self.confirm_all(self.make_plan()),self.home,lambda *_:None)
-        with zipfile.ZipFile(self.instance/'mods/real.jar') as z:
-            self.assertEqual(json.loads(z.read('assets/real/lang/zh_tw.json'))['real.a'],'真實')  # ordinary text in the mod
-        self.assertEqual(json.loads((self.instance/'kubejs/assets/lib/lang/zh_tw.json').read_text(encoding='utf-8')),{'lib.a':'函式庫'})
-        self.assertEqual((done['nested_packed'],done['nested_skipped']),(1,0))
-        self.assertEqual((self.instance/'options.txt').read_text(encoding='utf-8'),'lang:en_us\n')  # language left to the player
+        staged=Path(self.temp.name)/'staged';staged.mkdir()
+        self.assertIsNone(options_record(self.instance,staged,False,False))
+        options_record(self.instance,staged,False,True)
+        self.assertEqual((staged/'options.txt').read_text(encoding='utf-8'),'lang:en_us\nresourcePacks:["vanilla","file/MCTranslator-zh_tw.zip"]\n')
+        (self.instance/'options.txt').write_text('resourcePacks:[broken\n',encoding='utf-8')
+        with self.assertRaises(ValueError):options_record(self.instance,staged,False,True)
+
+    def test_program_text_is_not_written_where_curseforge_puts_mods_back(self):
+        from mc_zh_tw_translator.desktop_jobs import write_route, HELD_CURSEFORGE, pack_format
+        cls=dict(source='mods/a.jar!/a/B.class',key='3',kind='class_display')
+        lang=dict(source='mods/a.jar!/assets/a/lang/en_us.json',key='k',kind='language')
+        loose=dict(source='instance!/kubejs/assets/a/lang/en_us.json',key='k',kind='language')
+        self.assertEqual([write_route(r,True) for r in (cls,lang,loose)],[HELD_CURSEFORGE,'pack','file'])
+        self.assertEqual(write_route(cls,False),'file')
+        self.assertEqual((pack_format('1.20.1'),pack_format('1.21.1'),pack_format('1.12.2'),pack_format('')),(15,34,3,34))
 
     def test_scan_cache_reuses_unchanged_archives(self):
         from mc_zh_tw_translator import desktop_jobs as jobs
@@ -253,8 +284,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(result['source_counts'].get('keep_original',0),2)
         rows['a.mode']['reviewed']=True
         apply_session(result,self.home,lambda *_:None)
-        with zipfile.ZipFile(mods/'lights.jar') as z:
-            self.assertEqual(json.loads(z.read('assets/lights/lang/zh_tw.json')),{'a.mode':'模式'})
+        # The resource pack holds a readable zh_tw above the mod's broken one; the mod itself is left as it was.
+        self.assertEqual(json.loads(self.pack()['assets/lights/lang/zh_tw.json']),{'a.mode':'模式'})
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_changed_source_refuses_apply(self,_):

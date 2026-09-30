@@ -156,7 +156,7 @@ class AiReviewTests(Base):
         FakeClient.translations={'Unknown thing':'未知的東西'}
         result=self.one_click()
         self.assertEqual((result['status'],result.get('apply_error'),len(self.batches())),('installed',None,2))
-        with zipfile.ZipFile(self.instance/'mods/real.jar') as z:
+        with zipfile.ZipFile(self.instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:  # mods are never rewritten
             written=json.loads(z.read('assets/real/patchouli_books/guide/zh_tw/entries/a.json'))
         self.assertEqual((written['name'],written['pages'][0]['text']),('阿爾法','未知的東西'))
 
@@ -317,27 +317,36 @@ class RejectedAnswerTests(Base):
     def supplement(self,session):
         return ai.supplement(session,self.home,'account-model',lambda *_:None,client_factory=FakeClient)
 
-    def test_line_count_is_sent_and_a_wrong_count_is_retried_once_with_the_reason(self):
+    def test_a_wrong_line_count_is_laid_out_again_without_asking_twice(self):
         instance=self.pack('換行包',{'desc':'Line one.\nLine two.\nLine three.'},{'z':'无关'})
-        answers=iter(['第一行。第二行。\n第三行。','第一行。\n第二行。\n第三行。'])
+        FakeClient.translations={'Line one.\nLine two.\nLine three.':'第一行。第二行。\n第三行。'}
+        session=self.supplement(self.make_plan(instance))
+        [(_,[sent])]=FakeClient.sent
+        self.assertEqual(sent['lines'],'2')
+        row=next(r for r in session['rows'] if r['key']=='desc')
+        self.assertEqual((row['origin'],row['proposed']),('ai_translation','第一行。\n第二行。\n第三行。'))
+        self.assertIn('自動調整換行',row['issue']);self.assertNotIn('ai_rejected',row)
+
+    def test_a_dropped_code_is_retried_once_with_the_reason_and_the_codes(self):
+        instance=self.pack('代碼包',{'desc':'Hold §6Shift§r to run.'},{'z':'无关'})
+        answers=iter(['按住 Shift 奔跑。','按住§6 Shift §r奔跑。'])
         class Retrying(FakeClient):
             def translate(self,payload,model,glossary=None):
                 self.sent.append(('translate',payload))
                 return dict(translations=[dict(id=r['id'],translation=next(answers),note='') for r in payload])
         session=ai.supplement(self.make_plan(instance),self.home,'account-model',lambda *_:None,client_factory=Retrying)
         first,second=[payload[0] for _,payload in FakeClient.sent]
-        self.assertEqual(first['lines'],'2');self.assertNotIn('previous',first)
-        self.assertEqual(second['previous'],'第一行。第二行。\n第三行。');self.assertIn('原文 2 個，上次 1 個',second['problem'])
+        self.assertEqual(first['codes'],['§6','§r']);self.assertNotIn('previous',first)
+        self.assertEqual(second['previous'],'按住 Shift 奔跑。')
         row=next(r for r in session['rows'] if r['key']=='desc')
-        self.assertEqual((row['origin'],row['proposed'],row['ai_retried']),('ai_translation','第一行。\n第二行。\n第三行。',True))
-        self.assertNotIn('ai_rejected',row)
+        self.assertEqual((row['origin'],row['proposed'],row['ai_retried']),('ai_translation','按住§6 Shift §r奔跑。',True))
 
     def test_second_rejection_is_final_and_the_answer_stays_visible(self):
-        instance=self.pack('換行包二',{'desc':'One.\nTwo.'},{'z':'无关'})
-        FakeClient.translations={'One.\nTwo.':'一。二。'}
+        instance=self.pack('代碼包二',{'desc':'Hold §6Shift§r.'},{'z':'无关'})
+        FakeClient.translations={'Hold §6Shift§r.':'按住 Shift。'}
         session=self.supplement(self.make_plan(instance));row=next(r for r in session['rows'] if r['key']=='desc')
         self.assertEqual(len(FakeClient.sent),2)
-        self.assertEqual((row['origin'],row['ai_rejected']['text'],row['ai_rejected']['reason']),('untranslated','一。二。','format'))
+        self.assertEqual((row['origin'],row['ai_rejected']['text'],row['ai_rejected']['reason']),('untranslated','按住 Shift。','format'))
         self.assertIn('已再試一次',row['issue'])
         self.assertEqual(ai.pending_rows(session),[]);self.assertEqual(len(ai.asked_rows(session)),1)
 
@@ -355,8 +364,12 @@ class RejectedAnswerTests(Base):
         instance=self.pack('專名包',{'a':'Totemus'},{'z':'无关'})
         session=self.supplement(self.make_plan(instance))  # the fake keeps English it has no entry for
         row=next(r for r in session['rows'] if r['key']=='a')
-        self.assertEqual(len(FakeClient.sent),1);self.assertIn('AI 保留原文',row['issue'])
+        self.assertEqual(len(FakeClient.sent),1)
+        # Listed under 無需翻譯 with AI's reason, not as missing text, and remembered for later runs.
+        self.assertEqual(row['origin'],'keep_original');self.assertIn('AI 判斷保留原文',row['evidence'])
         self.assertEqual(ai.pending_rows(session),[])
+        later=next(r for r in self.make_plan(instance)['rows'] if r['key']=='a')
+        self.assertEqual(later['origin'],'keep_original');self.assertIn('AI 判斷保留原文',later['evidence'])
 
     def test_added_or_reordered_numbers(self):
         self.assertTrue(jobs.added_numbers('Costs 5 gems','花費 5 或 10 顆寶石'))
@@ -451,8 +464,8 @@ class SameKeyTests(Base):
         def one_click():
             with patch('mc_zh_tw_translator.desktop_jobs.refresh',return_value=([tw,{}],{'sources':['tw','cn']})):
                 return full_translation(instance,self.home,None,lambda *_:None)
-        def in_mod():
-            with zipfile.ZipFile(instance/'mods/real.jar') as z:return json.loads(z.read('assets/real/lang/zh_tw.json'))['item.real.palm_log']
+        def in_mod():  # what the game shows for the mod: the translation resource pack
+            with zipfile.ZipFile(instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:return json.loads(z.read('assets/real/lang/zh_tw.json'))['item.real.palm_log']
         first=one_click()
         in_kubejs=lambda:json.loads((lang/'zh_tw.json').read_text(encoding='utf-8'))['item.real.palm_log']
         # the people-written name of another mod is the most trusted; the mod and the file that overrides it both get it
@@ -499,6 +512,100 @@ class SameKeyTests(Base):
               row('config/openloader/packs/x.zip!/assets/real/lang/en_us.json','另一個我的譯法','manual',review_method='user_confirmed_in_ui')]
         self.assertEqual(jobs.unify_same_key(rows),1)  # the unconfirmed row follows; what the user wrote is never replaced
         self.assertEqual([r['proposed'] for r in rows],['我的譯法','我的譯法','另一個我的譯法'])
+
+
+class QuestTests(Base):
+    """FTB Quests text lives in config/ftbquests/quests/lang/<locale>.snbt; the game shows zh_tw.snbt."""
+    EN = ('{\n\tchapter.A1.title: "&lFirst Steps"\n\tquest.B2.title: "Chop a tree"\n'
+          '\tquest.B2.quest_desc: [\n\t\t"Collect &6some wood&r."\n\t\t""\n\t\t"{image:demo:textures/a.png width:50 height:50}"\n'
+          '\t\t"{ \\"text\\": \\"Open the guide\\", \\"underlined\\": true, \\"clickEvent\\": { \\"action\\": \\"change_page\\", \\"value\\": \\"C3\\" } }"\n\t]\n'
+          '\tquest.D4.quest_desc: [\n\t\t"First line"\n\t\t"Second line"\n\t]\n}\n')
+    CN = ('{\n\tchapter.A1.title: "&l第一步"\n\tquest.B2.title: "砍一棵树"\n'
+          '\tquest.B2.quest_desc: [\n\t\t"收集&6一些木头&r。"\n\t\t""\n\t\t"{image:demo:textures/a.png width:50 height:50}"\n'
+          '\t\t"{ \\"text\\": \\"打开指南\\", \\"underlined\\": true, \\"clickEvent\\": { \\"action\\": \\"change_page\\", \\"value\\": \\"C3\\" } }"\n\t]\n'
+          '\tquest.D4.quest_desc: [\n\t\t"只有一行"\n\t]\n}\n')
+
+    def setUp(self):
+        super().setUp()
+        self.lang=self.instance/'config/ftbquests/quests/lang';self.lang.mkdir(parents=True)
+        (self.lang/'en_us.snbt').write_text(self.EN,encoding='utf-8')
+        (self.lang/'zh_cn.snbt').write_text(self.CN,encoding='utf-8')
+
+    def one_click(self):
+        supplement=ai.supplement
+        with patch.object(ai,'supplement',lambda *a,**k:supplement(*a,client_factory=FakeClient,**k)),\
+             patch('mc_zh_tw_translator.desktop_jobs.refresh',return_value=([{},{}],{'sources':['tw','cn']})):
+            return full_translation(self.instance,self.home,'account-model',lambda *_:None)
+
+    def quest_rows(self,session):
+        return {r['key']:r for r in session['rows'] if 'ftbquests' in r['source']}
+
+    def test_every_quest_line_is_read_and_lines_that_do_not_line_up_are_not_matched(self):
+        rows=self.quest_rows(self.make_plan())
+        self.assertEqual((rows['chapter.A1.title']['proposed'],rows['chapter.A1.title']['origin']),('&l第一步','same_source_zh_cn'))
+        self.assertEqual(rows['quest.B2.quest_desc[0]']['proposed'],'收集&6一些木頭&r。')
+        self.assertEqual(rows['quest.B2.quest_desc[3]']['proposed'],
+                         '{ "text": "開啟指南", "underlined": true, "clickEvent": { "action": "change_page", "value": "C3" } }')
+        self.assertEqual(rows['quest.B2.quest_desc[2]']['origin'],'keep_original')  # an image line stays as it is
+        # The Chinese description has one line where the English has two: no line is matched to the wrong one.
+        self.assertEqual({rows[k]['origin'] for k in ('quest.D4.quest_desc[0]','quest.D4.quest_desc[1]')},{'untranslated'})
+        self.assertTrue(all(r['supported'] for r in rows.values()))
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_quests_are_written_as_zh_tw_with_the_english_layout_and_a_rerun_writes_nothing(self,_):
+        from mc_zh_tw_translator import quest_lang
+        FakeClient.translations={'First line':'第一行','Second line':'第二行'}
+        result=self.one_click()
+        self.assertEqual(result['status'],'installed')
+        tw=quest_lang.parse((self.lang/'zh_tw.snbt').read_text(encoding='utf-8'))
+        self.assertEqual(tw['chapter.A1.title'],'&l第一步')
+        self.assertEqual(tw['quest.B2.quest_desc'][:3],['收集&6一些木頭&r。','','{image:demo:textures/a.png width:50 height:50}'])
+        self.assertEqual(tw['quest.D4.quest_desc'],['第一行','第二行'])  # AI's lines replaced the English the first write held
+        self.assertEqual((self.lang/'en_us.snbt').read_text(encoding='utf-8'),self.EN)  # the English file is never changed
+        files={p:p.read_bytes() for p in self.instance.rglob('*') if p.is_file()};batches=len(self.batches())
+        FakeClient.sent=[]
+        again=self.one_click()
+        self.assertEqual(jobs.applicable_count(again),0);self.assertEqual(FakeClient.sent,[])  # AI memory, not asked again
+        self.assertEqual({p:p.read_bytes() for p in self.instance.rglob('*') if p.is_file()},files)
+        self.assertEqual(len(self.batches()),batches)
+
+    def batches(self):
+        return sorted((self.home/'output').glob('*/原始備份/*/_備份紀錄/manifest.json'))
+
+    def test_link_lines_keep_their_target_and_colour_codes_are_counted(self):
+        link='{ "text": "Open", "clickEvent": { "action": "change_page", "value": "C3" } }'
+        self.assertTrue(jobs.validate_text(link,'{ "text": "開啟", "clickEvent": { "action": "change_page", "value": "C3" } }'))
+        self.assertFalse(jobs.validate_text(link,'{ "text": "開啟", "clickEvent": { "action": "change_page", "value": "X" } }'))
+        self.assertFalse(jobs.validate_text(link,'開啟'))
+        self.assertFalse(jobs.validate_text('&6Gold&r','金'))
+        self.assertTrue(jobs.validate_text('&6Gold&r','&6金&r'))
+        self.assertTrue(jobs.validate_text('Q&A','問與答'))  # an ordinary ampersand is not a code
+        self.assertIn('&6',jobs.format_problem('&6Gold&r','金&r'))
+
+
+class LineBreakTests(unittest.TestCase):
+    def test_line_breaks_follow_the_original_and_nothing_else_changes(self):
+        fit=jobs.fit_lines
+        self.assertEqual(fit('Tries to automatically pick\nthe cape based on the\nelement\'s player name.','嘗試根據元素的玩家名稱\n自動選擇披風。').count('\n'),2)
+        self.assertEqual(fit('One.\n\nTwo.','一。二。'),'一。\n\n二。')  # a blank line of the original stays blank
+        self.assertEqual(fit('A\nB\nC','甲乙丙丁戊己庚辛').replace('\n',''),'甲乙丙丁戊己庚辛')
+        self.assertEqual(fit('Short line','一\n二'),'一二')  # breaks the original does not have are removed
+        kept=fit('Hold §6Shift§r and\nuse %s now','按住§6Shift§r並立刻使用%s')
+        self.assertTrue(jobs.validate_text('Hold §6Shift§r and\nuse %s now',kept))
+        self.assertNotIn('§\n',kept);self.assertNotIn('%\n',kept)
+        self.assertEqual(fit('Hold §6Shift§r\nnow','按住 Shift'),'按住 Shift')  # a missing code is not something line breaks can fix
+
+    def test_translation_memory_scope_of_quest_lines(self):
+        self.assertEqual(jobs.lang_namespace('instance!/config/ftbquests/quests/lang/en_us.snbt'),jobs.QUEST_NAMESPACE)
+        self.assertEqual(jobs.lang_namespace('mods/a.jar!/assets/demo/lang/en_us.json'),'demo')
+
+    def test_quest_file_is_read_strictly(self):
+        from mc_zh_tw_translator import quest_lang
+        table=quest_lang.parse('{\n\ta.title: "He said \\"hi\\""\n\t"odd key": [\n\t\t"x"\n\t]\n}\n')
+        self.assertEqual(table,{'a.title':'He said "hi"','odd key':['x']})
+        self.assertEqual(quest_lang.parse(quest_lang.dump(quest_lang.flatten(table),table)),table)
+        for bad in ('{ a: 1 }','{ a: "x" a: "y" }','{ a: { b: "x" } }','{ a: "x"','a: "x"'):
+            with self.assertRaises(ValueError):quest_lang.parse(bad)
 
 
 if __name__=='__main__':unittest.main()

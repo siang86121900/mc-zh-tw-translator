@@ -5,9 +5,15 @@ from pathlib import Path
 from mc_zh_tw_translator.translator import CTE2QuestTranslator, PATCHOULI_SKIP_FIELDS
 from opencc import OpenCC
 from mc_zh_tw_translator.class_text import proven_strings
+from mc_zh_tw_translator import quest_lang
 
 HAN=re.compile('[\u3400-\u9fff]'); LATIN=re.compile('[A-Za-z]{3,}')
-LANG=re.compile(r'^(.*?/lang/)(en_us|zh_tw|zh_cn)\.(json|lang)$',re.I)
+# FTB Quests keeps quest text in config/ftbquests/quests/lang/<locale>.snbt (see quest_lang).
+LANG=re.compile(r'^(.*?/lang/)(en_us|zh_tw|zh_cn)\.(json|lang)$|^(.*?/ftbquests/quests/lang/)(en_us|zh_tw|zh_cn)\.(snbt)$',re.I)
+
+def lang_parts(m):
+    """(folder, language, extension) of a LANG match, whichever of its two forms matched."""
+    return (m[1],m[2],m[3]) if m[1] is not None else (m[4],m[5],m[6])
 BOOK=re.compile(r'/(?:patchouli_books|books?|guidebook)/',re.I)
 DISPLAY={'name','Name','text','title','subtitle','description','landing_text','header','customTooltips','displayName','tooltip','label','message','lore','Lore'}
 CC=OpenCC('s2twp')
@@ -116,7 +122,8 @@ class Audit:
         groups={}
         for n in names:
             m=LANG.match('/'+n)
-            if m:groups.setdefault((m[1],m[3]),{})[m[2].lower()]=n
+            if m:
+                folder,lang,ext=lang_parts(m);groups.setdefault((folder,ext.lower()),{})[lang.lower()]=n
         for (_,ext),langs in groups.items():
             try:
                 def load(lang):
@@ -125,9 +132,16 @@ class Audit:
                     if not b.strip():
                         self.counts['empty_language_files']+=1
                         return {}
+                    if ext=='snbt':return quest_lang.parse(decode(b))
                     return parse(b) if ext=='json' else dict(s.split('=',1) for s in decode(b).splitlines() if '=' in s and not s.startswith('#'))
                 en,cn=load('en_us'),load('zh_cn')
-                try:tw=load('zh_tw')
+                if ext=='snbt':
+                    # Description lines are rows of their own; Chinese lines count only where they line up.
+                    self.counts['quest_language_files']+=1
+                    en_table=en;en=quest_lang.flatten(en_table);cn=quest_lang.aligned(en_table,cn)
+                try:
+                    tw=load('zh_tw')
+                    if ext=='snbt':tw=quest_lang.flatten(tw)
                 except ValueError as e:
                     # The game cannot read a malformed zh_tw either; rebuild it from en_us/zh_cn.
                     if not (en or cn):raise

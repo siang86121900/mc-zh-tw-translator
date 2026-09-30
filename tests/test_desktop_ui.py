@@ -16,6 +16,15 @@ class DesktopUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):cls.app=QApplication.instance() or QApplication([])
 
+    def test_still_to_do_counts_only_player_text_without_chinese(self):
+        from mc_zh_tw_translator.desktop import Worker
+        seen=[];worker=Worker(lambda _:None);worker.checkpoint.connect(seen.append)
+        rows=[dict(origin='untranslated',supported=True),dict(origin='untranslated',supported=False),  # a program string candidate
+              dict(origin='not_display',supported=False),dict(origin='same_source_zh_cn',supported=True,changed=True)]
+        worker.publish(dict(rows=rows))
+        preview=json.loads(seen[0])
+        self.assertEqual((preview['preview_pending'],preview['preview_changed']),(1,1))
+
     def test_background_plan_reports_real_rows_and_reenables_controls(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);home=root/'app';home.mkdir();instance=root/'sample'

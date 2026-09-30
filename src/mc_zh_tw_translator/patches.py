@@ -43,7 +43,7 @@ LOOSE_ROOTS = ('kubejs/assets/', 'kubejs/data/', 'config/', 'defaultconfigs/', '
 ARCHIVE_ROOTS = ('mods/', 'resourcepacks/', 'datapacks/', 'config/openloader/')
 # The only things a translation writes: a Traditional Chinese language file, or a page of a zh_tw book.
 # English files, recipes, loot tables, settings and scripts can therefore never come from a patch.
-TRANSLATED = re.compile(r'(?:^|/)lang/zh_tw\.(?:json|lang)$|/zh_tw/[^/].*\.(?:json|txt|md|snbt)$')
+TRANSLATED = re.compile(r'(?:^|/)lang/zh_tw\.(?:json|lang)$|/zh_tw/[^/].*\.(?:json|txt|md|snbt)$|^config/ftbquests/quests/lang/zh_tw\.snbt$')
 MAX_PATCH_SIZE = 200*1024*1024
 MAX_ENTRY_SIZE = 64*1024*1024       # one translated file, unpacked
 MAX_UNPACKED_SIZE = 1024*1024*1024  # the whole patch, unpacked
@@ -223,6 +223,30 @@ def archive_changes(original: bytes, current: bytes, file: str):
         return changed
 
 
+def pack_entries(data: bytes):
+    """(entries, requires) of the translation resource pack: each translated file, and for each the mod
+    files (with SHA-256) it translates. Files the pack cannot tie to a mod version are not shared."""
+    entries={};requires={}
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        try:sources=json.loads(z.read(jobs.PACK_SOURCES).decode('utf-8')).get('sources',{})
+        except (KeyError,ValueError):sources={}
+        for name in z.namelist():
+            mods=sources.get(name)
+            if not allowed_entry(name) or not isinstance(mods,dict) or not mods:continue
+            entries[name]=z.read(name);requires[name]=dict(mods)
+    return entries,requires
+
+
+def mods_by_hash(instance: Path):
+    """SHA-256 -> mod file (relative path) for the receiver's mods folder, to find renamed copies."""
+    found={}
+    folder=Path(instance)/'mods'
+    for p in sorted(folder.glob('*.jar')) if folder.is_dir() else []:
+        try:found.setdefault(file_hash(p),'mods/'+p.name)
+        except OSError:continue
+    return found
+
+
 def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     """Collect this instance's applied translations into one shareable zip.
 
@@ -257,6 +281,15 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 if not allowed_file(file,archive):skipped.append((file,'不是可分享的翻譯檔'));continue
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
                 current=path.read_bytes()
+                if file==jobs.RESOURCE_PACK_FILE:
+                    entries,requires=pack_entries(current)
+                    if not entries:skipped.append((file,'翻譯資源包裡沒有可對應到模組版本的翻譯'));continue
+                    for name,data in entries.items():w.writestr(f'payload/{file}/{name}',data)
+                    jars={jar for mods in requires.values() for jar in mods}
+                    sizes={jar:contained(instance,jar).stat().st_size for jar in sorted(jars) if contained(instance,jar).is_file()}
+                    manifest['files'].append(dict(file=file,archive=True,pack=True,before=None,
+                                                  entries={n:sha256(d) for n,d in entries.items()},requires=requires,sizes=sizes))
+                    continue
                 if archive:
                     if item['before'] is None:skipped.append((file,'翻譯新增的整個模組檔不分享'));continue
                     original=contained(item['backup'],file).read_bytes()
@@ -303,8 +336,24 @@ def read_patch(path: Path):
             seen.add(file.casefold())
             for h in [item.get('before'),item.get('after')]+list((item.get('entries') or {}).values()):
                 if h is not None and not re.fullmatch('[0-9a-f]{64}',str(h)):raise ValueError('補丁雜湊格式錯誤：'+file)
+            if item.get('pack'):
+                # The translation resource pack: each file names the mod versions (SHA-256) it belongs to.
+                requires=item.get('requires')
+                if file!=jobs.RESOURCE_PACK_FILE or not item.get('entries') or not isinstance(requires,dict) or set(requires)!=set(item['entries']):
+                    raise ValueError('補丁的翻譯資源包資料不完整。')
+                for name,mods in requires.items():
+                    if not isinstance(mods,dict) or not mods:raise ValueError('補丁的翻譯資源包資料不完整。')
+                    for jar,h in mods.items():
+                        jar=clean_path(jar)
+                        if not jar.casefold().startswith('mods/') or not jar.casefold().endswith('.jar') or not re.fullmatch('[0-9a-f]{64}',str(h)):
+                            raise ValueError('補丁的翻譯資源包資料不合理：'+name)
+                sizes=item.get('sizes') or {}
+                if not isinstance(sizes,dict) or any(not isinstance(v,int) or isinstance(v,bool) or not 0<v<=MAX_MOD_SIZE for v in sizes.values()):
+                    raise ValueError('補丁的翻譯資源包資料不合理。')
+                for jar in sizes:clean_path(jar)
+            elif archive and not item.get('before'):raise ValueError('補丁項目不完整：'+file)
             if archive:
-                if not item.get('before') or not item.get('entries'):raise ValueError('補丁項目不完整：'+file)
+                if not item.get('entries'):raise ValueError('補丁項目不完整：'+file)
                 for name in item['entries']:
                     clean_path(name)
                     if not allowed_entry(name):raise ValueError(f'補丁包含不允許的內容：{file} / {name}')
@@ -342,9 +391,24 @@ def archive_has(path: Path, z, item) -> bool:
 
 def plan_patch(instance: Path, z, manifest):
     """Decide per file: apply, already translated, or skip (different version or edited)."""
-    plan=[]
+    plan=[];index=None
     for item in manifest['files']:
         path=contained(instance,item['file'])
+        if item.get('pack'):
+            # Only the files whose mods are exactly the versions they were translated from.
+            if index is None:index=mods_by_hash(instance)
+            # A mod file counts when any file in the receiver's mods folder has its exact SHA-256 (renamed copies too).
+            use=[name for name,mods in item['requires'].items() if all(h in index for h in mods.values())]
+            item['use']=use
+            have,_=jobs.read_resource_pack(instance)
+            # Each mod whose version differs is named, so the result says whose translation was left out.
+            for jar in sorted({jar for mods in item['requires'].values() for jar,h in mods.items() if h not in index}):
+                there=contained(instance,jar).exists()
+                plan.append((dict(file=jar),'skip',contained(instance,jar),'模組版本和翻譯時不同' if there else '找不到這個模組檔（可能是不同版本的模組包）'))
+            if not use:continue
+            if all(sha256(have.get(n,b''))==item['entries'][n] for n in use):plan.append((item,'already',path,''))
+            else:plan.append((item,'apply',path,''))
+            continue
         if item['archive']:
             target=find_archive(instance,item)
             if target:plan.append((item,'apply',target,''))
@@ -487,6 +551,19 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
             notify(int(70*i/max(1,len(todo))),'準備套用翻譯',item['file'])
             relative=target.relative_to(instance).as_posix()
             dst=contained(staged,relative);dst.parent.mkdir(parents=True,exist_ok=True)
+            if item.get('pack'):
+                files,sources=jobs.read_resource_pack(instance)
+                for name in item['use']:
+                    data=z.read(f'payload/{item["file"]}/{name}')
+                    if sha256(data)!=item['entries'][name]:raise ValueError('補丁內容損壞：'+item['file'])
+                    if name.endswith('.json') and '/lang/' in name and name in files:
+                        # Keep what the receiver's pack already translated for keys the patch does not carry.
+                        try:data=json.dumps({**jobs.parse(files[name]),**jobs.parse(data)},ensure_ascii=False,indent=2).encode('utf-8')
+                        except ValueError:pass
+                    files[name]=data;sources[name]=dict(item['requires'][name])
+                staged_records=jobs.stage_resource_pack(instance,staged,files,sources)
+                records+=staged_records;applied.append(relative)
+                continue
             if item['archive']:
                 modified={}
                 for name,h in item['entries'].items():
@@ -500,9 +577,10 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                 dst.write_bytes(data)
             records.append(dict(file=relative,before=item['before'],after=file_hash(dst),reviewed=True,verified=True))
             applied.append(relative)
-        if set_language:
-            record=jobs.set_language_record(instance,staged)
-            if record:records.append(record)
+        uses_pack=any(r['file']==jobs.RESOURCE_PACK_FILE for r in records) or (instance/jobs.RESOURCE_PACK_FILE).is_file()
+        try:record=jobs.options_record(instance,staged,set_language,uses_pack)
+        except ValueError:record=jobs.options_record(instance,staged,set_language,False)
+        if record:records.append(record)
         jobs.require_space(instance,home,applied)
         backup=None
         if records:
@@ -629,6 +707,14 @@ def modpack_files_ready(instance: Path, manifest):
     """
     present=needed=0;added={'mods/'+m['fileName'].casefold() for m in manifest.get('added_mods') or []}
     for item in manifest['files']:
+        if item.get('pack'):
+            # The translation resource pack is made here; what must be in place are the mods it translates.
+            for jar,size in sorted((item.get('sizes') or {}).items()):
+                if jar.casefold() in added:continue
+                needed+=1
+                try:present+=contained(instance,jar).stat().st_size==size
+                except (OSError,ValueError):pass
+            continue
         if not item['archive'] and item.get('before') is None:continue  # a file the translation adds
         if item['file'].casefold() in added:continue  # a mod the translator added; it is installed afterwards
         needed+=1

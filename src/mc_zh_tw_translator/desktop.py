@@ -208,7 +208,8 @@ class Worker(QThread):
         rows=session.get('rows',[])
         preview=dict(session,rows=rows[-200:],preview_total=len(rows),is_preview=True,
                      preview_changed=sum(bool(r.get('changed') and r.get('supported')) for r in rows),
-                     preview_pending=sum(r.get('origin') in ('untranslated','pending') for r in rows))
+                     # Program and config candidates are listed in the report, not counted as text still to do.
+                     preview_pending=sum(r.get('origin')=='untranslated' and bool(r.get('supported')) for r in rows))
         preview.pop('source_hashes',None)
         self.checkpoint.emit(json.dumps(preview,ensure_ascii=False))
 
@@ -256,6 +257,7 @@ def history_label(session_path):
 
 
 def row_module(row):
+    if jobs.lang_namespace(row.get('source','')):return jobs.lang_namespace(row['source'])
     m=re.search(r'assets/([^/]+)/',row.get('source',''))
     return m[1] if m else row.get('source','').split('!')[0]
 
@@ -287,8 +289,10 @@ class ReviewDialog(QDialog):
             box.addWidget(label('AI 的譯文（沒有通過檢查，未採用）'))
             answer=QTextEdit();answer.setPlainText(rejected['text']);answer.setReadOnly(True);answer.setMaximumHeight(130);box.addWidget(answer)
             use=button('拿這句來修改',lambda:self.value.setPlainText(rejected['text']))
-            hint=('換行數要和原文一樣（原文 '+str(jobs.original_of(row).count('\n'))+' 個，AI 寫了 '+str(rejected['text'].count('\n'))+' 個）'
-                  if rejected.get('reason')=='format' else str(rejected.get('detail') or '數字要和原文一樣'))
+            hint=(jobs.format_problem(jobs.original_of(row),rejected['text']).split('\n')[0]
+                  if rejected.get('reason')=='format' and not jobs.validate_text(jobs.original_of(row),jobs.fit_lines(jobs.original_of(row),rejected['text']))
+                  else '換行位置會自動對齊原文，不用自己數' if rejected.get('reason')=='format'
+                  else str(rejected.get('detail') or '數字要和原文一樣'))
             line=QHBoxLayout();line.addWidget(use);line.addWidget(label('修改時注意：'+hint,'sub'),1);box.addLayout(line)
         self.check=QCheckBox('我已核對語意、名稱、數值及操作條件');box.addWidget(self.check)
         actions=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
@@ -304,8 +308,10 @@ class ReviewDialog(QDialog):
             QMessageBox.information(self,'請先校對','核對完成後，請勾選確認欄位。');return
         text=self.value.toPlainText()
         original=jobs.original_of(self.row)
+        if not jobs.validate_text(original,text) and jobs.validate_text(original,jobs.fit_lines(original,text)):
+            text=jobs.fit_lines(original,text)  # only the line breaks were off; they follow the original's lines now
         if not jobs.validate_text(original,text):
-            QMessageBox.warning(self,'格式不符','請保留原文的參數、格式碼及換行數量。');return
+            QMessageBox.warning(self,'格式不符',jobs.format_problem(original,text));return
         if text!=self.row['proposed']:
             self.row['previous_origin']=self.row['origin'];self.row['origin']='manual'
         self.row.update(proposed=text,reviewed=True,changed=text!=self.row.get('current'),review_method='user_confirmed_in_ui')
@@ -1359,7 +1365,7 @@ class MainWindow(QMainWindow):
         # The start page only reports work done in this session; saved reports live on the report page.
         if self.live_session:
             self.stats[0].setText(f"{self.session.get('preview_changed',sum(bool(r['changed'] and r['supported']) for r in rows)):,}")
-            self.stats[1].setText(f"{self.session.get('preview_pending',sum(r['origin'] in ('untranslated','pending') for r in rows)):,}");self.stats[2].setText(f"{self.session.get('installed_count',0):,}")
+            self.stats[1].setText(f"{self.session.get('preview_pending',sum(r['origin']=='untranslated' and bool(r.get('supported')) for r in rows)):,}");self.stats[2].setText(f"{self.session.get('installed_count',0):,}")
         pending=self.unapplied_count()
         if self.session['status'] in ('awaiting_game','apply_failed','ready_to_apply') or (pending and self.session['status'] in ('needs_review','installed')):
             verb='重試套用' if self.session['status'] in ('awaiting_game','apply_failed') else '備份並套用譯文'
@@ -1603,8 +1609,10 @@ class MainWindow(QMainWindow):
     def applied_notes(self,result):
         """Plain-language follow-ups after applying (language switch, pack location, skipped embedded mods)."""
         notes=[]
-        if result.get('nested_packed'):notes.append(f"{result['nested_packed']:,} 筆內嵌函式庫（jar-in-jar）的文字放在 kubejs/assets。")
-        if result.get('nested_skipped'):notes.append(f"{result['nested_skipped']:,} 筆內嵌函式庫的文字需要 KubeJS 才能套用，已略過。")
+        if result.get('resource_pack'):
+            notes.append('模組的翻譯放在資源包「MCTranslator-zh_tw」並已自動啟用，模組檔本身沒有修改，'
+                         'CurseForge 更新或檢查檔案時不會洗掉翻譯。')
+        for why,n in (result.get('held_back') or {}).items():notes.append(f'{n:,} 筆{why}。')
         notes.append('遊戲語言已設為繁體中文（台灣）。' if result.get('language_set') else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
         return notes
 
