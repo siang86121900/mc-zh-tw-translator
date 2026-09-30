@@ -207,9 +207,8 @@ class Worker(QThread):
         # JSON crosses the thread boundary as an immutable snapshot.
         rows=session.get('rows',[])
         preview=dict(session,rows=rows[-200:],preview_total=len(rows),is_preview=True,
-                     preview_changed=sum(bool(r.get('changed') and r.get('supported')) for r in rows),
-                     # Program and config candidates are listed in the report, not counted as text still to do.
-                     preview_pending=sum(r.get('origin')=='untranslated' and bool(r.get('supported')) for r in rows))
+                     # The cards need every row; the preview carries only the last 200.
+                     preview_cards=jobs.home_cards(session))
         preview.pop('source_hashes',None)
         self.checkpoint.emit(json.dumps(preview,ensure_ascii=False))
 
@@ -290,8 +289,8 @@ class ReviewDialog(QDialog):
             answer=QTextEdit();answer.setPlainText(rejected['text']);answer.setReadOnly(True);answer.setMaximumHeight(130);box.addWidget(answer)
             use=button('拿這句來修改',lambda:self.value.setPlainText(rejected['text']))
             hint=(jobs.format_problem(jobs.original_of(row),rejected['text']).split('\n')[0]
-                  if rejected.get('reason')=='format' and not jobs.validate_text(jobs.original_of(row),jobs.fit_lines(jobs.original_of(row),rejected['text']))
-                  else '換行位置會自動對齊原文，不用自己數' if rejected.get('reason')=='format'
+                  if rejected.get('reason')=='format' and not jobs.validate_text(jobs.original_of(row),jobs.repair(jobs.original_of(row),rejected['text']))
+                  else '換行位置和參數順序會自動對齊原文，不用自己調' if rejected.get('reason')=='format'
                   else str(rejected.get('detail') or '數字要和原文一樣'))
             line=QHBoxLayout();line.addWidget(use);line.addWidget(label('修改時注意：'+hint,'sub'),1);box.addLayout(line)
         self.check=QCheckBox('我已核對語意、名稱、數值及操作條件');box.addWidget(self.check)
@@ -308,8 +307,8 @@ class ReviewDialog(QDialog):
             QMessageBox.information(self,'請先校對','核對完成後，請勾選確認欄位。');return
         text=self.value.toPlainText()
         original=jobs.original_of(self.row)
-        if not jobs.validate_text(original,text) and jobs.validate_text(original,jobs.fit_lines(original,text)):
-            text=jobs.fit_lines(original,text)  # only the line breaks were off; they follow the original's lines now
+        if not jobs.validate_text(original,text) and jobs.validate_text(original,jobs.repair(original,text)):
+            text=jobs.repair(original,text)  # only line breaks or parameter order were off; they follow the original now
         if not jobs.validate_text(original,text):
             QMessageBox.warning(self,'格式不符',jobs.format_problem(original,text));return
         if text!=self.row['proposed']:
@@ -436,16 +435,18 @@ class MainWindow(QMainWindow):
         self.set_language.toggled.connect(lambda v:self.settings.setValue('set_language','true' if v else 'false'));b.addWidget(self.set_language)
         actions=QHBoxLayout();self.full_start=button('一鍵完整翻譯並套用',self.full_translation_job,True);self.cancel=button('停止',self.cancel_job);self.cancel.setEnabled(False)
         actions.addWidget(self.full_start);actions.addWidget(self.cancel);actions.addStretch();b.addLayout(actions);box.addWidget(f)
-        stats=QHBoxLayout();stats.setSpacing(12);self.stats=[]
-        for title,sub,accent in (('已產生譯文','可在報告查看來源','progress'),('仍待處理','缺少來源或需查用途','todo'),('已套用','已備份並寫回資料夾','done')):
+        stats=QHBoxLayout();stats.setSpacing(12);self.stats=[];self.stat_notes=[]
+        for title,accent in zip(jobs.HOME_CARDS,('done','todo')):
             f,b=card();strip=QFrame();strip.setObjectName('accent_'+accent);strip.setFixedHeight(3);b.insertWidget(0,strip)
-            b.addWidget(label(title,'sub'));n=label('—','number');self.stats.append(n);b.addWidget(n);b.addWidget(label(sub,'sub'));stats.addWidget(f)
+            b.addWidget(label(title,'sub'));n=label('—','number');self.stats.append(n);b.addWidget(n)
+            note=label('','sub');note.setWordWrap(True);self.stat_notes.append(note);b.addWidget(note);stats.addWidget(f)
         box.addLayout(stats)
         f,b=card();head=QHBoxLayout();head.addWidget(label('處理進度','section'));head.addStretch();self.status=label('等待開始','pill');set_pill(self.status,'等待開始','todo');head.addWidget(self.status);b.addLayout(head)
         self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0);self.progress.setTextVisible(False);b.addWidget(self.progress)
         self.progress.setFixedHeight(6)
         self.step=label('選好模組包後按「一鍵完整翻譯並套用」；原檔會先備份。');self.detail=label('','sub');b.addWidget(self.step);b.addWidget(self.detail)
         self.elapsed=label('','sub');b.addWidget(self.elapsed)
+        self.written_note=label('','sub');self.written_note.setWordWrap(True);b.addWidget(self.written_note)
         self.report_link=button('查看翻譯報告',lambda:self.navigate(1));b.addWidget(self.report_link,alignment=Qt.AlignLeft);box.addWidget(f)
         self.activity_head=label('即時處理紀錄','section');box.addWidget(self.activity_head)
         self.activity=QPlainTextEdit();self.activity.setObjectName('log');self.activity.setReadOnly(True);self.activity.setMinimumHeight(130)
@@ -1324,20 +1325,19 @@ class MainWindow(QMainWindow):
     def full_translation_done(self,result):
         self.job_done(result);self.navigate(1);self.check_outdated()
         if result.get('ai_review_message'):self.ai_status.setText(result['ai_review_message'])
-        applied=result.get('installed_count',0)
-        leftovers=sum(r.get('origin')=='untranslated' and bool(r.get('supported')) for r in result.get('rows',[]))
-        if self.nothing_new(result):self.notify_finished('翻譯完成','先前套用的翻譯都還在，這次沒有新的內容要寫入。')
-        else:self.notify_finished('翻譯完成' if result['status']=='installed' else '翻譯已停止，需要處理',
-                                  f'已套用 {applied:,} 筆，仍待處理 {leftovers:,} 筆。' if result['status']=='installed' else (result.get('apply_error') or '請查看翻譯報告。'))
+        # The same two numbers as the start page, read back from the game's files, plus what this run changed.
+        view=jobs.home_cards(result);(rate,rate_note),(english,english_note)=view['cards']
+        summary=f'中文化完成率 {rate}（{rate_note}）\n還缺中文 {english} 句：{english_note}'+('\n'+view['written'] if view['written'] else '')
+        if result['status'] in ('installed','needs_review'):self.notify_finished('翻譯完成',f'中文化完成率 {rate}，還缺中文 {english} 句。')
+        else:self.notify_finished('翻譯已停止，需要處理',result.get('apply_error') or '請查看翻譯報告。')
         if result['status']=='installed':
             notes='\n'.join(self.applied_notes(result));waiting=self.unapplied_count()
             if waiting:notes=f'另有 {waiting:,} 筆已翻好但還沒寫入，可在報告頁按「備份並套用譯文」。'+('\n'+notes if notes else '')
-            QMessageBox.information(self,'本次處理完成',f'已套用 {applied:,} 筆。\n仍待處理 {leftovers:,} 筆，請查看報告。'+('\n\n'+notes if notes else '')
-                                    +'\n\n重新啟動遊戲後生效。')
+            QMessageBox.information(self,'本次處理完成',summary+('\n\n'+notes if notes else '')+'\n\n重新啟動遊戲後生效。')
         elif result['status']=='awaiting_game':
             QMessageBox.information(self,'譯文已保存，等待套用',result['apply_error'])
         elif self.nothing_new(result):
-            QMessageBox.information(self,'沒有需要寫入的內容',f"這個模組包先前套用的 {result['recovered_count']:,} 筆翻譯都還在，這次沒有新的內容要寫入。\n仍待處理 {leftovers:,} 筆，請查看報告。")
+            QMessageBox.information(self,'沒有需要寫入的內容',summary)
 
     def nothing_new(self,session):
         """A modpack translated before and unchanged since: everything is still applied, nothing waits."""
@@ -1360,12 +1360,14 @@ class MainWindow(QMainWindow):
         elif result.get('apply_error'):self.detail.setText(result['apply_error'])
         self.step.setText(self.status.text());self.append_activity(self.status.text())
 
+    def show_cards(self,view):
+        for (number,note),n,sub in zip(view['cards'],self.stats,self.stat_notes):n.setText(number);sub.setText(note)
+        self.written_note.setText(view.get('written',''))
+
     def update_stats(self):
         rows=self.session['rows']
         # The start page only reports work done in this session; saved reports live on the report page.
-        if self.live_session:
-            self.stats[0].setText(f"{self.session.get('preview_changed',sum(bool(r['changed'] and r['supported']) for r in rows)):,}")
-            self.stats[1].setText(f"{self.session.get('preview_pending',sum(r['origin']=='untranslated' and bool(r.get('supported')) for r in rows)):,}");self.stats[2].setText(f"{self.session.get('installed_count',0):,}")
+        if self.live_session:self.show_cards(self.session.get('preview_cards') or jobs.home_cards(self.session))
         pending=self.unapplied_count()
         if self.session['status'] in ('awaiting_game','apply_failed','ready_to_apply') or (pending and self.session['status'] in ('needs_review','installed')):
             verb='重試套用' if self.session['status'] in ('awaiting_game','apply_failed') else '備份並套用譯文'
@@ -1418,7 +1420,7 @@ class MainWindow(QMainWindow):
 
     def use_session(self,session):
         """Adopt a saved report; older reports get the current no-translation rules."""
-        self.session=session;jobs.reclassify_keep_original(session)
+        self.session=session;jobs.reclassify_keep_original(session);jobs.readopt_rejected(session)
         summary=Path(session.get('report',''))/'summary.json'
         if session.get('report') and not summary.exists() and summary.parent.is_dir():
             # Reports from before v0.4.3 lack the sidecar the history list reads.
@@ -1560,6 +1562,7 @@ class MainWindow(QMainWindow):
         else:value.setText('—');detail.setText('這次沒有寫入；先前的備份在「備份與還原」' if o['recovered'] else '還沒有套用，所以沒有備份')
         notes=[]
         if o['rechecked']:notes.append('套用後已重新掃描整合包確認寫入')
+        if o.get('held'):notes.append(f"{o['held']:,} 句是寫在模組程式裡的玩家文字，CurseForge 開遊戲時會把改過的模組換回原版，目前無法保留翻譯（見「程式內文字（CurseForge 會換回）」）")
         if o['context']:notes.append(f"另有 {o['context']:,} 筆程式或設定裡的文字，需確認是否顯示在遊戲中（見「待查程式與設定」）")
         if o['renamed']:notes.append(f"{o['renamed']:,} 筆是整合包改過名稱的文字，只採用符合新名稱的來源")
         if self.session.get('ai_checked'):notes.append(f"AI 對照英文核對過 {self.session['ai_checked']:,} 筆有疑點的譯文，判斷無誤")
@@ -1598,8 +1601,7 @@ class MainWindow(QMainWindow):
         self.path.setText(self.session['instance'])
         self.step.setText(f"正在把 {count:,} 筆譯文套用到「{Path(self.session['instance']).name}」")
         self.detail.setText('先整理譯文，再確認遊戲已關閉、備份原檔、寫入並檢查；請不要開啟遊戲。')
-        self.stats[0].setText(f'{count:,}');self.stats[1].setText(f"{sum(r['origin']=='untranslated' and r['supported'] for r in self.session['rows']):,}")
-        self.stats[2].setText(f"{self.session.get('installed_count',0):,}")
+        self.show_cards(jobs.home_cards(self.session))
         self.navigate(0);self.run_worker('apply',operation,self.apply_done)
 
     def apply_done(self,result):
@@ -1660,7 +1662,8 @@ class MainWindow(QMainWindow):
             for row in self.session['rows']:
                 if row.get('installed'):row['installed']=False;row['reviewed']=False
             jobs.write_json(Path(self.session['report'])/'session.json',self.session)
-            self.stats[2].setText('0');set_pill(self.status,'已還原','todo');self.fill_table()
+            self.show_cards(dict(cards=[('—','已還原；重新按「一鍵完整翻譯並套用」後重新計算')]*2,written='這一批已還原。'))
+            set_pill(self.status,'已還原','todo');self.fill_table()
         self.refresh_backups();QMessageBox.information(self,'已還原','原檔已還原，本批新增翻譯檔已移除。備份仍保留。')
 
     def check_updates(self):

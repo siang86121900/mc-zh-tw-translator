@@ -61,6 +61,19 @@ def leaves(value,path=(),field=''):
         for i,v in enumerate(value):yield from leaves(v,path+(i,),field)
     elif isinstance(value,str):yield path,field,value
 
+LOCALE=re.compile(r'[a-z]{2,3}_[a-z]{2,3}$')
+
+def inline_languages(value,path=()):
+    """(path, {locale: text}) for every object whose keys are all language codes and hold text, with
+    English or Simplified Chinese among them: the same text written in several languages in one file."""
+    if isinstance(value,dict):
+        if value and all(isinstance(k,str) and LOCALE.match(k) for k in value) and all(isinstance(v,str) for v in value.values()) \
+                and ('en_us' in value or 'zh_cn' in value):
+            yield list(path),value;return
+        for k,v in value.items():yield from inline_languages(v,path+(k,))
+    elif isinstance(value,list):
+        for i,v in enumerate(value):yield from inline_languages(v,path+(i,))
+
 def at(value,path):
     try:
         for k in path:value=value[k]
@@ -237,7 +250,13 @@ class Audit:
                 if p.suffix=='.json':
                     if not raw.strip():
                         self.counts['empty_config_files']+=1;continue
-                    for path,field,value in leaves(parse(p.read_bytes())):
+                    data=parse(p.read_bytes());inline=set()
+                    for path,texts in inline_languages(data):
+                        # {"en_us": "...", "zh_cn": "..."}: one text in several languages (Ponderer scenes)
+                        inline.add(tuple(path))
+                        self.add(n,json.dumps(path),texts.get('en_us'),texts.get('zh_tw'),texts.get('zh_cn'),kind='inline_lang')
+                    for path,field,value in leaves(data):
+                        if tuple(path[:-1]) in inline:continue
                         if field in DISPLAY or HAN.search(value):self.add(n,json.dumps(path),None,value,kind='config')
                 else:
                     for lineno,line in enumerate(raw.splitlines(),1):

@@ -701,9 +701,9 @@ def adopt(session, row, original, value, selected_model, jobs, shared=''):
     row.update(ai_attempted=True, ai_model=selected_model, ai_provider='codex_chatgpt',
                ai_original_sha256=hashlib.sha256(original.encode()).hexdigest())
     refit = ''
-    if isinstance(text, str) and not jobs.validate_text(original, text) and jobs.validate_text(original, jobs.fit_lines(original, text)):
-        # Only the number of line breaks was off; they are laid out again, nothing else changes.
-        text = jobs.fit_lines(original, text); refit = '已依原文行數自動調整換行位置。'
+    if isinstance(text, str) and not jobs.validate_text(original, text) and jobs.validate_text(original, jobs.repair(original, text)):
+        # Only the layout was off (line breaks, parameter order); nothing else changes.
+        text = jobs.repair(original, text); refit = '已依原文自動調整換行或參數順序。'
     if not isinstance(value.get('note'), str) or not isinstance(text, str) or not text or not jobs.validate_text(original, text):
         # The rejected answer is kept beside the row so the user can see it, fix it and confirm it.
         if isinstance(text, str) and text: row['ai_rejected'] = dict(reason='format', text=text, model=selected_model)

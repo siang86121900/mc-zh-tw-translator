@@ -98,7 +98,7 @@ class WorkflowTests(unittest.TestCase):
         sources=json.loads(files['mctranslator.json'])['sources']
         self.assertEqual(list(sources['assets/real/lang/zh_tw.json']),['mods/real.jar'])
         options=(self.instance/'options.txt').read_text(encoding='utf-8')
-        self.assertIn('lang:zh_tw',options);self.assertIn('resourcePacks:["vanilla","fabric","file/MCTranslator-zh_tw.zip"]',options)
+        self.assertIn('lang:zh_tw',options);self.assertIn('resourcePacks:["vanilla","fabric","mod_resources","file/MCTranslator-zh_tw.zip"]',options)
         self.assertTrue(done['language_set']);self.assertEqual(done['resource_pack'],'resourcepacks/MCTranslator-zh_tw.zip')
         restore_backup(Path(done['backup']),self.instance)
         self.assertFalse((self.instance/'resourcepacks/MCTranslator-zh_tw.zip').exists())
@@ -139,13 +139,81 @@ class WorkflowTests(unittest.TestCase):
         row=next(r for r in self.make_plan()['rows'] if r['key']=='quest.A.title')
         self.assertEqual((row['proposed'],row['origin']),('食人魔薩滿','same_source_zh_cn'))
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_completion_rate_counts_only_what_the_game_files_really_hold(self,_):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        self.make_mod(nested=False)
+        (self.instance/'options.txt').write_text('lang:zh_tw\n',encoding='utf-8')
+        result=self.make_plan()
+        before=jobs.coverage(result)
+        self.assertEqual(before['done'],before['already'] if 'already' in before else before['done'])
+        done=apply_session(self.confirm_all(result),self.home,lambda *_:None)
+        self.assertEqual(done['shown_mismatch'],0)
+        cov=jobs.coverage(done)
+        # real.b was already Chinese; real.a and demo.hello were written and read back; demo.missing has no source
+        self.assertEqual((cov['total'],cov['done'],cov['missing']),(4,3,1))
+        view=jobs.home_cards(done);cards=view['cards']
+        self.assertEqual([n for n,_ in cards],['75.0%','1'])
+        self.assertIn('找不到中文來源',cards[1][1])
+        self.assertEqual(view['written'],'這次從 25.0% 提升到 75.0%。')  # before: only real.b was Chinese in the game
+        # the player switched the pack off: the mod line is not shown any more and is not counted as done
+        (self.instance/'options.txt').write_text('lang:zh_tw\nresourcePacks:["vanilla"]\n',encoding='utf-8')
+        rows=[r for r in done['rows'] if r.get('installed')]
+        self.assertEqual(jobs.check_shown(self.instance,rows),1)
+        self.assertEqual(jobs.coverage(done)['unconfirmed'],1)
+
+    def test_nothing_written_is_explained_by_whether_english_is_left(self):
+        from mc_zh_tw_translator.desktop_jobs import home_cards
+        # "還缺中文 0" is what says the translation is finished; how much a run wrote is only a note
+        finished=dict(rows=[],already_chinese=10,installed_count=0,status='needs_review',rate_before=1.0)
+        self.assertEqual(home_cards(finished),dict(cards=[('100.0%','10／10 句玩家文字已是中文'),('0','找得到的玩家文字都已是中文')],
+                                                   written='和翻譯前一樣是 100.0%，這次沒有修改任何遊戲檔案。'))
+        left=dict(rows=[dict(origin='untranslated',supported=True,proposed='Hello')],already_chinese=10,installed_count=0,status='needs_review',rate_before=10/11)
+        self.assertEqual([n for n,_ in home_cards(left)['cards']],['90.9%','1'])  # rounded down: 100% only when nothing is left
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_text_written_in_several_languages_gets_taiwan_chinese_beside_it(self,_):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        scripts=self.instance/'config/ponderer/scripts';scripts.mkdir(parents=True)
+        scene=dict(id='ponderer:alchemy_furnace',title={'en_us':'New Scene','zh_cn':'炼丹炉的介绍'},scenes=[dict(steps=[
+            dict(type='idle',duration=10),
+            # the modpack author cut the English short; the Simplified Chinese is complete
+            dict(type='text',duration=60,text={'zh_cn':'炼丹的材料摆放位置需要一样','en_us':'The placement of the alchemy ing'})])])
+        (scripts/'alchemy_furnace.json').write_text(json.dumps(scene,ensure_ascii=False,indent=2),encoding='utf-8')
+        other=self.instance/'config/othermod';other.mkdir(parents=True)
+        (other/'x.json').write_text(json.dumps({'tip':{'en_us':'Hello','zh_cn':'你好'}},ensure_ascii=False),encoding='utf-8')
+        result=self.make_plan()
+        rows={(r['source'],r['key']):r for r in result['rows'] if r.get('kind')=='inline_lang'}
+        text=rows[('config/ponderer/scripts/alchemy_furnace.json','["scenes", 0, "steps", 1, "text"]')]
+        self.assertEqual((text['proposed'],text['origin'],text['supported']),('煉丹的材料擺放位置需要一樣','same_source_zh_cn',True))
+        unknown=rows[('config/othermod/x.json','["tip"]')]
+        self.assertFalse(unknown['supported']);self.assertEqual(unknown['issue'],jobs.INLINE_UNVERIFIED)
+        done=apply_session(self.confirm_all(result),self.home,lambda *_:None)
+        written=json.loads((scripts/'alchemy_furnace.json').read_text(encoding='utf-8'))
+        self.assertEqual(written['scenes'][0]['steps'][1]['text'],
+                         {'zh_cn':'炼丹的材料摆放位置需要一样','en_us':'The placement of the alchemy ing','zh_tw':'煉丹的材料擺放位置需要一樣'})
+        self.assertEqual(written['title']['zh_tw'],'煉丹爐的介紹')
+        self.assertEqual(written['scenes'][0]['steps'][0],dict(type='idle',duration=10))  # nothing else changes
+        self.assertEqual(json.loads((other/'x.json').read_text(encoding='utf-8')),{'tip':{'en_us':'Hello','zh_cn':'你好'}})
+        self.assertEqual(done['shown_mismatch'],0)
+        again=self.make_plan()
+        self.assertFalse([r['key'] for r in again['rows'] if r.get('kind')=='inline_lang' and r['changed'] and r['supported']])
+        restore_backup(Path(done['backup']),self.instance)
+        self.assertEqual(json.loads((scripts/'alchemy_furnace.json').read_text(encoding='utf-8')),scene)
+
     def test_language_switch_alone_leaves_resource_packs_alone(self):
         from mc_zh_tw_translator.desktop_jobs import options_record
         (self.instance/'options.txt').write_text('lang:en_us\n',encoding='utf-8')
         staged=Path(self.temp.name)/'staged';staged.mkdir()
         self.assertIsNone(options_record(self.instance,staged,False,False))
         options_record(self.instance,staged,False,True)
-        self.assertEqual((staged/'options.txt').read_text(encoding='utf-8'),'lang:en_us\nresourcePacks:["vanilla","file/MCTranslator-zh_tw.zip"]\n')
+        self.assertEqual((staged/'options.txt').read_text(encoding='utf-8'),'lang:en_us\nresourcePacks:["vanilla","mod_resources","file/MCTranslator-zh_tw.zip"]\n')
+        # A list the game saved with the mods' resources above this pack (Explorer's Compass stayed English)
+        (self.instance/'options.txt').write_text('resourcePacks:["fabric","file/MCTranslator-zh_tw.zip","mod_resources"]\n',encoding='utf-8')
+        options_record(self.instance,staged,False,True)
+        self.assertEqual((staged/'options.txt').read_text(encoding='utf-8'),'resourcePacks:["fabric","mod_resources","file/MCTranslator-zh_tw.zip"]\n')
+        (self.instance/'options.txt').write_text((staged/'options.txt').read_text(encoding='utf-8'),encoding='utf-8')
+        self.assertIsNone(options_record(self.instance,staged,False,True))  # already in order: nothing to write
         (self.instance/'options.txt').write_text('resourcePacks:[broken\n',encoding='utf-8')
         with self.assertRaises(ValueError):options_record(self.instance,staged,False,True)
 

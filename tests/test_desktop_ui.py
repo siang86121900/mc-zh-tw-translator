@@ -19,11 +19,12 @@ class DesktopUiTests(unittest.TestCase):
     def test_still_to_do_counts_only_player_text_without_chinese(self):
         from mc_zh_tw_translator.desktop import Worker
         seen=[];worker=Worker(lambda _:None);worker.checkpoint.connect(seen.append)
-        rows=[dict(origin='untranslated',supported=True),dict(origin='untranslated',supported=False),  # a program string candidate
-              dict(origin='not_display',supported=False),dict(origin='same_source_zh_cn',supported=True,changed=True)]
-        worker.publish(dict(rows=rows))
-        preview=json.loads(seen[0])
-        self.assertEqual((preview['preview_pending'],preview['preview_changed']),(1,1))
+        rows=[dict(origin='untranslated',supported=True,proposed='Hello'),dict(origin='untranslated',supported=False,proposed='x y z'),  # a program string candidate
+              dict(origin='not_display',supported=False),dict(origin='same_source_zh_cn',supported=True,changed=True,installed=True,shown=True,proposed='你好')]
+        worker.publish(dict(rows=rows,already_chinese=2,installed_count=1,status='installed',rate_before=.5))
+        view=json.loads(seen[0])['preview_cards'];cards=view['cards']
+        self.assertEqual([number for number,_ in cards],['75.0%','1']);self.assertEqual(view['written'],'這次從 50.0% 提升到 75.0%。')
+        self.assertIn('3／4 句',cards[0][1]);self.assertIn('1 條程式字串',cards[0][1]);self.assertIn('找不到中文來源',cards[1][1])
 
     def test_background_plan_reports_real_rows_and_reenables_controls(self):
         with tempfile.TemporaryDirectory() as d:
@@ -43,7 +44,9 @@ class DesktopUiTests(unittest.TestCase):
             self.assertFalse(window.busy)
             self.assertIsNotNone(window.session)
             self.assertEqual(window.session['rows'][0]['proposed'],'你好')
-            self.assertEqual(window.stats[0].text(),'1')
+            # Translated but not written yet: the game still shows English, so nothing counts as done.
+            self.assertEqual([n.text() for n in window.stats],['0.0%','1'])
+            self.assertIn('還沒寫入',window.stat_notes[1].text())
             self.assertTrue(window.choose.isEnabled())
             window.navigate(1);self.assertEqual(window.table.rowCount(),1)
             self.assertFalse((lang/'zh_tw.json').exists())

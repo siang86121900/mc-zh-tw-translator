@@ -311,7 +311,7 @@ class InstallTests(unittest.TestCase):
             result=patches.apply_patch(self.friend,self.patch,self.home,set_language=True)
         self.assertEqual((len(result['applied']),result['skipped'],result['language_set']),(2,[],True))
         self.assertEqual(json.loads((self.friend/'kubejs/assets/demo/lang/zh_tw.json').read_text(encoding='utf-8'))['demo.hello'],'你好 %s')
-        self.assertEqual((self.friend/'options.txt').read_text(encoding='utf-8'),'lang:zh_tw\nresourcePacks:["vanilla","file/MCTranslator-zh_tw.zip"]\n')
+        self.assertEqual((self.friend/'options.txt').read_text(encoding='utf-8'),'lang:zh_tw\nresourcePacks:["vanilla","mod_resources","file/MCTranslator-zh_tw.zip"]\n')
 
     def test_half_downloaded_mod_is_never_taken_for_ready(self):
         (self.friend/'mods').mkdir(parents=True);shutil.copytree(self.original/'kubejs',self.friend/'kubejs')

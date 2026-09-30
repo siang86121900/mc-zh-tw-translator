@@ -608,4 +608,47 @@ class LineBreakTests(unittest.TestCase):
             with self.assertRaises(ValueError):quest_lang.parse(bad)
 
 
+class CodeCheckTests(unittest.TestCase):
+    """Real answers from the owner's Tensura report that an over-strict check turned down (v0.10.0)."""
+    def test_good_translations_with_rearranged_codes_are_accepted(self):
+        ok=[('§8Applies a Mark to the target when shot with the §7Royal Bow','§8以§7皇家弓§8射中目標時，會對其施加標記'),
+            ('§6I §6will §6walk §6to §6the §6end §6with §6all §6your §6wills...\n§eNo §ematter §ethe §ecost.',
+             '§6我§6將§6帶著§6你§6所有§6的§6意志§6一同§6走§6向終點……\n§e無§e論§e代§e價§e為§e何。'),
+            ('Draining $(aura) from the world is called $(thing)Aura Imbalance$() - and it has effects.',
+             '從世界中抽取$(aura)或向其中添加更多$(aura)，稱為$(thing)靈氣失衡$()，這會帶來影響。'),
+            ('$(item)Soulstrider\'s tools$() have $(thing)abilities$() unlike $(thing)netherite$() ones. See $(l:items/sky_tools)Sky tools$().',
+             '$(item)靈魂行者工具$()擁有$(thing)特殊能力$()，有別於下界合金工具。請見$(l:items/sky_tools)尋天者工具$()。')]
+        for original,value in ok:self.assertTrue(jobs.validate_text(original,value),value)
+
+    def test_what_matters_is_still_refused(self):
+        bad=[('Hold §6Shift§r to run','按住 Shift 奔跑'),               # a colour that disappears
+             ('Press $(k:use) to open','按下使用鍵開啟'),              # a keybind macro
+             ('See $(l:items/a)A$()','請見 A'),                        # a link
+             ('Page {0} of {1}','第 {0} 頁'),                          # an argument
+             ('§aGreen','§c綠色'),                                     # another colour
+             ('Removed %d players from %s','已移除 %s 位玩家')]          # a parameter lost
+        for original,value in bad:self.assertFalse(jobs.validate_text(original,jobs.repair(original,value)),value)
+
+    def test_parameters_are_numbered_for_chinese_word_order(self):
+        self.assertEqual(jobs.repair('Removed %d players from %s','已從 %s 移除 %d 位玩家'),'已從 %2$s 移除 %1$d 位玩家')
+        self.assertTrue(jobs.validate_text('Removed %d players from %s','已從 %2$s 移除 %1$d 位玩家'))
+        self.assertEqual(jobs.repair('%s gave %s to %s','%s把%s給了%s'),'%s把%s給了%s')  # same order: unchanged
+        self.assertEqual(jobs.index_placeholders('%s and %s','%s 和 %d'),'%s 和 %d')      # not the same parameters: left alone
+
+    def test_answers_kept_in_a_report_are_taken_without_asking_ai_again(self):
+        rows=[dict(source='mods/y.jar!/assets/yigd/lang/en_us.json',key='a',en='Removed %d players from %s',current=None,origin='untranslated',
+                   supported=True,kind='language',proposed='Removed %d players from %s',
+                   ai_rejected=dict(reason='format',text='已從 %s 移除 %d 位玩家',model='m')),
+              dict(source='mods/y.jar!/assets/yigd/lang/en_us.json',key='b',en='Costs 5 gems',current=None,origin='untranslated',
+                   supported=True,kind='language',proposed='Costs 5 gems',ai_rejected=dict(reason='number',text='花費 8 顆寶石',model='m'))]
+        session=dict(rows=rows)
+        self.assertEqual(jobs.readopt_rejected(session),1)
+        self.assertEqual((rows[0]['origin'],rows[0]['proposed']),('ai_translation','已從 %2$s 移除 %1$d 位玩家'))
+        self.assertEqual(rows[1]['origin'],'untranslated')  # a changed number still waits for the user
+
+    def test_program_text_curseforge_puts_back_has_its_own_group(self):
+        self.assertEqual(jobs.row_category(dict(kind='class_display',supported=False,origin='untranslated')),'held')
+        self.assertEqual(jobs.row_category(dict(kind='class_candidate',supported=False,origin='untranslated')),'context')
+
+
 if __name__=='__main__':unittest.main()
