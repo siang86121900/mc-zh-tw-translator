@@ -909,7 +909,7 @@ def present_mods(z, depth=0):
     return found
 
 
-SCAN_CACHE_VERSION = 'scan-5'
+SCAN_CACHE_VERSION = 'scan-7'
 
 
 def scan_cache(home, instance):
@@ -1100,10 +1100,19 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         # Non-language candidates are retained explicitly rather than reclassifying IDs as text.
         if r['kind']=='class_display':
             original=r['current'];previous=provenance.lookup(r)
+            # Config comments shown through the resource pack leave the class English; what the pack holds tells
+            # whether an earlier run already wrote this line.
+            in_pack=curseforge and r.get('tooltips') and not previous and provenance.entries.get(provenance.key(r))
+            if in_pack and in_pack.get('original')==original and any(
+                    tooltip_part(pack_text.get((resource,key)),part,parts)==in_pack.get('text') for key,part,parts,resource in r['tooltips']):
+                previous=in_pack
             reason=keep_original_reason(original,r['key'],'') if not HAN.search(original) else ''
             memory_value=memory.lookup(r['source'],r['key'],original)
             value=original;origin='untranslated';issue='';extra={}
-            if previous:
+            if previous is in_pack and previous:
+                value=previous['text'];origin=previous['origin'];issue=previous.get('issue','')
+                extra=dict(installed=True,recovered=True,ai_model=previous.get('model'))
+            elif previous:
                 origin=previous['origin'];issue=previous.get('issue','');extra=dict(installed=True,recovered=True,ai_model=previous.get('model'),en_ref=previous.get('original'))
             elif memory_value and validate_text(original,memory_value):value=memory_value;origin='translation_memory'
             elif reason:origin='keep_original'
@@ -1118,9 +1127,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                     value=earlier['text'];origin='ai_translation';extra=dict(ai_reused=True,ai_model=earlier.get('model'))
             # In a CurseForge modpack a changed mod file is replaced by the original when the game starts,
             # so program text there is listed with the reason instead of being translated for nothing.
-            writable=not curseforge or origin in ('keep_original',) or extra.get('installed')
+            # Config comments that config screens look up in the language files go into the translation pack instead.
+            writable=not curseforge or origin in ('keep_original',) or extra.get('installed') or bool(r.get('tooltips'))
             decided.append(dict(slim(r),proposed=value,origin=origin,evidence=r.get('display_use',''),
-                                issue=issue or ('等待 AI 補翻（已確認為'+r.get('display_use','玩家文字')+'）' if origin=='untranslated' and writable
+                                issue=(r.get('tooltip_note') if not writable else '') or issue or ('等待 AI 補翻（已確認為'+r.get('display_use','玩家文字')+'）' if origin=='untranslated' and writable
                                                 else '寫在模組程式裡的文字：CurseForge 啟動遊戲時會把改過的模組檔換回原版，無法保留翻譯' if not writable else ''),
                                 supported=bool(writable),reviewed=False,changed=value!=original,**extra))
             continue
@@ -1303,6 +1313,13 @@ def prepare_to_apply(session):
     unify_suggested_terms(session)
     # Naming things alike reaches every file of a key; this is the check that it did.
     session['same_key_count']+=unify_same_key(session['rows'])
+    conflicts=tooltip_conflicts(session['rows']) if session.get('instance') and is_curseforge(session['instance']) else set()
+    for row in session['rows']:
+        if not row.get('tooltips'):continue
+        issue=(row.get('issue') or '').replace('；'+HELD_TOOLTIP_CONFLICT,'').replace(HELD_TOOLTIP_CONFLICT,'')
+        if any((row['source'].split('!/')[0],key,resource) in conflicts for key,_,_,resource in row['tooltips']):
+            issue=(issue+'；' if issue else '')+HELD_TOOLTIP_CONFLICT
+        row['issue']=issue
     return auto_confirm_safe(session)
 
 
@@ -1498,6 +1515,13 @@ def check_shown(instance, rows):
         files[where]=data;return data
 
     for r in rows:
+        if r.get('kind')=='class_display' and r.get('tooltips') and write_route(r,is_curseforge(instance))=='pack':
+            # A config comment written as '<key>.tooltip': every key it went to must hold this line.
+            found=[]
+            for key,part,parts,resource in r['tooltips']:
+                data=load(('pack',resource),pack.get(resource),resource) if pack_on else None
+                found.append(isinstance(data,dict) and tooltip_part(data.get(key),part,parts)==r['proposed'])
+            r['shown']=any(found);missing+=not r['shown'];continue
         if r.get('kind')=='class_display':r['shown']=True;continue
         path,entry=target_for(r)
         try:
@@ -1558,9 +1582,13 @@ def applicable_count(session):
     """Rows the report can apply now: confirmed ones plus everything that passes the automatic checks.
     Rows that cannot be written in this modpack (see write_route) are reported apart, not as waiting."""
     curseforge=is_curseforge(session['instance']) if session.get('instance') else False
+    tooltips=tooltip_texts(session.get('rows',[]))
     return sum(bool(r.get('supported') and r.get('changed') and not r.get('installed') and r.get('origin')!='untranslated'
                     and (r.get('reviewed') or validate_text(original_of(r),r.get('proposed','')))
-                    and write_route(r,curseforge) in ('pack','file')) for r in session.get('rows',[]))
+                    and write_route(r,curseforge) in ('pack','file')
+                    and (not (curseforge and r.get('kind')=='class_display' and r.get('tooltips')) or any(
+                        (r['source'].split('!/')[0],key,resource) in tooltips for key,_,_,resource in r['tooltips'])))
+               for r in session.get('rows',[]))
 
 
 def auto_confirm_safe(session):
@@ -1733,16 +1761,60 @@ HELD_CURSEFORGE = '是寫在模組程式裡的文字；CurseForge 啟動遊戲�
 HELD_NESTED = '在內嵌函式庫的資料檔裡，資源包無法覆蓋，也不能安全改寫，所以沒有寫入'
 
 
+HELD_TOOLTIP_PARTS = '是一段多行設定說明的其中一行；同一段還有其他行沒翻好，整段翻好才一起寫入'
+HELD_TOOLTIP_CONFLICT = '同一設定語系鍵有不同譯文，為避免互相覆蓋，需先確認一致的譯文'
+
+
+def tooltip_conflicts(rows):
+    values=collections.defaultdict(lambda:collections.defaultdict(set));lengths=collections.defaultdict(set)
+    for r in rows:
+        if r.get('kind')!='class_display':continue
+        for key,part,parts,resource in r.get('tooltips') or ():
+            target=(r['source'].split('!/')[0],key,resource)
+            values[target][part].add(r.get('proposed'));lengths[target].add(parts)
+    return {target for target,lines in values.items() if len(lengths[target])!=1 or any(len(v)!=1 for v in lines.values())}
+
+
+def tooltip_part(text, part, parts):
+    """Line `part` of a config comment the pack holds joined from `parts` strings; None when it does not fit."""
+    if not isinstance(text,str):return None
+    lines=text.split('\n') if parts>1 else [text]
+    return lines[part] if len(lines)==parts else None
+
+
+def tooltip_texts(rows):
+    """{(mod file, tooltip key, pack resource): comment text} for config comments whose every line is translated.
+
+    A comment given as several strings is one tooltip, its lines joined by newlines (as the config builder
+    joins them), so a key is written only when all its lines have Chinese.
+    """
+    groups=collections.defaultdict(dict)
+    for r in rows:
+        if r.get('kind')!='class_display':continue
+        for key,part,parts,resource in r.get('tooltips') or ():
+            groups[(r['source'].split('!/')[0],key,resource,parts)][part]=r
+    texts={};conflicts=tooltip_conflicts(rows)
+    for (jar,key,resource,parts),lines in groups.items():
+        if (jar,key,resource) in conflicts:continue
+        if len(lines)!=parts or any(r.get('origin')=='untranslated' or not r.get('supported') for r in lines.values()):continue
+        if not any(HAN.search(r.get('proposed') or '') for r in lines.values()):continue
+        texts[(jar,key,resource)]='\n'.join(lines[i]['proposed'] for i in range(parts))
+    return texts
+
+
 def write_route(row, curseforge):
     """'pack' (the translation resource pack), 'file' (the file itself), or why the row is not written.
 
     Language files and book pages of mods go into the resource pack, so the mods stay untouched.
     Text inside a mod's program (class) or its data folder cannot be put in a resource pack; it is
-    written into the mod file only where the launcher does not put the original back.
+    written into the mod file only where the launcher does not put the original back. The exception is a
+    config comment that config screens look up in the language files (row['tooltips']): under CurseForge
+    it goes into the pack as that key.
     """
     path,entry=target_for(row)
     if entry is None or not path.startswith('mods/'):return 'file'
     if row.get('kind')!='class_display' and pack_resource(entry):return 'pack'
+    if curseforge and row.get('kind')=='class_display' and row.get('tooltips') and not is_nested(row):return 'pack'
     if curseforge:return HELD_CURSEFORGE
     if is_nested(row):return HELD_NESTED
     return 'file'
@@ -1799,6 +1871,7 @@ def build_pack(instance, staged, pack_rows, session, notify):
             data=before if first['kind']=='book' else {**data,**before}
         for r in rows:
             if r['kind']=='language':data[r['key']]=r['proposed'];continue
+            if r.get('tooltip_key'):data[r['tooltip_key']]=r['tooltip_text'];continue  # a config comment, see tooltip_texts
             keys=json.loads(r['key']);node=data
             for key in keys[:-1]:node=node[key]
             node[keys[-1]]=r['proposed']
@@ -1951,6 +2024,12 @@ def stage_and_apply(session, home, notify, work):
     instance=Path(session['instance']); report=Path(session['report'])
     ready=[r for r in session['rows'] if r.get('reviewed') and r.get('supported') and r.get('changed') and not r.get('installed')]
     curseforge=is_curseforge(instance);routes={id(r):write_route(r,curseforge) for r in ready}
+    tooltips=tooltip_texts(session['rows']);conflicts=tooltip_conflicts(session['rows'])
+    for r in ready:
+        if routes[id(r)]=='pack' and r['kind']=='class_display' and not any(
+                (r['source'].split('!/')[0],key,resource) in tooltips for key,_,_,resource in r['tooltips']):
+            routes[id(r)]=HELD_TOOLTIP_CONFLICT if any(
+                (r['source'].split('!/')[0],key,resource) in conflicts for key,_,_,resource in r['tooltips']) else HELD_TOOLTIP_PARTS
     selected=[r for r in ready if routes[id(r)] in ('pack','file')]
     held=collections.Counter(routes[id(r)] for r in ready if routes[id(r)] not in ('pack','file'))
     if not selected:
@@ -1968,6 +2047,10 @@ def stage_and_apply(session, home, notify, work):
     for row in selected:
         if not validate_text(original_of(row),row['proposed']):raise ValueError('譯文格式或參數不一致：'+row['key'])
         path,entry=target_for(row); contained(instance,path)
+        if routes[id(row)]=='pack' and row['kind']=='class_display':
+            for key,_,_,resource in row['tooltips']:
+                if (path,key,resource) in tooltips:pack_rows.append((path,resource,dict(row,tooltip_key=key,tooltip_text=tooltips[(path,key,resource)])))
+            continue
         if routes[id(row)]=='pack':pack_rows.append((path,entry,row));continue
         changes[path].append((entry,row))
     require_space(instance,home,list(changes))

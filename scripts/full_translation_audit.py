@@ -1,10 +1,10 @@
 """Read-only inventory and fail-closed, fingerprinted translation review gate."""
 import argparse, hashlib, json, re, struct, zipfile, gzip, io
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from mc_zh_tw_translator.translator import CTE2QuestTranslator, PATCHOULI_SKIP_FIELDS
 from opencc import OpenCC
-from mc_zh_tw_translator.class_text import proven_strings
+from mc_zh_tw_translator.class_text import proven_strings, config_tooltips
 from mc_zh_tw_translator import quest_lang
 
 HAN=re.compile('[\u3400-\u9fff]'); LATIN=re.compile('[A-Za-z]{3,}')
@@ -62,6 +62,20 @@ def leaves(value,path=(),field=''):
     elif isinstance(value,str):yield path,field,value
 
 LOCALE=re.compile(r'[a-z]{2,3}_[a-z]{2,3}$')
+CONFIG_SCREEN=b'net/neoforged/neoforge/client/gui/ConfigurationScreen'
+LANG_KEY=re.compile(r'[A-Za-z0-9_.\-]+$')
+NAMESPACE=re.compile(r'[a-z0-9_.\-]+$')
+
+def declared_mods(z,names):
+    """The mod ids a Forge/NeoForge mod file declares in its [[mods]] tables, in order."""
+    import tomllib
+    for t in ('META-INF/neoforge.mods.toml','META-INF/mods.toml'):
+        if t in names:
+            try:mods=tomllib.loads(z.read(t).decode('utf-8-sig')).get('mods',[])
+            except (ValueError,UnicodeError):return []
+            ids=[m.get('modId') for m in mods if isinstance(m,dict)]
+            return [i for i in ids if isinstance(i,str) and NAMESPACE.match(i)] if all(isinstance(i,str) for i in ids) else []
+    return []
 
 def inline_languages(value,path=()):
     """(path, {locale: text}) for every object whose keys are all language codes and hold text, with
@@ -106,6 +120,32 @@ def utf8_constants(b):
             pos+=sizes[tag]
             if tag in (5,6):i+=1
         i+=1
+
+def exclude_tooltip_conflicts(rows):
+    """A shared tooltip cannot represent different comments or replace an existing language entry."""
+    existing=set(); groups=defaultdict(lambda: defaultdict(set)); lengths=defaultdict(set)
+    for row in rows:
+        jar,_,entry=row['source'].partition('!/')
+        if row['kind']=='language' and entry.startswith('assets/'):
+            resource=re.sub(r'/lang/(?:en_us|zh_cn|zh_tw)\.(?:json|lang)$','/lang/zh_tw.json',entry)
+            existing.add((jar,row['key'],resource))
+        for key,part,parts,resource in row.get('tooltips',[]):
+            target=(jar,key,resource)
+            groups[target][part].add(row['current']);lengths[target].add(parts)
+    conflicts={target for target,lines in groups.items() if len(lengths[target])!=1 or any(len(values)!=1 for values in lines.values())}
+    for row in rows:
+        tips=row.get('tooltips')
+        if not tips:continue
+        jar=row['source'].split('!/')[0];kept=[];notes=[]
+        for tip in tips:
+            target=(jar,tip[0],tip[3])
+            if target in existing:notes.append('設定說明已有語系條目，交由語系檔翻譯，避免互相覆蓋')
+            elif target in conflicts:notes.append('不同設定共用同一語系鍵，但原文不同，無法安全共用譯文')
+            else:kept.append(tip)
+        if kept:row['tooltips']=kept
+        else:row.pop('tooltips',None)
+        if notes:row['tooltip_note']='；'.join(sorted(set(notes)))
+
 
 class Audit:
     def __init__(self,out,decisions):
@@ -182,6 +222,7 @@ class Audit:
             except Exception as e:self.errors.append([label,n,str(e)])
     def archive(self,p,label):
         self.counts['archives']+=1
+        first_row=len(self.rows)
         try:
             with zipfile.ZipFile(p) as z:
                 names=set(z.namelist())
@@ -189,21 +230,38 @@ class Audit:
                     self.files.append(dict(source=label+'!/'+info.filename,size=info.file_size,crc=info.CRC,kind='class' if info.filename.endswith('.class') else 'resource'))
                 self.collection(label,names,z.read)
                 self.nested(z,label,names)
+                screen=False;linked=[]
                 for n in names:
                     if not n.endswith('.class'):continue
                     try:
                         raw=z.read(n)
+                        screen|=CONFIG_SCREEN in raw
                         try:
                             cf,safe=proven_strings(raw);constants=cf.utf.items()
+                            tips=config_tooltips(raw) if any('設定說明' in use for _,use in safe.values()) else {}
                         except (ValueError,KeyError,IndexError,struct.error,UnicodeError):
                             # An unsupported class remains visible for inspection; it is never writable.
-                            safe={};constants=enumerate(utf8_constants(raw))
+                            safe={};tips={};constants=enumerate(utf8_constants(raw))
                         for i,s in constants:
                             if (i in safe and LATIN.search(s)) or HAN.search(s) or (len(s)<1200 and re.search(r'\b[A-Za-z]{3,} [A-Za-z]{3,} [A-Za-z]{3,}\b',s)):
                                 supported=i in safe and label.startswith('mods/') and label.count('!/')==0
                                 self.add(label+'!/'+n,i,None,s,kind='class_display' if supported else 'class_candidate')
-                                if supported:self.rows[-1]['display_use']=safe[i][1]
+                                if supported:
+                                    self.rows[-1]['display_use']=safe[i][1]
+                                    if tips.get(i):linked.append((self.rows[-1],tips[i]))
                     except Exception as e:self.errors.append([label,n,'class extraction: '+str(e)])
+                if linked and label.startswith('mods/') and label.count('!/')==0:
+                    mods=declared_mods(z,names)
+                    for row,tips in linked:
+                        found=set()
+                        for kind,text,part,parts in tips:
+                            # NeoForge's own screen names a value <modid>.configuration.<name> when the mod gave no
+                            # key: only for a mod (one per file) that opens that screen. Configured needs the mod's key.
+                            if kind=='name' and not (screen and len(mods)==1):continue
+                            key=text if kind=='key' else f'{mods[0]}.configuration.{text}'
+                            if mods and LANG_KEY.match(key):found.add((key+'.tooltip',part,parts,f'assets/{mods[0]}/lang/zh_tw.json'))
+                        if found:row['tooltips']=[list(t) for t in sorted(found)]
+                    exclude_tooltip_conflicts(self.rows[first_row:])
         except Exception as e:self.errors.append([label,str(e)])
     def nested(self,z,label,names):
         # Jar-in-jar libraries (META-INF/jarjar etc.) ship their own language files; sources get a

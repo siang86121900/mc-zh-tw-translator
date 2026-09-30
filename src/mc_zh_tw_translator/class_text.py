@@ -124,39 +124,54 @@ def sink(method, array=False):
     return None
 
 
+def branch_targets(code, ops, handlers):
+    targets = set(handlers)
+    for pos, op, arg in ops:
+        if 153 <= op <= 168 or op in (198,199):targets.add(pos+struct.unpack('>h',arg)[0])
+        elif op in (200,201):targets.add(pos+struct.unpack('>i',arg)[0])
+        elif op in (170,171):
+            q = (pos+4)&~3
+            targets.add(pos+struct.unpack_from('>i',code,q)[0])
+            if op == 170:
+                low,high = struct.unpack_from('>ii',code,q+4)
+                targets.update(pos+struct.unpack_from('>i',code,q+12+4*i)[0] for i in range(high-low+1))
+            else:
+                count = struct.unpack_from('>i',code,q+4)[0]
+                targets.update(pos+struct.unpack_from('>i',code,q+12+8*i)[0] for i in range(count))
+    return targets
+
+
+def comment_loads(cf, ops, i, targets):
+    """Op indices of the ldc instructions whose strings the comment call at ops[i] receives, in order; None if unproven."""
+    method = cf.method(u2(ops[i][2],0))
+    if sink(method):
+        return [i-1] if i and ops[i-1][1] in (18,19) and ops[i][0] not in targets else None
+    if not sink(method,True):return None
+    # javac varargs: count, anewarray String, (dup, index, ldc, aastore)*, comment.
+    j = i-1; loads = []
+    while j >= 3 and ops[j][1] == 83 and ops[j-1][1] in (18,19) and ops[j-3][1] == 89:
+        if integer(ops[j-2]) is None:break
+        loads.append((j-1,integer(ops[j-2]))); j -= 4
+    if j >= 1 and ops[j][1] == 189 and cf.utf.get(u2(cf.cp[u2(ops[j][2],0)][1],0)) == 'java/lang/String':
+        count = integer(ops[j-1])
+        if count == len(loads) and [n for _,n in reversed(loads)] == list(range(count)) and not any(x[0] in targets for x in ops[j:i+1]):
+            return [idx for idx,_ in reversed(loads)]
+    return None
+
+
 def proven_strings(raw):
     cf = ClassFile(raw)
     strings = {k:u2(v,0) for k,(t,v) in cf.cp.items() if t == 8}
     uses = {k:[] for k in strings}
     for code, handlers in cf.codes:
-        ops = list(instructions(code)); targets = set(handlers)
-        for pos, op, arg in ops:
-            if 153 <= op <= 168 or op in (198,199):targets.add(pos+struct.unpack('>h',arg)[0])
-            elif op in (200,201):targets.add(pos+struct.unpack('>i',arg)[0])
-            elif op in (170,171):
-                q = (pos+4)&~3
-                targets.add(pos+struct.unpack_from('>i',code,q)[0])
-                if op == 170:
-                    low,high = struct.unpack_from('>ii',code,q+4)
-                    targets.update(pos+struct.unpack_from('>i',code,q+12+4*i)[0] for i in range(high-low+1))
-                else:
-                    count = struct.unpack_from('>i',code,q+4)[0]
-                    targets.update(pos+struct.unpack_from('>i',code,q+12+8*i)[0] for i in range(count))
+        ops = list(instructions(code)); targets = branch_targets(code, ops, handlers)
         safe = {}
         for i, (pos,op,arg) in enumerate(ops):
             if op in (182,183,184,185):
-                reason = sink(cf.method(u2(arg,0)))
+                method = cf.method(u2(arg,0))
+                reason = sink(method)
                 if reason and i and ops[i-1][1] in (18,19) and pos not in targets:safe[i-1] = reason
-                if sink(cf.method(u2(arg,0)),True):
-                    # javac varargs: count, anewarray String, (dup, index, ldc, aastore)*, comment.
-                    j = i-1; loads = []
-                    while j >= 3 and ops[j][1] == 83 and ops[j-1][1] in (18,19) and ops[j-3][1] == 89:
-                        if integer(ops[j-2]) is None:break
-                        loads.append((j-1,integer(ops[j-2]))); j -= 4
-                    if j >= 1 and ops[j][1] == 189 and cf.utf.get(u2(cf.cp[u2(ops[j][2],0)][1],0)) == 'java/lang/String':
-                        count = integer(ops[j-1])
-                        if count == len(loads) and [n for _,n in reversed(loads)] == list(range(count)) and not any(x[0] in targets for x in ops[j:i+1]):
-                            safe.update({idx:'設定說明' for idx,_ in loads})
+                if sink(method,True):safe.update({idx:'設定說明' for idx in comment_loads(cf,ops,i,targets) or []})
         for i,(_,op,arg) in enumerate(ops):
             if op in (18,19):
                 index = arg[0] if op == 18 else u2(arg,0)
@@ -171,6 +186,60 @@ def proven_strings(raw):
         if all_uses and all(all_uses) and not protected:
             result[utf] = (cf.utf[utf], '、'.join(sorted(set(all_uses))))
     return cf, result
+
+
+DEFINES = ('define','defineInRange','defineList','defineListAllowEmpty','defineEnum','defineInList')
+RELOAD = {25,42,43,44,45,178,180,87}  # aload(_n), getstatic, getfield, pop: the builder put back on the stack
+
+
+def config_tooltips(raw):
+    """Where config screens can show a Chinese version of each proven comment string, without touching the class.
+
+    NeoForge's own config screen and Configured (Forge and NeoForge) look up '<key>.tooltip' in the language
+    files before showing a value's comment. <key> is what the mod passed to Builder.translation(); without
+    one, NeoForge's screen uses '<modid>.configuration.<value name>' and Configured shows only the comment.
+    Only straight-line chains comment → [translation / restart flags] → define("name", ...) are read.
+
+    Returns {UTF-8 constant index (the row key proven_strings uses): [(kind, text, part, parts)]}: kind 'key' with the mod's translation key,
+    or 'name' with the value name the caller combines with the mod id. A comment given as several strings
+    is shown joined with newlines; part is this string's place among them.
+    """
+    cf = ClassFile(raw); result = {}
+    for code, handlers in cf.codes:
+        ops = list(instructions(code)); targets = branch_targets(code, ops, handlers)
+        pending = None  # [comment ldc op indices, translation key, op index after the last builder call]
+        for i, (pos,op,arg) in enumerate(ops):
+            if pos in targets:pending = None
+            if op not in (182,183,184,185):continue
+            method = cf.method(u2(arg,0))
+            if not method or method[0] not in BUILDERS:continue
+            owner, name, desc = method
+            if name == 'comment':
+                loads = comment_loads(cf, ops, i, targets)
+                pending = [loads, None, i+1] if loads else None
+            elif pending and name == 'translation' and desc == '(Ljava/lang/String;)L'+owner+';' and ops[i-1][1] in (18,19) and i-1 >= pending[2]:
+                pending[1] = cf.utf[u2(cf.cp[ldc_index(ops[i-1])][1],0)]; pending[2] = i+1
+            elif pending and name in ('worldRestart','gameRestart') and desc == '()L'+owner+';':
+                pending[2] = i+1
+            elif pending and name in DEFINES and desc.startswith('(Ljava/lang/String;'):
+                # The value name is the first argument: the constant loaded right after the builder is back on the stack.
+                j = pending[2]
+                while j < i and ops[j][1] in RELOAD:j += 1
+                if j < i and ops[j][1] in (18,19) and cf.cp[ldc_index(ops[j])][0] == 8:
+                    value = cf.utf[u2(cf.cp[ldc_index(ops[j])][1],0)]
+                    entry = ('key', pending[1]) if pending[1] else ('name', value)
+                    loads = pending[0]
+                    for part, k in enumerate(loads):
+                        result.setdefault(u2(cf.cp[ldc_index(ops[k])][1],0), []).append((*entry, part, len(loads)))
+                pending = None
+            else:
+                pending = None  # push (a section), a List-path define or anything else: not a proven value comment
+    return result
+
+
+def ldc_index(op):
+    _,code,arg = op
+    return arg[0] if code == 18 else u2(arg,0)
 
 
 def integer(op):

@@ -41,7 +41,9 @@
 ## 硬編碼文字（修改 class 前必讀）
 
 - APP 的通用支援由 `class_text.py` 實作：逐個 class 檢查每次載入同一常數的位置，僅接受直接 literal 呼叫或 Forge／NeoForge Builder.comment（單字串與直接建立的字串陣列）。private static final 的內嵌常數須沒有欄位存取；公開常數、註解與 bootstrap 引用仍拒絕。其他 bytecode 資料流不能套用此證據。
-- 改寫後保留常數索引及非翻譯內容，使用隨 APP 附帶的 ClassTextCheck Java 解析器與 Java ZipFS 驗證；解析不執行模組，不等於遊戲內實測。掃描快取版本 scan-5 會重查舊候選。class 修改不放入分享補丁。
+- 改寫後保留常數索引及非翻譯內容，使用隨 APP 附帶的 ClassTextCheck Java 解析器與 Java ZipFS 驗證；解析不執行模組，不等於遊戲內實測。掃描快取版本變更會重查舊候選。class 修改不放入分享補丁。
+- 設定說明的語系鍵（2026-10-01 以位元碼查證）：NeoForge 21.1.244 的 `ConfigurationScreen$ConfigurationSectionScreen.getTooltipComponent` 以 `translatableWithFallback(<key>.tooltip, comment)` 顯示說明，`getTranslationKey` 先用 `ValueSpec.getTranslationKey()`（模組呼叫 `Builder.translation` 的值），沒有時用 `<modId>.configuration.<設定名稱>`。Configured（Forge 1.20.1 2.2.3、NeoForge 1.21.1 2.6.3）的 `ForgeValue`／`NeoForgeValue.getComment` 只在 `I18n.exists(<translationKey>.tooltip)` 時改用語系檔，沒有模組語系鍵時一律顯示 comment；Configured 只替沒有 `IConfigScreenFactory` 的模組產生畫面，不蓋掉模組註冊的 ConfigurationScreen。ForgeConfigScreens 8.0.2 直接顯示 comment，不查語系檔。Forge 本身沒有通用設定畫面（只有 ConfigScreenHandler）。
+- `class_text.config_tooltips` 只接受直線鏈：`comment` →（`translation`／`worldRestart`／`gameRestart`）→ 名稱常數 → `define*`，中間只允許把 builder 放回堆疊的指令、不跨分支目標；`push` 的分區說明、名稱不是常數的設定都不連結。預設鍵另須該模組檔引用 ConfigurationScreen 且只宣告一個 modId。掃描快取版本 scan-7。不同設定共用同一語系鍵但原文不同時不建立覆蓋；已存在語系條目的鍵交由一般語系流程處理。同鍵候選譯文不一致時停止寫入，避免重跑互相覆蓋。
 
 
 - 語系檔找不到截圖文字時，必須檢查 JAR 的 `.class` 字串常數與使用位置；例如 PasterDream 的裂隙提示、劇情對話及物品說明直接寫在程式內，新增 `zh_tw.json` 不會取代這些 literal 訊息。

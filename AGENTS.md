@@ -80,6 +80,7 @@
 - 設定說明、提示與玩家可見句子也是翻譯範圍，不能只因文字存在 class 裡就全部排除 AI。先追查全部使用位置；確認僅用於 Forge／NeoForge 設定 comment 或直接顯示呼叫的文字，納入一般 AI 同意、補翻、格式與數值檢查、備份及套用流程。句子看起來像人話不構成寫入證據；兼用於設定鍵、比較、公開常數或尚未支援的動態組句，明列未送 AI 的具體原因。
 - 硬編碼文字改寫僅改已證明用途的字串常數，保留 Modified UTF-8、控制字元、常數索引與其餘 class 位元組；套用前重新驗證用途、原文、Java class 解析及 ZipFS。這類文字只能改寫原模組，不能假稱加語系檔即可生效；不匯出到翻譯分享補丁。重跑須保留原文與 AI 來源並認出已套用。
 - CurseForge 管理的整合包（有 minecraftinstance.json）啟動遊戲時會把改過的模組檔從官方重新下載蓋回，所以那裡不寫入 class 文字、也不送 AI 補翻，報告寫明原因；其他啟動器才改寫模組。
+- 例外：設定畫面會先查語系檔的設定說明（NeoForge ConfigurationScreen 與 Configured 查「語系鍵.tooltip」，查不到才顯示 comment）。CurseForge 整合包裡，能從 class 證明語系鍵的 comment（Builder.translation 的常數；或模組引用 ConfigurationScreen、檔案只宣告一個 modId 時的「modId.configuration.設定名稱」）寫進翻譯資源包的 assets/<modId>/lang/zh_tw.json，照常送 AI 與檢查；多行 comment 全部翻好才寫。ForgeConfigScreens 不查語系檔、Configured 不查預設鍵，這些仍保留原因。查證依據記在 docs/translation-reference.md。
 
 ## 掃描範圍與增量處理
 - 整包掃描目標包括 mods、kubejs、config／defaultconfigs、resourcepacks、datapacks、任務、Patchouli／外部書本及其他玩家文字，不只處理 mods。
