@@ -40,6 +40,9 @@
 
 ## 硬編碼文字（修改 class 前必讀）
 
+- APP 的通用支援由 `class_text.py` 實作：逐個 class 檢查每次載入同一常數的位置，僅接受直接 literal 呼叫或 Forge／NeoForge Builder.comment（單字串與直接建立的字串陣列）。private static final 的內嵌常數須沒有欄位存取；公開常數、註解與 bootstrap 引用仍拒絕。其他 bytecode 資料流不能套用此證據。
+- 改寫後保留常數索引及非翻譯內容，使用隨 APP 附帶的 ClassTextCheck Java 解析器與 Java ZipFS 驗證；解析不執行模組，不等於遊戲內實測。掃描快取版本 scan-5 會重查舊候選。class 修改不放入分享補丁。
+
 
 - 語系檔找不到截圖文字時，必須檢查 JAR 的 `.class` 字串常數與使用位置；例如 PasterDream 的裂隙提示、劇情對話及物品說明直接寫在程式內，新增 `zh_tw.json` 不會取代這些 literal 訊息。
 - 可用 `scripts/audit_hardcoded_display.py` 建立候選與用途報告，但執行前先確認腳本指向使用者指定的 instance。目前腳本含固定路徑，不能直接套到其他模組包。掃描所有 class，不可用少數中文字作為前置篩選而漏掉短名稱。

@@ -181,6 +181,20 @@ NUMBER_UNIT = re.compile(r'(\d+(?:\.\d+)?)\s*(thousand|million|billion|k(?![a-z]
 CHINESE_NUMERAL = re.compile('[零〇一二兩三四五六七八九十百千萬億半雙]')
 
 
+def numbers_in(text):
+    """The plain numbers a text states, parameters left out and 10k / 1萬 written out."""
+    text=re.sub(r'(?<=\d),(?=\d{3})','',PARAMETER.sub(' ',text))
+    # 1 million, 10k, 100萬 and 1億 are written out so that both sides compare as plain numbers.
+    text=NUMBER_UNIT.sub(lambda m:f' {float(m[1])*UNITS_OF_NUMBER[m[2].casefold()]:.10g} ',text)
+    return [f'{float(n):.10g}' for n in NUMBER.findall(text)]
+
+
+def added_numbers(original, value):
+    """Numbers a new translation states that the original does not, as a note; '' when none."""
+    extra=list((collections.Counter(numbers_in(value))-collections.Counter(numbers_in(original))).elements())
+    return '譯文多了原文沒有的數字（'+'、'.join(extra[:4])+'），請核對' if extra else ''
+
+
 def number_doubt(original, value):
     """Numbers of the English original that the translation dropped or changed, as a note; '' when fine.
 
@@ -188,12 +202,7 @@ def number_doubt(original, value):
     Numbers written in Chinese (九十九, 雙倍) and parameters such as %1$s are not counted.
     """
     if not isinstance(original,str) or not isinstance(value,str):return ''
-    def numbers(text):
-        text=re.sub(r'(?<=\d),(?=\d{3})','',PARAMETER.sub(' ',text))
-        # 1 million, 10k, 100萬 and 1億 are written out so that both sides compare as plain numbers.
-        text=NUMBER_UNIT.sub(lambda m:f' {float(m[1])*UNITS_OF_NUMBER[m[2].casefold()]:.10g} ',text)
-        return [f'{float(n):.10g}' for n in NUMBER.findall(text)]
-    wanted=numbers(original);found=numbers(value)
+    wanted=numbers_in(original);found=numbers_in(value)
     missing=[n for n in wanted if n not in found];extra=[n for n in found if n not in wanted]
     if not missing or (not extra and CHINESE_NUMERAL.search(value)):return ''
     if not extra and set(missing)=={'0'} and re.search('[無沒未]',value):return ''
@@ -206,6 +215,7 @@ def validate_text(original, value):
     if not original:
         return True
     return (placeholders(original)==placeholders(value)
+            and re.findall(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',original)==re.findall(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',value)
             and collections.Counter(FORMAT.findall(original))==collections.Counter(FORMAT.findall(value))
             and original.count('\n')==value.count('\n'))
 
@@ -265,6 +275,9 @@ class AiMemory:
     def remember_many(self,rows,model):
         for r in rows:
             m=re.search(r'assets/([^/]+)/',r.get('source',''));original=original_of(r)
+            if original and r.get('kind')=='class_display':
+                self.entries[TranslationMemory.ident(r['source'],r['key'],original)]=dict(
+                    text=r['proposed'],original=original,model=model,made_at=datetime.now().isoformat(timespec='seconds'))
             if m and original and r.get('kind')=='language':
                 self.entries[TranslationMemory.ident(m[1],r['key'],original)]=dict(
                     text=r['proposed'],original=original,model=model,made_at=datetime.now().isoformat(timespec='seconds'))
@@ -390,7 +403,8 @@ class Provenance:
     def record(self, rows):
         for r in rows:
             self.entries[self.key(r)]=dict(text=r['proposed'],en=r.get('en'),origin=r['origin'],evidence=r.get('evidence') or '',
-                                           issue=r.get('issue') or '',unified_from=r.get('unified_from'),model=r.get('ai_model'))
+                                           issue=r.get('issue') or '',unified_from=r.get('unified_from'),model=r.get('ai_model'),
+                                           original=original_of(r) if r.get('kind')=='class_display' else None)
         self.path.parent.mkdir(parents=True,exist_ok=True);write_json(self.path,self.entries)
 
 
@@ -711,7 +725,7 @@ def present_mods(z, depth=0):
     return found
 
 
-SCAN_CACHE_VERSION = 'scan-4'
+SCAN_CACHE_VERSION = 'scan-5'
 
 
 def scan_cache(home, instance):
@@ -883,12 +897,32 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 result['source_counts']=dict(counts)
                 publish();last_publish=time.monotonic()
         # Non-language candidates are retained explicitly rather than reclassifying IDs as text.
+        if r['kind']=='class_display':
+            original=r['current'];previous=provenance.lookup(r)
+            reason=keep_original_reason(original,r['key'],'') if not HAN.search(original) else ''
+            memory_value=memory.lookup(r['source'],r['key'],original)
+            value=original;origin='untranslated';issue='';extra={}
+            if previous:
+                origin=previous['origin'];issue=previous.get('issue','');extra=dict(installed=True,recovered=True,ai_model=previous.get('model'),en_ref=previous.get('original'))
+            elif memory_value and validate_text(original,memory_value):value=memory_value;origin='translation_memory'
+            elif reason:origin='keep_original'
+            elif HAN.search(original):
+                value=to_taiwan(original) if has_simplified(original) else original
+                origin='existing_zh_tw' if value==original else 'same_source_zh_cn'
+            else:
+                earlier=ai_memory.lookup(r['source'],r['key'],original)
+                if earlier and validate_text(original,earlier['text']) and not number_doubt(original,earlier['text']):
+                    value=earlier['text'];origin='ai_translation';extra=dict(ai_reused=True,ai_model=earlier.get('model'))
+            decided.append(dict(slim(r),proposed=value,origin=origin,evidence=r.get('display_use',''),
+                                issue=issue or ('等待 AI 補翻（已確認為'+r.get('display_use','玩家文字')+'）' if origin=='untranslated' else ''),
+                                supported=True,reviewed=False,changed=value!=original,**extra))
+            continue
         if r['kind'] not in ('language','book'):
             if r['flags']:
                 value=r['current'] or r['en'] or '';hidden=internal_reason(value)
                 # Obvious identifiers, code and log lines are set aside so 待查 lists what may really be shown.
                 result['rows'].append(dict(slim(r),proposed=value,origin='not_display' if hidden else 'untranslated',
-                                           issue='程式內部字串：'+hidden if hidden else '需確認顯示用途與上下文',
+                                           issue='程式內部字串：'+hidden if hidden else '尚未確認安全寫回方式：需追查顯示用途，暫不送 AI',
                                            supported=False,reviewed=False,changed=False))
                 counts['not_display' if hidden else 'context_candidate']+=1
             continue
@@ -1509,7 +1543,7 @@ def stage_and_apply(session, home, notify, work):
     for row in selected:
         if not validate_text(original_of(row),row['proposed']):raise ValueError('譯文格式或參數不一致：'+row['key'])
         path,entry=target_for(row); contained(instance,path)
-        if entry is not None and path.startswith('mods/') and (pack or is_nested(row)):pack_rows.append((path,entry,row));continue
+        if entry is not None and path.startswith('mods/') and row['kind']!='class_display' and (pack or is_nested(row)):pack_rows.append((path,entry,row));continue
         changes[path].append((entry,row))
     require_space(instance,home,list(changes))
     staged=report/'staged'
@@ -1517,6 +1551,7 @@ def stage_and_apply(session, home, notify, work):
         staged=report/('staged-'+uuid.uuid4().hex[:8])
     staged.mkdir();work.append(staged)
     records=build_pack(instance,staged,pack_rows,session,notify) if pack_rows else []
+    changed_classes=[]
     for i,(path,edits) in enumerate(changes.items()):
         notify(int(70*i/len(changes)),'驗證並準備套用',path)
         src=contained(instance,path); dst=contained(staged,path)
@@ -1536,7 +1571,11 @@ def stage_and_apply(session, home, notify, work):
                      else src.read_bytes() if not z and src.exists() else None)
                 name=entry or path
                 is_text=rows[0]['kind']=='book' and rows[0]['key']=='text'
-                if is_text:
+                if rows[0]['kind']=='class_display':
+                    from .class_text import rewrite
+                    content=rewrite(raw,rows)
+                    changed_classes.append(content)
+                elif is_text:
                     content=rows[0]['proposed'].encode('utf-8')
                 else:
                     try:
@@ -1572,6 +1611,10 @@ def stage_and_apply(session, home, notify, work):
             if z:z.close()
         if merged:records=[dict(r,after=file_hash(dst)) if r['file']==path else r for r in records]
         else:records.append(dict(file=path,before=before,after=file_hash(dst),reviewed=True,verified=True))
+    if changed_classes:
+        from .class_text import check_java
+        notify(71,'檢查程式文字',f'用 Java 解析 {len(changed_classes):,} 個修改過的 class，確認格式完整')
+        check_java(changed_classes)
     if session.get('set_language'):
         record=set_language_record(instance,staged)
         if record:records.append(record)

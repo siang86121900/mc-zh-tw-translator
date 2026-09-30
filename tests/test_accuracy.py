@@ -306,7 +306,63 @@ class RepeatedTextTests(Base):
         session=self.supplement(self.make_plan(instance));rows={r['key']:r for r in session['rows']}
         for key in ('a','b'):
             self.assertEqual(rows[key]['origin'],'untranslated');self.assertIn('改動了數值',rows[key]['issue'])
+            self.assertEqual(rows[key]['ai_rejected']['text'],'花費 8 顆寶石')
         self.assertEqual((session['ai_translation'],ai.pending_rows(session)),(0,[]))
+        # Asked once more in the same run, then left alone.
+        self.assertEqual([r['text'] for kind,payload in FakeClient.sent for r in payload],['Costs 5 gems','Costs 5 gems'])
+
+
+class RejectedAnswerTests(Base):
+    """An AI answer the checks turn down is kept for the user and asked once more, told what was wrong."""
+    def supplement(self,session):
+        return ai.supplement(session,self.home,'account-model',lambda *_:None,client_factory=FakeClient)
+
+    def test_line_count_is_sent_and_a_wrong_count_is_retried_once_with_the_reason(self):
+        instance=self.pack('換行包',{'desc':'Line one.\nLine two.\nLine three.'},{'z':'无关'})
+        answers=iter(['第一行。第二行。\n第三行。','第一行。\n第二行。\n第三行。'])
+        class Retrying(FakeClient):
+            def translate(self,payload,model,glossary=None):
+                self.sent.append(('translate',payload))
+                return dict(translations=[dict(id=r['id'],translation=next(answers),note='') for r in payload])
+        session=ai.supplement(self.make_plan(instance),self.home,'account-model',lambda *_:None,client_factory=Retrying)
+        first,second=[payload[0] for _,payload in FakeClient.sent]
+        self.assertEqual(first['lines'],'2');self.assertNotIn('previous',first)
+        self.assertEqual(second['previous'],'第一行。第二行。\n第三行。');self.assertIn('原文 2 個，上次 1 個',second['problem'])
+        row=next(r for r in session['rows'] if r['key']=='desc')
+        self.assertEqual((row['origin'],row['proposed'],row['ai_retried']),('ai_translation','第一行。\n第二行。\n第三行。',True))
+        self.assertNotIn('ai_rejected',row)
+
+    def test_second_rejection_is_final_and_the_answer_stays_visible(self):
+        instance=self.pack('換行包二',{'desc':'One.\nTwo.'},{'z':'无关'})
+        FakeClient.translations={'One.\nTwo.':'一。二。'}
+        session=self.supplement(self.make_plan(instance));row=next(r for r in session['rows'] if r['key']=='desc')
+        self.assertEqual(len(FakeClient.sent),2)
+        self.assertEqual((row['origin'],row['ai_rejected']['text'],row['ai_rejected']['reason']),('untranslated','一。二。','format'))
+        self.assertIn('已再試一次',row['issue'])
+        self.assertEqual(ai.pending_rows(session),[]);self.assertEqual(len(ai.asked_rows(session)),1)
+
+    def test_reports_from_before_the_retry_are_asked_once_more(self):
+        instance=self.pack('舊報告',{'a':'Costs 5 gems'},{'z':'无关'})
+        session=self.make_plan(instance);row=next(r for r in session['rows'] if r['key']=='a')
+        row.update(ai_attempted=True,issue=ai.REJECTED['number'])  # what v0.8 left behind
+        self.assertEqual(len(ai.pending_rows(session)),1)
+        FakeClient.translations={'Costs 5 gems':'花費 5 顆寶石'}
+        session=self.supplement(session);row=next(r for r in session['rows'] if r['key']=='a')
+        self.assertEqual(FakeClient.sent[0][1][0]['problem'],'上次的譯文沒有通過檢查：'+ai.REJECTED['number'])
+        self.assertEqual((row['origin'],row['proposed']),('ai_translation','花費 5 顆寶石'))
+
+    def test_kept_english_is_not_asked_again(self):
+        instance=self.pack('專名包',{'a':'Totemus'},{'z':'无关'})
+        session=self.supplement(self.make_plan(instance))  # the fake keeps English it has no entry for
+        row=next(r for r in session['rows'] if r['key']=='a')
+        self.assertEqual(len(FakeClient.sent),1);self.assertIn('AI 保留原文',row['issue'])
+        self.assertEqual(ai.pending_rows(session),[])
+
+    def test_added_or_reordered_numbers(self):
+        self.assertTrue(jobs.added_numbers('Costs 5 gems','花費 5 或 10 顆寶石'))
+        self.assertEqual(jobs.added_numbers('Level 2 needs 10 XP','需要 10 經驗才到 2 級'),'')
+        self.assertEqual(jobs.number_doubt('Level 2 needs 10 XP','需要 10 經驗才到 2 級'),'')
+        self.assertEqual(jobs.added_numbers('Stores 10k FE','儲存 1萬 FE'),'')
 
 
 class SameKeyTests(Base):

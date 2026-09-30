@@ -260,6 +260,10 @@ def row_module(row):
     return m[1] if m else row.get('source','').split('!')[0]
 
 
+def row_memory_scope(row):
+    return row.get('source','') if row.get('kind')=='class_display' else row_module(row)
+
+
 class ReviewDialog(QDialog):
     def __init__(self,row,parent):
         super().__init__(parent);self.row=row
@@ -277,6 +281,15 @@ class ReviewDialog(QDialog):
         box.addWidget(label('繁體中文譯文'))
         self.value=QTextEdit();self.value.setPlainText(row['proposed']);box.addWidget(self.value)
         box.addWidget(label('來源：'+jobs.SOURCE_NAMES.get(row['origin'],row['origin'])+'　'+row.get('issue',''),'sub'))
+        rejected=row.get('ai_rejected') or {}
+        if rejected.get('text') and row['supported'] and not row.get('installed'):
+            # The AI answer the checks turned down: a starting point the user can fix, never applied as is.
+            box.addWidget(label('AI 的譯文（沒有通過檢查，未採用）'))
+            answer=QTextEdit();answer.setPlainText(rejected['text']);answer.setReadOnly(True);answer.setMaximumHeight(130);box.addWidget(answer)
+            use=button('拿這句來修改',lambda:self.value.setPlainText(rejected['text']))
+            hint=('換行數要和原文一樣（原文 '+str(jobs.original_of(row).count('\n'))+' 個，AI 寫了 '+str(rejected['text'].count('\n'))+' 個）'
+                  if rejected.get('reason')=='format' else str(rejected.get('detail') or '數字要和原文一樣'))
+            line=QHBoxLayout();line.addWidget(use);line.addWidget(label('修改時注意：'+hint,'sub'),1);box.addLayout(line)
         self.check=QCheckBox('我已核對語意、名稱、數值及操作條件');box.addWidget(self.check)
         actions=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
         actions.button(QDialogButtonBox.Save).setText('確認這筆')
@@ -527,6 +540,7 @@ class MainWindow(QMainWindow):
         actions=QHBoxLayout();actions.setSpacing(12);tools=FlowLayout(spacing=8)
         for b in (self.review_btn,self.confirm_all_btn,self.ai_run_btn,self.ai_check_btn,self.undo_confirm_btn):tools.addWidget(b)
         actions.addLayout(tools,1);actions.addWidget(self.apply_btn,0,Qt.AlignTop|Qt.AlignRight);box.addLayout(actions)
+        self.ai_run_hint=label('','sub');self.ai_run_hint.setVisible(False);box.addWidget(self.ai_run_hint)
         box.addWidget(label('雙擊一列可以修正譯文；按「確認這筆」後會記住，下次翻譯自動使用。「建議確認」只列 AI 補譯、版本待確認的參考譯文、數值和原文不同的譯文與自動統一的譯名。','sub'))
 
     def make_backups(self):
@@ -862,7 +876,7 @@ class MainWindow(QMainWindow):
         # The full cost/privacy notice matters before connecting; once connected it collapses to one line.
         self.ai_notice_card,b=card();b.addWidget(label('使用你原本的 Codex 額度','section'))
         b.addWidget(label(ai.NOTICE));b.addWidget(label(ai.PRIVACY,'sub'));box.addWidget(self.ai_notice_card)
-        self.ai_notice_short=label('補翻消耗原本方案的 Codex 額度（與其他 Codex 工作共用）；只傳送缺漏的原文、語系鍵與相對路徑。','sub')
+        self.ai_notice_short=label('補翻消耗原本方案的 Codex 額度（與其他 Codex 工作共用）；只傳送缺漏原文（含已確認用途的設定說明與程式顯示文字）、文字位置與相對路徑。','sub')
         box.addWidget(self.ai_notice_short)
         f,b=card();b.addWidget(label('補翻模型','section'))
         self.ai_models=QComboBox();self.ai_models.setPlaceholderText('登入後載入帳號可用模型');b.addWidget(self.ai_models)
@@ -1089,7 +1103,7 @@ class MainWindow(QMainWindow):
                                 '確認錯了可以按「取消上次整批確認」。'+wide)!=QMessageBox.Yes:return
         batch=Path(self.session['report']).name+'-'+time.strftime('%H%M%S')
         jobs.TranslationMemory(self.home).remember_many(
-            [(row_module(r),r['key'],jobs.original_of(r),r['proposed'],r['source']) for r in rows],batch)
+            [(row_memory_scope(r),r['key'],jobs.original_of(r),r['proposed'],r['source']) for r in rows],batch)
         for r in rows:r.update(reviewed=True,review_method='user_confirmed_batch',confirmed_batch=batch)
         self.settings.setValue('last_confirm_batch',batch)
         jobs.write_json(Path(self.session['report'])/'session.json',self.session);self.fill_table()
@@ -1290,7 +1304,8 @@ class MainWindow(QMainWindow):
             ai_line='這次不使用 AI；參考來源缺漏的文字會留在報告，之後可在報告頁補翻。'
         prompt=(f'要翻譯並寫入的模組包：「{instance.name}」\n{instance}\n'+(note+'\n' if note else '')
                 +'\n這會掃描整個模組包、翻譯可辨識的玩家文字、建立備份並直接套用。\n'
-                +ai_line+'\n\n遊戲必須先關閉；圖片文字、硬編碼程式和無法確認的特殊格式會列入報告。\n是否繼續？')
+                +ai_line+'\n\n已確認用途的程式文字會備份並寫入原模組，切換語言也會維持繁中，可從備份還原。'
+                +'遊戲必須先關閉；圖片文字、用途不明的程式文字與特殊格式會列入報告。\n是否繼續？')
         if QMessageBox.question(self,'一鍵完整翻譯',prompt)!=QMessageBox.Yes:return
         self.progress.setValue(0);set_pill(self.status,'處理中','progress')
         if jobs.is_instance(instance):self.remember_instance(instance)
@@ -1408,6 +1423,15 @@ class MainWindow(QMainWindow):
         count=len(ai.pending_rows(self.session)) if self.session and not self.session.get('is_preview') else 0
         self.ai_run_btn.setText(f'AI 補翻缺漏（{count:,} 筆）' if count else 'AI 補翻缺漏')
         self.ai_run_btn.setEnabled(bool(count) and not self.busy)
+        # A greyed-out button says why, so it never looks broken.
+        asked=len(ai.asked_rows(self.session)) if self.session and not self.session.get('is_preview') and not count else 0
+        self.ai_run_btn.setToolTip(f'有 {count:,} 筆沒有中文來源的文字可以交給 AI 補翻。' if count else
+            f'沒有可以再送的缺漏：{asked:,} 筆 AI 已經回答過，譯文沒通過檢查或 AI 判斷保留原文，不再重送以免重複消耗額度。'
+            '原因寫在每一筆的說明裡；雙擊那一筆可以拿 AI 的譯文來修改後確認。' if asked else '這批沒有需要 AI 補翻的缺漏。')
+        if hasattr(self,'ai_run_hint'):
+            self.ai_run_hint.setVisible(bool(asked))
+            self.ai_run_hint.setText(f'「AI 補翻缺漏」不能按：{asked:,} 筆 AI 已經回答過（沒通過檢查或 AI 判斷保留原文），不再重送。'
+                                     '雙擊那一筆可以看到 AI 的譯文，改好後按「確認這筆」。')
         doubts=len(ai.doubt_rows(self.session)) if self.session and not self.session.get('is_preview') else 0
         self.ai_check_btn.setText(f'AI 核對疑點（{doubts:,} 筆）' if doubts else 'AI 核對疑點')
         self.ai_check_btn.setEnabled(bool(doubts) and not self.busy)
@@ -1471,7 +1495,9 @@ class MainWindow(QMainWindow):
                     # A file that holds only Chinese is shown with the installed mod's English; its own text is kept here.
                     own='這個檔案裡的中文：'+str(r.get('zh_cn')) if r.get('en_ref') and r.get('zh_cn') else ''
                     same='和「'+r['same_key_as'].split('!/')[0].split('/')[-1]+'」裡的同一句用同一個譯文' if r.get('same_key_as') else ''
-                    item.setToolTip('\n'.join(x for x in (shown and '模組：'+shown,r['key'],r['source'],own,r.get('issue') or '',same,seen,mine) if x))
+                    turned=(r.get('ai_rejected') or {}).get('text')
+                    turned='AI 的譯文（未採用，雙擊可拿來修改）：'+turned if turned and not r.get('installed') else ''
+                    item.setToolTip('\n'.join(x for x in (shown and '模組：'+shown,r['key'],r['source'],own,r.get('issue') or '',turned,same,seen,mine) if x))
                 else:item.setToolTip(str(text))
                 if j==0:item.setData(MODULE_ROLE,jobs.module_label(self.session.get('instance'),r))
                 if j==3:
@@ -1543,8 +1569,8 @@ class MainWindow(QMainWindow):
         if dialog.exec()==QDialog.Accepted:
             # Only rows the user confirmed here become translation memory for later modpacks.
             original=jobs.original_of(row)
-            if row.get('kind')=='language' and row_module(row) and original:
-                jobs.TranslationMemory(self.home).remember(row_module(row),row['key'],original,row['proposed'],row['source'])
+            if row.get('kind') in ('language','class_display') and row_memory_scope(row) and original:
+                jobs.TranslationMemory(self.home).remember(row_memory_scope(row),row['key'],original,row['proposed'],row['source'])
             jobs.write_json(Path(self.session['report'])/'session.json',self.session);self.fill_table()
 
     def apply_job(self):
@@ -1555,6 +1581,7 @@ class MainWindow(QMainWindow):
         if not count:QMessageBox.information(self,'沒有可套用的譯文','這批沒有尚未套用、且通過檢查的譯文。');return
         language='，並把遊戲語言設為繁體中文' if self.set_language.isChecked() else ''
         if QMessageBox.question(self,'備份並套用',f'將備份原檔，並套用 {count:,} 筆通過檢查的譯文{language}到：\n{self.session["instance"]}\n\n'
+                                '已確認用途的程式文字會寫入原模組，切換語言也會維持繁中，可從備份還原。'
                                 '不需要逐筆確認；有疑點的會列在「建議確認」。請先關閉此模組包的遊戲。是否繼續？')!=QMessageBox.Yes:return
         self.session['set_language']=self.set_language.isChecked()
         def operation(w):

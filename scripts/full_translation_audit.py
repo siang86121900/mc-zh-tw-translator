@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 from mc_zh_tw_translator.translator import CTE2QuestTranslator, PATCHOULI_SKIP_FIELDS
 from opencc import OpenCC
+from mc_zh_tw_translator.class_text import proven_strings
 
 HAN=re.compile('[\u3400-\u9fff]'); LATIN=re.compile('[A-Za-z]{3,}')
 LANG=re.compile(r'^(.*?/lang/)(en_us|zh_tw|zh_cn)\.(json|lang)$',re.I)
@@ -164,9 +165,17 @@ class Audit:
                 for n in names:
                     if not n.endswith('.class'):continue
                     try:
-                        for i,s in enumerate(utf8_constants(z.read(n))):
-                            if HAN.search(s) or (len(s)<1200 and re.search(r'\b[A-Za-z]{3,} [A-Za-z]{3,} [A-Za-z]{3,}\b',s)):
-                                self.add(label+'!/'+n,i,None,s,kind='class_candidate')
+                        raw=z.read(n)
+                        try:
+                            cf,safe=proven_strings(raw);constants=cf.utf.items()
+                        except (ValueError,KeyError,IndexError,struct.error,UnicodeError):
+                            # An unsupported class remains visible for inspection; it is never writable.
+                            safe={};constants=enumerate(utf8_constants(raw))
+                        for i,s in constants:
+                            if (i in safe and LATIN.search(s)) or HAN.search(s) or (len(s)<1200 and re.search(r'\b[A-Za-z]{3,} [A-Za-z]{3,} [A-Za-z]{3,}\b',s)):
+                                supported=i in safe and label.startswith('mods/') and label.count('!/')==0
+                                self.add(label+'!/'+n,i,None,s,kind='class_display' if supported else 'class_candidate')
+                                if supported:self.rows[-1]['display_use']=safe[i][1]
                     except Exception as e:self.errors.append([label,n,'class extraction: '+str(e)])
         except Exception as e:self.errors.append([label,str(e)])
     def nested(self,z,label,names):
