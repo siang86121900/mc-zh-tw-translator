@@ -520,6 +520,16 @@ def slim(row):
     return {k:v for k,v in row.items() if k not in ('flags','status','reason','own_tw')}
 
 
+def in_language_file(r, text, lang_text):
+    """A program string whose use is unproven, word for word a sentence of the same mod file's language files:
+    a helper of the mod's language-file generator (Age of Mythology's TarotCompletionTranslations hands its
+    entries to AOMChineseProvider), so the game shows the language file's copy, which is translated there.
+    Short names are left listed: a mod may also show a word such as 'Fire' straight from its program."""
+    s=(text or '').strip()
+    if r.get('kind')!='class_candidate' or (r['source'].rsplit('!/',1)[0],s) not in lang_text:return False
+    return len(HAN.findall(s))>=4 or len(re.findall(r'\b[A-Za-z]{3,}\b',s))>=3
+
+
 def internal_reason(text):
     """Why a class/script/config candidate is clearly not player-facing text, else ''."""
     s=(text or '').strip()
@@ -1132,9 +1142,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     memory=TranslationMemory(home);ai_memory=AiMemory(home);user_terms=UserGlossary(home);provenance=Provenance(home,instance);special=collections.Counter()
     # The mods' own English, to notice strings a modpack renamed through KubeJS or resource packs.
     name_terms={}  # English name -> (trust rank, Chinese); given to AI so sentences use the same names
-    mod_en={};main_copy=set();screen_keys=set()
+    mod_en={};main_copy=set();screen_keys=set();lang_text=set()
     for r in audit.rows:
         if r['kind']=='language' and '/lang/' in r['source'] and not SERVER_LANG.search(r['source'].split('!/')[-1]):screen_keys.add(r['key'])
+        if r['kind']=='language' and r['source'].startswith('mods/'):
+            lang_text.update((r['source'].rsplit('!/',1)[0],v.strip()) for v in (r['en'],r['zh_cn'],r['current']) if isinstance(v,str))
         if r['kind']=='language' and r['source'].startswith('mods/') and r['source'].split('!/')[-1].startswith('assets/'):
             main_copy.add((r['source'].split('!/')[0],lang_namespace(r['source']),r['key']))
         m=re.search(r'assets/([^/]+)/lang/',r['source'])
@@ -1246,7 +1258,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if r['kind'] not in ('language','book','inline_lang'):
             if r['flags']:
                 value=r['current'] or r['en'] or '';hidden=(internal_reason(value) or ('只用在錯誤訊息或記錄檔' if r.get('developer_use') else '')
-                        or ('產生語系檔用的工具程式；遊戲顯示的是模組附的語系檔，那份已另外翻譯' if r.get('language_generator') else ''))
+                        or ('產生語系檔用的工具程式；遊戲顯示的是模組附的語系檔，那份已另外翻譯' if r.get('language_generator') else '')
+                        or ('模組附的語系檔裡有同一句；遊戲顯示的是語系檔那句，那份已另外翻譯' if in_language_file(r,value,lang_text) else ''))
                 # Obvious identifiers, code and log lines are set aside so 待查 lists what may really be shown.
                 result['rows'].append(dict(slim(r),proposed=value,origin='not_display' if hidden else 'untranslated',
                                            issue='程式內部字串：'+hidden if hidden else '無法確定遊戲會不會顯示這句；它也可能是程式拿來比對的名稱，改了可能讓模組出錯，所以先不修改、不送 AI',

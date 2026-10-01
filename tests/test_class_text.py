@@ -113,6 +113,31 @@ class ClassTextTests(unittest.TestCase):
                     self.assertTrue(all('產生語系檔' in r['issue'] for r in rows))
                     self.assertEqual(next(r for r in session['rows'] if r['key']=='item.sample.meat' and r['kind']=='language')['proposed'],'馱獸肉')
 
+    def test_program_copy_of_a_language_file_sentence_is_not_left_to_check(self):
+        # Age of Mythology: helper classes hand sentences to the generator without naming LanguageProvider;
+        # the same sentence in the mod's zh_cn.json is what the game shows, and that row is translated.
+        helper=(Path(self.tmp.name)/'LangHelper.class').read_bytes()
+        with tempfile.TemporaryDirectory() as folder:
+            instance=Path(folder)/'instance';(instance/'mods').mkdir(parents=True)
+            with zipfile.ZipFile(instance/'mods/sample.jar','w') as z:
+                z.writestr('LangHelper.class',helper)
+                z.writestr('assets/sample/lang/zh_cn.json',json.dumps({'tip.sample.ride':'骑乘驮兽可以穿越沙漠','tip.sample.short':'驮兽'},ensure_ascii=False))
+            with zipfile.ZipFile(instance/'mods/other.jar','w') as z:  # another mod's language file proves nothing
+                z.writestr('LangHelper.class',helper)
+                z.writestr('assets/other/lang/en_us.json','{}')
+            with zipfile.ZipFile(instance/'mods/third.jar','w') as z:
+                z.writestr('assets/third/lang/zh_cn.json',json.dumps({'a':'只写在程序里的说明文字'},ensure_ascii=False))
+            session=jobs.plan(instance,Path(folder)/'app',lambda *_:None,references=([{},{}],{'sources':['tw','cn']}))
+            state={(r['source'].split('!/')[0],r['current']):jobs.row_state(r) for r in session['rows'] if r['kind']=='class_candidate'}
+            self.assertIsNone(state[('mods/sample.jar','骑乘驮兽可以穿越沙漠')])
+            self.assertEqual(state[('mods/sample.jar','驮兽')],'candidate')  # a short name may be shown from the program
+            self.assertEqual(state[('mods/sample.jar','只写在程序里的说明文字')],'candidate')
+            self.assertEqual(state[('mods/other.jar','骑乘驮兽可以穿越沙漠')],'candidate')
+            self.assertEqual(state[('mods/other.jar','只写在程序里的说明文字')],'candidate')
+            row=next(r for r in session['rows'] if r['kind']=='class_candidate' and r['current']=='骑乘驮兽可以穿越沙漠' and 'sample' in r['source'])
+            self.assertIn('語系檔裡有同一句',row['issue'])
+            self.assertEqual(next(r for r in session['rows'] if r['key']=='tip.sample.ride')['proposed'],'騎乘馱獸可以穿越沙漠')
+
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_text_another_mods_mixin_changes_is_never_rewritten(self,_):
         # The Foll: RevelationFix's Mixin looks for one GoetyRevelation config comment; once it was translated
