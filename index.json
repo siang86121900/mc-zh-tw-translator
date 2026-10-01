@@ -10,7 +10,7 @@
       "gameVersion": "1.21.1",
       "translator": "MC Translator",
       "updated": "2026-10-01",
-      "notes": "建議記憶體 12128 MB（整合包作者建議），請在 CurseForge 的整合包設定調整。",
+      "notes": "以《關於我轉生變成史萊姆這檔事》為主題的魔法冒險整合包。轉生到異世界後選擇種族、學習數百種技能，探索各地、建立自己的城鎮，最終目標是登上魔王之位。收錄超過 200 個模組，並附任務書一步步帶你上手。",
       "addedMods": [
         {
           "name": "IMBlocker",
@@ -19,7 +19,8 @@
       ],
       "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1478248/8908669-87d27b8d.zip",
       "sha256": "87d27b8d4dd6aaa4344961e75784bd9f3aaec848299d7011e08f9f5d86f7b4da",
-      "size": 3540200
+      "size": 3540200,
+      "recommendedRam": 12128
     }
   ]
 }
