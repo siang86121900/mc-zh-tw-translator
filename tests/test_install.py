@@ -237,7 +237,7 @@ class AddedModTests(unittest.TestCase):
         self.assertNotIn('你好',(self.friend/'kubejs/assets/demo/lang/zh_tw.json').read_text(encoding='utf-8'))
 
     def test_window_asks_before_adding_mods_and_reports_them(self):
-        from PySide6.QtWidgets import QApplication, QMessageBox
+        from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
         from mc_zh_tw_translator.desktop import MainWindow
         app=QApplication.instance() or QApplication([])
         entry=dict(name='Demo Pack',projectID=123,fileID=456,version='1.0',gameVersion='1.21.1',translator='我',updated='2026-09-30',
@@ -256,6 +256,25 @@ class AddedModTests(unittest.TestCase):
                 self.assertEqual(run.called,expected is not None)
         with patch.object(QMessageBox,'question',return_value=QMessageBox.No):
             self.assertIsNone(window.ask_install('安裝翻譯','說明',window.catalog[0]))  # closing the dialog is not a yes
+        # Memory: the author's figure on the card, the CurseForge steps one button away.
+        window.memory_total=8192
+        with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=found):
+            window.catalog_loaded([dict(entry,recommendedRam=12128)])
+        shown=' '.join(l.text() for l in window.pages.widget(6).findChildren(type(window.patch_status)))
+        self.assertIn('約 12 GB',shown);self.assertIn('可能開不起來',shown)
+        help_button=next(b for b in window.pages.widget(6).findChildren(QPushButton) if b.text()=='怎麼調整記憶體')
+        with patch.object(QMessageBox,'information') as told:help_button.click()
+        self.assertIn('Profile Options',told.call_args[0][2])
+        # Search appears only once the list is long, and filters by name.
+        self.assertTrue(window.catalog_search.isHidden())
+        many=[dict(entry,name=f'Pack {i}',projectID=1000+i,fileID=1) for i in range(window.CATALOG_SEARCH_FROM)]
+        with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=[]):window.catalog_loaded(many)
+        self.assertFalse(window.catalog_search.isHidden())
+        window.catalog_search.setText('pack 3')
+        self.assertEqual([f.isHidden() for f,_ in window.catalog_cards].count(False),1)
+        window.catalog_search.setText('nothing here')
+        self.assertIn('沒有符合',window.patch_status.text())
+        window.catalog_search.clear();self.assertEqual(window.patch_status.text(),'')
         with patch.object(QMessageBox,'question',return_value=QMessageBox.Yes) as ask:
             self.assertIs(window.ask_install('安裝翻譯','說明',window.catalog[0]),True)  # one yes also adds the mods
         self.assertIn('會一起加入：IMBlocker',ask.call_args[0][2])

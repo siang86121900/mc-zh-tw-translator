@@ -133,6 +133,24 @@ class WorkflowTests(unittest.TestCase):
         again=self.make_plan()
         self.assertFalse([r['key'] for r in again['rows'] if r['source'].startswith('mods/') and r['changed']])
 
+    def test_a_broken_emoji_in_a_mods_chinese_file_skips_only_that_line(self):
+        import zipfile
+        (self.instance/'mods').mkdir()
+        with zipfile.ZipFile(self.instance/'mods/travel.jar','w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="travel"\n')
+            z.writestr('assets/travel/lang/en_us.json','{"travel.bat": "\\uD83E\\uDD87 Darkness: %s", "travel.sword": "Sword"}')
+            # TravelOptics 6.3.0 ships "\uD810E\uDD87": half an emoji, which used to fail the whole file
+            z.writestr('assets/travel/lang/zh_cn.json','{"travel.bat": "\\uD810E\\uDD87黑暗能量: %s", "travel.sword": "剑"}'.encode('utf-8'))
+        result=self.make_plan()
+        self.assertFalse(result.get('errors'),result.get('errors'))
+        rows={r['key']:r for r in result['rows'] if r['source'].startswith('mods/')}
+        self.assertEqual(rows['travel.sword']['proposed'],'劍')  # the rest of the file is still used
+        self.assertNotIn('�',rows['travel.bat'].get('proposed') or '')  # the broken line is not written
+        json.dumps(result,ensure_ascii=False).encode('utf-8')  # and the report can be saved
+        from mc_zh_tw_translator.desktop_jobs import describe_error
+        line=describe_error(['mods/travel.jar',{},"'utf-8' codec can't encode character '\\ud810' in position 90: surrogates not allowed"])
+        self.assertTrue(line.startswith('travel.jar：裡面有無法辨識的文字編碼，這個檔案的文字這次沒有掃描'),line)
+
     def test_server_language_files_in_a_data_folder_are_not_player_text(self):
         import zipfile
         (self.instance/'mods').mkdir()

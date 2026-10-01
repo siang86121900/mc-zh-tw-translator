@@ -8,7 +8,7 @@ Each modpack version is a separate entry, so players on an older version keep th
 translation. Publishing the same modpack version again replaces that entry.
 
 Usage (publishing is public; only run it when the owner asked to publish this patch):
-    python scripts/publish_translation.py <patch.zip> --translator 名稱 [--notes 說明] [--dry-run]
+    python scripts/publish_translation.py <patch.zip> --translator 名稱 [--notes 說明] [--ram MB] [--dry-run]
     python scripts/publish_translation.py <modpack folder> --home <MCTranslatorData> --translator 名稱
 """
 from __future__ import annotations
@@ -40,7 +40,8 @@ def main():
     parser.add_argument('patch', type=Path, help='exported patch zip, or a modpack folder to export first')
     parser.add_argument('--home', type=Path, help='MCTranslatorData folder holding the backups (with a modpack folder)')
     parser.add_argument('--translator', required=True)
-    parser.add_argument('--notes', default='')
+    parser.add_argument('--notes', default='', help='中文介紹，顯示在卡片上')
+    parser.add_argument('--ram', type=int, default=0, help="整合包作者建議的記憶體 MB（預設讀補丁記下的 manifest.json recommendedRam）")
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     if args.patch.is_dir():
@@ -87,6 +88,7 @@ def main():
                                        revision=max([int(p.get('revision') or 1) for p in replaced] or [0])+1,
                                        gameVersion=pack.get('gameVersion', ''),
                                        translator=args.translator, updated=date.today().isoformat(), notes=args.notes,
+                                       recommendedRam=args.ram or int(pack.get('recommendedRam') or 0),
                                        addedMods=[dict(name=m['name'], size=m['size']) for m in manifest['added_mods']],
                                        url=RAW+relative, sha256=digest, size=len(data)))
             index['packs'].sort(key=lambda p: (p['name'].casefold(), p['updated']))

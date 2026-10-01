@@ -52,7 +52,18 @@ def parse_binary_nbt(data):
 def parse(b):
     s=CTE2QuestTranslator._strip_json_comments(decode(b))
     s=re.sub(r'"(?:\\.|[^"\\])*"|,\s*(?=[}\]])',lambda m:m[0] if m[0].startswith('"') else '',s)
-    return json.loads(s,strict=False)
+    return mend_surrogates(json.loads(s,strict=False))
+
+LONE_SURROGATE=re.compile('[\ud800-\udfff]')
+
+def mend_surrogates(value):
+    """Half of an emoji written wrongly as \\uXXXX (seen: TravelOptics zh_cn "\\uD810E\\uDD87") cannot be saved
+    as text, and failed the whole file. It becomes U+FFFD, which the format checks already refuse, so that one
+    line falls back to another source while the rest of the file is used."""
+    if isinstance(value,str):return LONE_SURROGATE.sub('�',value)
+    if isinstance(value,dict):return {mend_surrogates(k):mend_surrogates(v) for k,v in value.items()}
+    if isinstance(value,list):return [mend_surrogates(v) for v in value]
+    return value
 
 def leaves(value,path=(),field=''):
     if isinstance(value,dict):

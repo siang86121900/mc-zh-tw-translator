@@ -92,7 +92,7 @@ def allowed_entry(name: str) -> bool:
 
 def instance_identity(instance: Path) -> dict:
     """Which modpack and version a folder holds, from CurseForge's files when present."""
-    identity=dict(name=instance.name,projectID=0,fileID=0,gameVersion='',version='',date='')
+    identity=dict(name=instance.name,projectID=0,fileID=0,gameVersion='',version='',date='',recommendedRam=0)
     try:
         x=json.loads((instance/'minecraftinstance.json').read_text(encoding='utf-8-sig'))
         identity.update(name=x.get('name') or instance.name,projectID=int(x.get('projectID') or 0),
@@ -104,8 +104,49 @@ def instance_identity(instance: Path) -> dict:
         identity['version']=str(m.get('version') or '')
         if identity['name']==instance.name and m.get('name'):identity['name']=m['name']
         identity['gameVersion']=identity['gameVersion'] or (m.get('minecraft') or {}).get('version','')
+        identity['recommendedRam']=ram_mb((m.get('minecraft') or {}).get('recommendedRam'))
     except (OSError,ValueError,TypeError,AttributeError):pass
     return identity
+
+
+def ram_mb(value) -> int:
+    """A memory size in MB from a modpack manifest or the catalog; 0 when missing or implausible."""
+    try:value=int(value or 0)
+    except (TypeError,ValueError):return 0
+    return value if 512<=value<=256*1024 else 0
+
+
+def gb(mb: int) -> str:
+    return f'{mb/1024:.0f}' if mb>=10*1024 or mb%1024==0 else f'{mb/1024:.1f}'
+
+
+def memory_advice(recommended: int, total: int = 0, record: dict | None = None) -> dict:
+    """What to tell a player about memory: the modpack author's figure, whether this computer has room, how to set it.
+
+    The program only explains; CurseForge's own settings are never changed (the player sets them there).
+    Labels are CurseForge's own English ones (its app has no Chinese), checked in its app.asar.
+    """
+    if not recommended:return {}
+    line=f'建議分給遊戲約 {gb(recommended)} GB 記憶體（整合包作者建議 {recommended:,} MB）。'
+    warning=''
+    if total and recommended>=total:
+        warning=f'你的電腦只有約 {gb(total)} GB 記憶體，比建議的還少，這個整合包可能開不起來或很卡。'
+    elif total and (recommended>total*0.75 or total-recommended<6*1024):
+        # CurseForge itself warns above 75%; Windows and a browser alone take several GB of what is left.
+        warning=(f'你的電腦共約 {gb(total)} GB，分給遊戲 {gb(recommended)} GB 後剩下不多；'
+                 '玩的時候請先關掉瀏覽器等其他程式。')
+    record=record or {}
+    try:current=int(record.get('allocatedMemory') or 0) if record.get('isMemoryOverride') else 0
+    except (TypeError,ValueError):current=0
+    now=(f'這個整合包目前在 CurseForge 設定為 {gb(current)} GB'+('，比建議少。' if current<recommended-256 else '。')
+         if current else '')
+    steps=('調整方式（CurseForge 的選項是英文）：\n'
+           '1. 在 CurseForge 的「My Modpacks」對這個整合包按右鍵，選「Profile Options」。\n'
+           '2. 找到「Memory Settings」，選「Recommended by Author」（照整合包作者的建議）；'
+           f'或選「Custom RAM Allocation」，把記憶體拉到約 {gb(recommended)} GB。\n'
+           '3. 關掉視窗後重新開遊戲就會生效。\n\n'
+           '本程式不會修改 CurseForge 的設定，需要你自己調整。')
+    return dict(line=line,warning=warning,now=now,steps=steps)
 
 
 def curseforge_record(instance: Path):
@@ -666,7 +707,7 @@ def fetch_catalog(session=None):
                               version=str(x.get('version') or ''),gameVersion=str(x.get('gameVersion') or ''),
                               translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),
                               modpackDate=str(x.get('modpackDate') or '')[:10],revision=max(1,int(x.get('revision') or 1)),
-                              notes=str(x.get('notes') or ''),url=x['url'],sha256=x['sha256'],size=int(x['size']),
+                              notes=str(x.get('notes') or '')[:600],recommendedRam=ram_mb(x.get('recommendedRam')),url=x['url'],sha256=x['sha256'],size=int(x['size']),
                               addedMods=[dict(name=str(m['name'])[:120],size=int(m['size'])) for m in (x.get('addedMods') or [])[:MAX_ADDED_MODS]
                                          if isinstance(m,dict) and m.get('name') and 0<int(m.get('size') or 0)<=MAX_MOD_SIZE]))
         except (KeyError,TypeError,ValueError):continue
@@ -683,7 +724,9 @@ def match_catalog(packs, instances, applied=None):
     for pack in packs:groups.setdefault(pack['projectID'] or pack['name'].casefold(),[]).append(pack)
     rows=[]
     for versions in groups.values():
-        versions.sort(key=lambda p:(p['updated'],p['fileID']),reverse=True)
+        # Newest modpack version first: CurseForge numbers each upload higher than the last, while the
+        # date only says when its translation was last published (an old version can be re-published).
+        versions.sort(key=lambda p:(p['fileID'],p['updated']),reverse=True)
         mine=[x for x in instances if versions[0]['projectID'] and x['projectID']==versions[0]['projectID']]
         exact=[(p,x) for p in versions for x in mine if x['fileID']==p['fileID']]
         pack,status=(exact[0][0],'exact') if exact else (versions[0],'other_version' if mine else 'not_installed')
@@ -693,8 +736,10 @@ def match_catalog(packs, instances, applied=None):
             done=[(applied or {}).get(str(Path(x['path']).resolve()).casefold()) for x in targets]
             done=[d for d in done if d and d.get('fileID')==pack['fileID']]
             if done:status='applied' if any(d['sha256']==pack['sha256'] for d in done) else 'update'
+        # Older catalog entries lack the memory figure; the installed modpack's own manifest has it.
+        ram=pack.get('recommendedRam') or next((r for r in (instance_identity(Path(x['path']))['recommendedRam'] for x in targets) if r),0)
         rows.append(dict(pack,status=status,instances=targets,versions=len(versions),latest=pack is versions[0],
-                         newest_version=versions[0]['version']))
+                         newest_version=versions[0]['version'],recommendedRam=ram))
     rows.sort(key=lambda r:({'update':0,'exact':1,'applied':2,'other_version':3}.get(r['status'],4),r['name'].casefold()))
     return rows
 

@@ -181,6 +181,10 @@ def describe_error(error):
     if 'Expecting' in detail:
         detail='檔案本身 JSON 格式錯誤（'+detail+'）'
         if any(isinstance(p,dict) and 'zh_tw' in p for p in error):detail+='。重新執行一鍵翻譯時會自動重建這個繁中檔。'
+    elif detail and not HAN.search(detail):
+        # The audit keeps the raw exception text; the screen gets what it means for the player.
+        kind='裡面有無法辨識的文字編碼' if 'codec' in detail or 'surrogate' in detail else '讀取時發生沒有預料到的問題'
+        detail=f'{kind}，這個檔案的文字這次沒有掃描（檔案沒有被修改）。（技術細節：{detail[:160]}）'
     return (where+'：'+detail) if detail else where
 
 
@@ -846,6 +850,19 @@ def outdated_translations(home):
 def dismiss_outdated(home, key, fileID):
     data=translated_instances(home)
     if key in data:data[key]['dismissed']=fileID;write_json(Path(home)/'translated_instances.json',data)
+
+
+def total_memory_mb() -> int:
+    """This computer's physical memory in MB; 0 when Windows does not say."""
+    try:
+        import ctypes
+        class Status(ctypes.Structure):
+            _fields_=[('dwLength',ctypes.c_ulong),('dwMemoryLoad',ctypes.c_ulong),('ullTotalPhys',ctypes.c_ulonglong),
+                      ('ullAvailPhys',ctypes.c_ulonglong),('ullTotalPageFile',ctypes.c_ulonglong),('ullAvailPageFile',ctypes.c_ulonglong),
+                      ('ullTotalVirtual',ctypes.c_ulonglong),('ullAvailVirtual',ctypes.c_ulonglong),('ullAvailExtendedVirtual',ctypes.c_ulonglong)]
+        status=Status();status.dwLength=ctypes.sizeof(Status)
+        return int(status.ullTotalPhys//(1024*1024)) if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) else 0
+    except (AttributeError,OSError,ValueError):return 0
 
 
 def curseforge_instances():

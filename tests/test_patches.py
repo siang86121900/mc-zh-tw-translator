@@ -138,6 +138,35 @@ class PatchTests(unittest.TestCase):
         [row]=patches.match_catalog([old,new],[])
         self.assertEqual((row['version'],row['status']),('2.0','not_installed'))
         with self.assertRaises(ValueError):patches.patch_url('https://raw.githubusercontent.com/someone/else/translations/x.zip')
+        # Re-publishing the old version's translation later does not make it the "newest" version.
+        [row]=patches.match_catalog([dict(old,updated='2026-10-01'),new],[])
+        self.assertEqual(row['version'],'2.0')
+        [row]=patches.match_catalog([dict(old,updated='2026-10-01'),new],mine)
+        self.assertEqual((row['version'],row['latest'],row['newest_version']),('1.0',False,'2.0'))
+
+    def test_catalog_memory_comes_from_catalog_or_installed_manifest(self,_):
+        (self.friend/'manifest.json').write_text(json.dumps({'minecraft':{'version':'1.21.1','recommendedRam':12128}}),encoding='utf-8')
+        base=dict(name='Demo',projectID=7,fileID=1,version='1.0',gameVersion='',translator='',notes='',sha256='a'*64,size=1,updated='',
+                  url='https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/7/x.zip')
+        mine=[dict(name='Demo',path=self.friend,projectID=7,fileID=1,gameVersion='')]
+        self.assertEqual(patches.match_catalog([base],mine)[0]['recommendedRam'],12128)  # older entry without the figure
+        self.assertEqual(patches.match_catalog([dict(base,recommendedRam=8192)],mine)[0]['recommendedRam'],8192)
+        self.assertEqual(patches.match_catalog([base],[])[0]['recommendedRam'],0)
+        self.assertEqual(patches.instance_identity(self.friend)['recommendedRam'],12128)
+        response=Mock(status_code=200);response.json.return_value={'packs':[dict(base,recommendedRam='99999999'),dict(base,fileID=2,recommendedRam=6144)]}
+        self.assertEqual([p['recommendedRam'] for p in patches.fetch_catalog(Mock(get=Mock(return_value=response)))],[0,6144])
+
+    def test_memory_advice_reads_but_never_sets_curseforge(self,_):
+        self.assertEqual(patches.memory_advice(0,16384),{})
+        roomy=patches.memory_advice(12128,32768)
+        self.assertIn('約 12 GB',roomy['line']);self.assertEqual((roomy['warning'],roomy['now']),('',''))
+        self.assertIn('Profile Options',roomy['steps']);self.assertIn('Recommended by Author',roomy['steps']);self.assertIn('不會修改',roomy['steps'])
+        self.assertIn('剩下不多',patches.memory_advice(12128,16384)['warning'])  # over 3/4 of the computer, as CurseForge warns
+        self.assertIn('可能開不起來',patches.memory_advice(12128,8192)['warning'])
+        self.assertEqual(patches.memory_advice(12128,0)['warning'],'')  # unknown total: no guess
+        self.assertIn('設定為 6 GB，比建議少',patches.memory_advice(12128,32768,{'isMemoryOverride':True,'allocatedMemory':6144})['now'])
+        self.assertEqual(patches.memory_advice(12128,32768,{'isMemoryOverride':False,'allocatedMemory':6144})['now'],'')
+        self.assertIn('設定為 12 GB。',patches.memory_advice(12128,32768,{'isMemoryOverride':True,'allocatedMemory':12288})['now'])
 
 
     def test_catalog_offers_update_after_translation_is_republished(self,_):

@@ -595,9 +595,13 @@ class MainWindow(QMainWindow):
         head=QHBoxLayout();self.patch_status=label('','sub');head.addWidget(self.patch_status,1)
         self.patch_cancel=button('停止等待',self.cancel_install);self.patch_cancel.hide();head.addWidget(self.patch_cancel,0,Qt.AlignTop)
         self.catalog_refresh=button('重新整理',self.refresh_catalog);head.addWidget(self.catalog_refresh,0,Qt.AlignTop);box.addLayout(head)
+        # Only worth its space once the list no longer fits on one screen.
+        self.catalog_search=QLineEdit();self.catalog_search.setPlaceholderText('搜尋整合包名稱或 Minecraft 版本')
+        self.catalog_search.setClearButtonEnabled(True);self.catalog_search.textChanged.connect(self.filter_catalog)
+        self.catalog_search.hide();box.addWidget(self.catalog_search)
         self.catalog_box=QVBoxLayout();self.catalog_box.setSpacing(12);box.addLayout(self.catalog_box)
         box.addStretch()
-        self.catalog=None;self.catalog_packs=None;self.pack_buttons=[]
+        self.catalog=None;self.catalog_packs=None;self.pack_buttons=[];self.catalog_cards=[];self.memory_total=None
 
     @staticmethod
     def catalog_key(pack):return f"{pack['projectID'] or pack['name']}:{pack['fileID']}:{pack['sha256'][:12]}"
@@ -619,8 +623,28 @@ class MainWindow(QMainWindow):
         self.navs[6].setText('已翻譯整合包'+(f'（{fresh+updates}）' if parts else ''))
         self.navs[6].setToolTip('、'.join(parts))
 
+    CATALOG_SEARCH_FROM=9
+
+    def filter_catalog(self,text=None):
+        words=(self.catalog_search.text() if text is None else text).casefold().split()
+        shown=0
+        for f,haystack in self.catalog_cards:
+            hit=all(w in haystack for w in words);f.setVisible(hit);shown+=hit
+        if self.catalog_cards and not shown:self.patch_status.setText('沒有符合「'+' '.join(words)+'」的整合包。')
+        elif self.patch_status.text().startswith('沒有符合'):self.patch_status.setText('')
+
+    def memory_advice(self,pack):
+        if self.memory_total is None:self.memory_total=jobs.total_memory_mb()
+        record=patches.curseforge_record(pack['instances'][0]['path']) if pack.get('instances') else {}
+        return patches.memory_advice(pack.get('recommendedRam') or 0,self.memory_total,record)
+
+    def show_memory_help(self,pack):
+        advice=self.memory_advice(pack)
+        text='\n\n'.join(x for x in (advice.get('line'),advice.get('now'),advice.get('warning'),advice.get('steps')) if x)
+        QMessageBox.information(self,'調整記憶體：'+pack['name'],text)
+
     def clear_catalog(self):
-        self.pack_buttons=[]
+        self.pack_buttons=[];self.catalog_cards=[]
         while self.catalog_box.count():
             item=self.catalog_box.takeAt(0)
             if item.widget():item.widget().deleteLater()
@@ -654,7 +678,7 @@ class MainWindow(QMainWindow):
         self.update_catalog_badge()
         if self.pages.currentIndex()==6:self.mark_catalog_seen()
         if not self.catalog:
-            self.catalog_message('目前還沒有已翻譯整合包','有新的整合包翻譯發布時，會出現在這裡。');return
+            self.catalog_search.hide();self.catalog_message('目前還沒有已翻譯整合包','有新的整合包翻譯發布時，會出現在這裡。');return
         self.clear_catalog()
         states={'update':('翻譯有更新','progress'),'exact':('可安裝','progress'),'applied':('已是最新','done'),
                 'other_version':('整合包版本不同','todo'),'not_installed':('未安裝整合包','todo')}
@@ -681,13 +705,20 @@ class MainWindow(QMainWindow):
             extra=pack.get('addedMods') or []
             added=(f"翻譯者另外加裝了 {len(extra)} 個模組：" +'、'.join(m['name'] for m in extra[:8])+('…' if len(extra)>8 else '')
                    +'。安裝時會從 CurseForge 一起加入。') if extra else ''
-            for text in (pack['notes'],added,notes.get(pack['status'],''),newer):
+            memory=self.memory_advice(pack)
+            for text in (pack['notes'],memory.get('line'),memory.get('now'),added,notes.get(pack['status'],''),newer):
                 if text:b.addWidget(label(text,'sub'))
+            if memory.get('warning'):b.addWidget(label(memory['warning'],'warn'))
             row=QHBoxLayout()
             for text,primary,fn in actions[pack['status']]:
                 btn=button(text,lambda checked=False,p=pack,fn=fn:fn(p),primary);btn.setEnabled(not self.busy)
                 self.pack_buttons.append(btn);row.addWidget(btn)
+            if memory:row.addWidget(button('怎麼調整記憶體',lambda checked=False,p=pack:self.show_memory_help(p)))
             row.addStretch();b.addLayout(row);self.catalog_box.addWidget(f)
+            self.catalog_cards.append((f,' '.join((pack['name'],pack['version'] or '',pack['gameVersion'] or '',pack['notes'])).casefold()))
+        self.catalog_search.setVisible(len(self.catalog)>=self.CATALOG_SEARCH_FROM)
+        if self.catalog_search.isVisible():self.filter_catalog()
+        elif self.catalog_search.text():self.catalog_search.clear()
 
     def choose_patch_target(self,projectID,fileID,title):
         """Pick the instance to patch: CurseForge instances of the same modpack first, then any known folder."""
@@ -773,6 +804,9 @@ class MainWindow(QMainWindow):
         if result['backup']:lines.append('原檔已備份，可在「備份與還原」復原。')
         lines.append('遊戲語言已設為繁體中文（台灣）。' if result['language_set'] else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
         if result.get('notes'):lines+=['','翻譯者的說明：',result['notes']]
+        memory=self.memory_advice(dict(recommendedRam=patches.instance_identity(Path(result['instance']))['recommendedRam'],
+                                       instances=[dict(path=result['instance'])]))
+        if memory:lines+=['',memory['line']]+[memory[k] for k in ('now','warning') if memory[k]]+['（在「已翻譯整合包」按「怎麼調整記憶體」看步驟）']
         self.patch_status.setText('');self.notify_finished('翻譯已安裝',lines[0])
         QMessageBox.information(self,'翻譯已安裝','\n'.join(lines))
 
