@@ -463,6 +463,22 @@ class SameKeyTests(Base):
         self.assertEqual((row['origin'],row['proposed'],row['changed']),('existing_zh_tw','顯示前15秒內的平均幀率',False))
         self.assertTrue(row['number_doubt']);self.assertIn('數值和原文不同',row['issue']);self.assertTrue(jobs.needs_check(row))
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_chinese_written_by_people_keeps_its_own_line_breaks(self,_):
+        en={'maxim':'Hot oil is splashed on\nwhile keeping the fish tender.\nPacked with spiciness.'}
+        instance=self.layered('作者換行',en,mod_cn={'maxim':'热油一泼香气迸发，鱼肉鲜嫩麻辣超入味'})
+        session=self.make_plan(instance);row=next(r for r in session['rows'] if r['key']=='maxim')
+        # The author wrote one line; breaking it into the English three lines cut 麻辣 in two.
+        self.assertEqual((row['proposed'],row['own_lines']),('熱油一潑香氣迸發，魚肉鮮嫩麻辣超入味',True))
+        jobs.auto_confirm_safe(session);self.assertTrue(row['reviewed'])
+        # What an earlier version wrote, broken into three lines, comes back to the author's single line once.
+        row['proposed']='熱油一潑香氣迸發，\n魚肉鮮嫩麻\n辣超入味';row.pop('own_lines')
+        apply_session(session,self.home,lambda *_:None)
+        again=self.make_plan(instance);row=next(r for r in again['rows'] if r['key']=='maxim')
+        self.assertEqual(row['proposed'],'熱油一潑香氣迸發，魚肉鮮嫩麻辣超入味');self.assertIn('換行',row['issue'])
+        jobs.auto_confirm_safe(again);apply_session(again,self.home,lambda *_:None)
+        self.assertEqual(jobs.applicable_count(self.make_plan(instance)),0)
+
     def test_unconfirmed_reference_is_used_last_and_listed_for_checking(self):
         instance=self.layered('只有參考',{'x':'Other','gone':'Gone thing'})
         tw={'real':{'gone':'沒有英文的參考'}}  # the reference holds no English for this key

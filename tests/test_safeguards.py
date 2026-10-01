@@ -355,6 +355,20 @@ class QualityTests(Base):
         self.assertEqual(jobs.taiwan_wording('下界合金鍾'),'獄髓鐘');self.assertEqual(jobs.taiwan_wording('強化鍾石劍'),'強化鐘石劍')
         self.assertEqual(jobs.taiwan_wording('情有獨鍾，鍾愛一生'),'情有獨鍾，鍾愛一生')
 
+    def test_internet_slang_and_kaomoji_need_no_translation(self):
+        for text in ('ww','www','Ciallo～(∠・ω< )⌒★'):self.assertTrue(jobs.keep_original_reason(text),text)
+        for text in ('Weather cleared','wow','Set the time to Daytime'):self.assertEqual(jobs.keep_original_reason(text),'',text)
+
+    def test_start_page_and_report_count_the_same_rows(self):
+        # A translated line that holds no Chinese (a code fragment) is translated on both; Chinese the program
+        # already holds is not counted as English that CurseForge puts back.
+        fragment=dict(kind='language',supported=True,origin='ai_translation',en='othermod"])',current='othermod"])',proposed='othermod"]）',changed=True,installed=True,shown=True)
+        chinese=dict(kind='class_display',supported=False,origin='existing_zh_tw',current='反転共鳴',proposed='反転共鳴',changed=False)
+        english=dict(kind='class_display',supported=False,origin='ai_translation',current='Weather cleared',proposed='天氣已轉晴',changed=True)
+        session=dict(rows=[fragment,chinese,english])
+        self.assertEqual([jobs.row_category(r) for r in session['rows']],['ai','mod_tw','held'])
+        c=jobs.coverage(session);self.assertEqual((c.get('missing',0),c.get('unwritable',0),c['done']),(0,1,2))
+
     def test_travelers_titles_own_commands_are_not_taken_for_a_missing_mod(self):
         self.assertIsNone(jobs.KEY_MOD_REFERENCE.match('travelerstitles.commands.biometitle.invalid'))
         self.assertEqual(jobs.KEY_MOD_REFERENCE.match('travelerstitles.bracken.dormis')[2],'bracken')

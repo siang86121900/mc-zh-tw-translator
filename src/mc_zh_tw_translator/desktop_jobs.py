@@ -114,6 +114,9 @@ def keep_original_reason(text, key='', namespace=''):
     if mod and len(name)>=4 and name in (mod,mod.removesuffix('mod')):return '模組名稱'
     core=PARAMETER.sub(' ',text).strip()
     if not re.search('[A-Za-z]',core):return '只有參數、數字或符號'
+    # Internet laughter (ww, www) and a kaomoji greeting such as Ciallo～(∠・ω< )⌒★ read the same in Chinese.
+    if re.fullmatch(r'w{2,}|W{2,}',core):return '網路用語或表情符號'
+    if re.search(r'[ω∠⌒・ﾟ´｀]',core) and len(re.findall(r'[A-Za-z]{2,}',core))<=1:return '網路用語或表情符號'
     if re.fullmatch(r'[\d\s.,x×*+\-/:%()\[\]]+',core,re.I) and core!=text.strip():return '只有參數、數字或符號'  # e.g. %d (%dx)
     if core!=text.strip() and re.fullmatch(r'[A-Z]{1,4}|/[a-z]{1,2}',core):return '數值單位'  # e.g. %1$s HPS, %d FE, %s/t
     units=[p for p in re.split(r'\s*/\s*',core.strip('/ ')) if p]
@@ -337,6 +340,16 @@ def validate_text(original, value):
     return same_format(original,value) and (not original or original.count('\n')==value.count('\n'))
 
 
+def fits(original, value, own_lines=False):
+    """validate_text, except that Chinese written by people (the mod author, a translation group) keeps its own
+    line breaks: they often need fewer lines than the English, and breaking them again cut words in two."""
+    return validate_text(original,value) or bool(own_lines and isinstance(value,str) and same_format(original,value))
+
+
+def row_fits(row, value=None):
+    return fits(original_of(row),row.get('proposed','') if value is None else value,row.get('own_lines'))
+
+
 def required_codes(original):
     """The codes a translation must carry over unchanged, in the order the original has them (told to AI)."""
     found=[(m.start(),m[0]) for pattern in (FORMAT,AMPERSAND_CODE) for m in pattern.finditer(original or '')]
@@ -494,7 +507,7 @@ class UserGlossary:
 
 def slim(row):
     """Report rows keep what review, apply and restore need; scan-only fields stay in the audit files."""
-    return {k:v for k,v in row.items() if k not in ('flags','status','reason')}
+    return {k:v for k,v in row.items() if k not in ('flags','status','reason','own_tw')}
 
 
 def internal_reason(text):
@@ -639,7 +652,7 @@ def report_overview(session):
     for why,n in (session.get('held_back') or {}).items():reasons.append((n,'沒有寫入：'+why))
     # Program/config strings are candidates, not known gaps; they are reported beside, not inside, 未套用.
     held=sum(row_category(r)=='held' for r in rows)
-    context=sum(not r['supported'] and r['origin'] not in ('not_display','keep_original') for r in rows)-held
+    context=sum(row_category(r)=='context' for r in rows)  # the same rows the report filter lists
     check=collections.Counter()
     for r in rows:
         if needs_check(r):
@@ -737,12 +750,12 @@ def unify_same_key(rows):
             if r is best or r['proposed']==best['proposed']:continue
             if r.get('origin') in USER_ORIGINS or str(r.get('review_method') or '').startswith('user_confirmed'):continue
             if r.get('origin')=='keep_original':continue  # shown as it is on purpose
-            if not validate_text(original_of(r),best['proposed']):continue
-            for field in ('recovered','installed','review_method','auto_review_reason','number_doubt','unified_from','ai_model','ai_reused','ai_review'):
+            if not fits(original_of(r),best['proposed'],best.get('own_lines')):continue
+            for field in ('recovered','installed','review_method','auto_review_reason','number_doubt','unified_from','ai_model','ai_reused','ai_review','own_lines'):
                 r.pop(field,None)
             r.update(proposed=best['proposed'],origin=best['origin'],evidence=best.get('evidence'),issue=best.get('issue') or '',
                      changed=best['proposed']!=r.get('current'),reviewed=False,same_key_as=best['source'])
-            for field in ('number_doubt','ai_model','ai_reused','unified_from'):
+            for field in ('number_doubt','ai_model','ai_reused','unified_from','own_lines'):
                 if best.get(field) is not None:r[field]=best[field]
             changed+=1
     return changed
@@ -918,7 +931,7 @@ def present_mods(z, depth=0):
     return found
 
 
-SCAN_CACHE_VERSION = 'scan-8'
+SCAN_CACHE_VERSION = 'scan-9'
 
 
 def scan_cache(home, instance):
@@ -1105,7 +1118,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             counts['duplicate_copy']+=1;continue
         if r['source'].startswith('mods/') and r['kind'] in ('language','book'):
             shown=pack_text.get((pack_resource(target_for(r)[1]),r['key']),r['current'])
-            if shown is not None:r=dict(r,current=shown)
+            if shown is not None:r=dict(r,current=shown,own_tw=r['current'])
         # Non-language candidates are retained explicitly rather than reclassifying IDs as text.
         if r['kind']=='class_display' and curseforge and r.get('tooltip_in_language'):
             # The config screen shows the mod's language entry for this comment, which is a row of its own;
@@ -1127,7 +1140,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 extra=dict(installed=True,recovered=True,ai_model=previous.get('model'))
             elif previous:
                 origin=previous['origin'];issue=previous.get('issue','');extra=dict(installed=True,recovered=True,ai_model=previous.get('model'),en_ref=previous.get('original'))
-            elif memory_value and validate_text(original,memory_value):value=memory_value;origin='translation_memory'
+            elif memory_value and fits(original,memory_value,True):
+                value=memory_value;origin='translation_memory';extra=dict(own_lines=True) if not validate_text(original,memory_value) else {}
             elif reason:origin='keep_original'
             elif HAN.search(original):
                 value=to_taiwan(original) if has_simplified(original) else original
@@ -1153,7 +1167,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             continue
         if r['kind'] not in ('language','book','inline_lang'):
             if r['flags']:
-                value=r['current'] or r['en'] or '';hidden=internal_reason(value)
+                value=r['current'] or r['en'] or '';hidden=internal_reason(value) or ('只用在錯誤訊息或記錄檔' if r.get('developer_use') else '')
                 # Obvious identifiers, code and log lines are set aside so 待查 lists what may really be shown.
                 result['rows'].append(dict(slim(r),proposed=value,origin='not_display' if hidden else 'untranslated',
                                            issue='程式內部字串：'+hidden if hidden else '尚未確認安全寫回方式：需追查顯示用途，暫不送 AI',
@@ -1201,6 +1215,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                  ('user_glossary',next((v for v in (user_terms.lookup(o) for o in asked) if v),None),'user_glossary.json')]
         options+=human_tw
         options+=[('instance_resourcepack',v,p) for p,v in instance_rp_tw.get((ns,r['key']),[]) if p!=r['source']]
+        own=r.get('own_tw')
+        if isinstance(own,str) and isinstance(existing,str) and own!=existing and re.sub(r'\s','',own)==re.sub(r'\s','',existing) and not has_simplified(own):
+            # The pack holds the mod's own Chinese broken into the English line count by an earlier version
+            # (魚肉鮮嫩麻 / 辣超入味); the author's line breaks come back.
+            existing=own
         options.append(('existing_zh_tw',existing,r['source']))
         if vanilla:
             options.append(('official_vanilla',vanilla['minecraft'].get(r['key']) if ns=='minecraft' else None,'Minecraft 官方 zh_tw'))
@@ -1243,16 +1262,20 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         for name,candidate,source in options:
             if not isinstance(candidate,str) or not HAN.search(candidate):continue
             text=to_taiwan(candidate) if name in ('same_source_zh_cn','instance_zh_cn') else candidate
-            # Chinese often needs fewer lines than the English; only the line breaks are laid out again.
-            text=repair(original,text)
-            if not validate_text(original,text):continue
+            # Chinese often needs fewer lines than the English. Chinese written by people keeps its own line
+            # breaks; only AI's are laid out again (they were asked for the English line count).
+            numbered=index_placeholders(original,text)
+            own_lines=name!='ai_memory' and not validate_text(original,numbered) and same_format(original,numbered)
+            text=numbered if own_lines else repair(original,text)
+            if not fits(original,text,own_lines):continue
             written_tw=(name in ('existing_zh_tw','instance_resourcepack','official_vanilla')
                         or (name=='reference_pack_or_cfpa' and source in ('reference:tw','reference:para')))
             note='' if name in ('translation_memory','user_glossary') else number_doubt(english,text)
-            ready.append((bool(note) and not written_tw,name,text,source,note))
+            ready.append((bool(note) and not written_tw,name,text,source,note,own_lines))
             if not ready[-1][0]:break
+        own_lines=False
         if ready:
-            _,origin,value,evidence,doubt=min(ready,key=lambda x:x[0])  # the first that does not wait, else the first
+            _,origin,value,evidence,doubt,own_lines=min(ready,key=lambda x:x[0])  # the first that does not wait, else the first
         reused=origin=='ai_memory'
         if reused:origin='ai_translation';evidence='ChatGPT/Codex: '+str(earlier.get('model') or '')+'（沿用先前的補譯）'
         if ready:
@@ -1264,7 +1287,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                    else 'AI 補譯（沿用先前翻過的同一句），尚未人工校對。' if reused
                    else '簡中轉繁：需校對台灣用語、版本語意與名稱')
         if origin=='unverified_reference':origin='stale_reference'  # listed with the other references that need a look
-        extra=dict(en_ref=borrowed)
+        extra=dict(en_ref=borrowed,own_lines=own_lines or None)
         prior=provenance.lookup(r) if origin=='existing_zh_tw' and value==r['current'] else None
         if prior and prior['origin']!='existing_zh_tw':
             # Our own earlier output: keep its real source and doubts instead of calling it mod zh_tw,
@@ -1272,16 +1295,24 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             origin=prior['origin'];evidence=prior['evidence'];issue=prior['issue']
             extra.update(recovered=True,installed=True,unified_from=prior.get('unified_from'),ai_model=prior.get('model'))
             special['recovered']+=1
-            if origin not in USER_ORIGINS and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value)):
+            for name,candidate,_ in options:
+                # An earlier version broke this Chinese into the English line count, mid-word at times
+                # (聊天 / 室頭貼繪 / 製的位置); the source's own line breaks come back, written once.
+                text=to_taiwan(candidate) if name in ('same_source_zh_cn','instance_zh_cn') and isinstance(candidate,str) else candidate
+                if (origin not in USER_ORIGINS and isinstance(text,str) and text.count('\n')<value.count('\n')
+                        and re.sub(r'\s','',text)==re.sub(r'\s','',value) and same_format(original,text)):
+                    value=text;own_lines=True;extra['own_lines']=True;extra.pop('installed')
+                    issue=(issue+'；' if issue else '')+'已改回原文的換行';break
+            if origin not in USER_ORIGINS and taiwan_wording(value)!=value and fits(original,taiwan_wording(value),own_lines):
                 # Written by an earlier version before a wording rule existed (下界 → 地獄): corrected once and
                 # written again; the corrected text is what later runs find, so they change nothing.
                 value=taiwan_wording(value);extra.pop('installed');issue=(issue+'；' if issue else '')+'已把大陸用語改為台灣用語，請核對'
         elif origin=='existing_zh_tw' and existing is None:
             issue='既有繁中含簡體字，已轉為台灣繁體，請核對'
-        elif origin=='existing_zh_tw' and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value)):
+        elif origin=='existing_zh_tw' and taiwan_wording(value)!=value and fits(original,taiwan_wording(value),own_lines):
             value=taiwan_wording(value);issue='既有繁中已把大陸用語改為台灣用語，請核對'
         elif (origin not in USER_ORIGINS and origin not in ('official_vanilla','untranslated','keep_original')
-              and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value))):
+              and taiwan_wording(value)!=value and fits(original,taiwan_wording(value),own_lines)):
             # Reference packs are people-written but not always in Taiwan wording (cloth-config's 設置 replaced
             # the mod's own correct 設定); the same unambiguous replacements apply to them.
             value=taiwan_wording(value);issue=(issue+'；' if issue else '')+'已把大陸用語改為台灣用語，請核對'
@@ -1467,18 +1498,34 @@ TRANSLATED_CATEGORIES = ('mine','tw_ref','mod_tw','official','s2t','version_ref'
 UNTRANSLATED_CATEGORIES = ('missing','held','context','keep')
 CATEGORY_NAMES = {'mine':'你確認的','tw_ref':'台灣參考庫','mod_tw':'模組／整合包繁中','official':'官方譯名與術語',
                   's2t':'簡中轉繁','version_ref':'版本待確認的參考','ai':'AI 補譯','other':'其他',
-                  'missing':'缺少中文來源','held':'程式內文字（CurseForge 會換回）','context':'待查程式與設定','keep':'無需翻譯'}
+                  'missing':'缺少中文來源','held':'程式內文字（遊戲中是英文）','context':'待查程式與設定','keep':'無需翻譯'}
+
+
+def still_english(r):
+    """Nothing was translated: no source at all, or the text is the original as it was. A translated line that
+    holds no Chinese (a code fragment such as othermod"]) after its line was split) is translated."""
+    if r.get('origin')=='untranslated':return True
+    proposed=r.get('proposed') or ''
+    return not HAN.search(proposed) and proposed.strip()==str(original_of(r)).strip()
+
+
+def held_english(r):
+    """Player text inside a mod's program that this modpack cannot write: the game shows it in English.
+    Text the program already holds in Chinese is shown in Chinese and is not counted here."""
+    if r.get('kind')!='class_display' or r.get('supported'):return False
+    return still_english(r) or bool(r.get('changed')) or not HAN.search(r.get('current') or '')
 
 
 def row_category(r):
-    """Report grouping: translated (by how) or untranslated (by why)."""
+    """Report grouping: translated (by how) or untranslated (by why). The start page counts the same way."""
     o=r.get('origin')
     if o=='pending':return 'pending'
     if o in ('keep_original','not_display'):return 'keep'
     # Proven player text inside a mod's program that a CurseForge modpack cannot keep translated.
-    if r.get('kind')=='class_display' and not r.get('supported'):return 'held'
+    if held_english(r):return 'held'
+    if r.get('kind')=='class_display' and not r.get('supported'):return 'mod_tw'  # already Chinese in the program
     if not r.get('supported'):return 'context'
-    if o=='untranslated':return 'missing'
+    if still_english(r):return 'missing'
     if o in ('translation_memory','user_glossary','manual'):return 'mine'
     if o=='reference_pack_or_cfpa':return 'tw_ref' if r.get('evidence') in ('reference:tw','reference:para') else 's2t'
     if o in ('existing_zh_tw','instance_resourcepack'):return 'mod_tw'
@@ -1506,10 +1553,11 @@ def coverage(session, before=False):
         if not r.get('supported') and not held:
             c['candidates']+=1;continue
         c['total']+=1
-        chinese=bool(HAN.search(r.get('proposed') or ''))
         if before:
             c['done' if r.get('shown_before',HAN.search(r.get('current') or '')) else 'missing']+=1;continue
-        if r.get('origin')=='untranslated' or not chinese:c['unwritable' if held else 'missing']+=1
+        if held and held_english(r):c['unwritable']+=1
+        elif held:c['done']+=1  # the program already shows it in Chinese
+        elif still_english(r):c['missing']+=1
         elif not r.get('changed') or (r.get('installed') and r.get('shown') is not False):c['done']+=1
         elif r.get('installed'):c['unconfirmed']+=1  # written, but the game's file does not hold it
         elif held or write_route(r,curseforge) not in ('pack','file'):c['unwritable']+=1
@@ -1599,7 +1647,7 @@ def home_cards(session):
     parts=[]
     if cov.get('missing'):parts.append(f"{cov['missing']:,} 句找不到中文來源"+('（可勾選 AI 補翻）' if not session.get('ai_translation') else ''))
     if cov.get('waiting'):parts.append(f"{cov['waiting']:,} 句已翻好、還沒寫入")
-    if cov.get('unwritable'):parts.append(f"{cov['unwritable']:,} 句寫在模組程式裡，CurseForge 會換回原版")
+    if cov.get('unwritable'):parts.append(f"{cov['unwritable']:,} 句寫死在模組程式裡，遊戲中是英文（CurseForge 會換回改過的模組，無法寫入）")
     if cov.get('unconfirmed'):parts.append(f"{cov['unconfirmed']:,} 句寫入後在遊戲檔案裡讀不到")
     left='、'.join(parts) if english else '找得到的玩家文字都已是中文'
     return dict(cards=[(rate_text(cov['rate']),rate),(f'{english:,}',left)],written=written)
@@ -1611,7 +1659,7 @@ def applicable_count(session):
     curseforge=is_curseforge(session['instance']) if session.get('instance') else False
     tooltips=tooltip_texts(session.get('rows',[]))
     return sum(bool(r.get('supported') and r.get('changed') and not r.get('installed') and r.get('origin')!='untranslated'
-                    and (r.get('reviewed') or validate_text(original_of(r),r.get('proposed','')))
+                    and (r.get('reviewed') or row_fits(r))
                     and write_route(r,curseforge) in ('pack','file')
                     and (not (curseforge and r.get('kind')=='class_display' and r.get('tooltips')) or any(
                         (r['source'].split('!/')[0],key,resource) in tooltips for key,_,_,resource in r['tooltips'])))
@@ -1628,8 +1676,7 @@ def auto_confirm_safe(session):
     count = 0
     for row in session.get('rows', []):
         if (row.get('supported') and row.get('changed') and row.get('origin') != 'untranslated'
-                and not row.get('installed') and not row.get('reviewed') and validate_text(
-                    original_of(row), row.get('proposed', ''))):
+                and not row.get('installed') and not row.get('reviewed') and row_fits(row)):
             row['reviewed'] = True
             row['review_method'] = 'auto_validated_one_click'
             row['auto_review_reason'] = '來源優先順序、格式碼、佔位符、換行與數值檢查通過'
@@ -2072,7 +2119,7 @@ def stage_and_apply(session, home, notify, work):
     if changed:raise changed_since_scan(home,instance,changed)
     changes=collections.defaultdict(list);pack_rows=[]
     for row in selected:
-        if not validate_text(original_of(row),row['proposed']):raise ValueError('譯文格式或參數不一致：'+row['key'])
+        if not row_fits(row):raise ValueError('譯文格式或參數不一致：'+row['key'])
         path,entry=target_for(row); contained(instance,path)
         if routes[id(row)]=='pack' and row['kind']=='class_display':
             for key,_,_,resource in row['tooltips']:

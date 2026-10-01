@@ -22,6 +22,13 @@ class ClassTextTests(unittest.TestCase):
         subprocess.run([javac,'--release','8','-encoding','UTF-8','-d',str(root)]+[str(p) for p in source.rglob('*.java')],check=True,capture_output=True)
         cls.raw=(root/'Sample.class').read_bytes()
         cls.config=(root/'ConfigSample.class').read_bytes();cls.main=(root/'ModMain.class').read_bytes()
+        cls.dev=(root/'DevSample.class').read_bytes()
+
+    def test_log_and_exception_text_is_told_apart_from_player_text(self):
+        cf=class_text.ClassFile(self.dev);found={cf.utf[i] for i in class_text.developer_strings(self.dev)}
+        self.assertEqual(found,{'Loaded the config file from disk','Could not parse the entry {}','Registry object was not present here'})
+        # Also shown to the player in one place: still a candidate to check, not set aside.
+        self.assertNotIn('Welcome back to the world',found);self.assertNotIn('Shown to every single player',found)
 
     def test_config_comments_link_to_their_tooltip_keys(self):
         cf,safe=class_text.proven_strings(self.config);tips=class_text.config_tooltips(self.config)

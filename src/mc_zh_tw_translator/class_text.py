@@ -25,7 +25,7 @@ class ClassFile:
         if raw[:4] != b'\xca\xfe\xba\xbe':
             raise ValueError('不是 Java class')
         self.raw = raw
-        self.cp = {}; self.spans = {}; self.utf = {}; self.codes = []; self.metadata = []
+        self.cp = {}; self.spans = {}; self.utf = {}; self.codes = []; self.metadata = []; self.bootstrap = []
         p = 10; k = 1
         while k < u2(raw, 8):
             start = p; tag = raw[p]; p += 1
@@ -72,6 +72,10 @@ class ClassFile:
             elif name not in ('LineNumberTable','LocalVariableTable','LocalVariableTypeTable','StackMapTable','SourceFile',
                               'InnerClasses','EnclosingMethod','NestHost','NestMembers','PermittedSubclasses','Exceptions'):
                 self.metadata.append(raw[p:end])
+                if name == 'BootstrapMethods':
+                    q = p+2
+                    for _ in range(u2(raw, p)):
+                        n = u2(raw, q+2); self.bootstrap.append([u2(raw, q+4+2*i) for i in range(n)]); q += 4+2*n
             p = end
         return p
 
@@ -235,6 +239,56 @@ def config_tooltips(raw):
             else:
                 pending = None  # push (a section), a List-path define or anything else: not a proven value comment
     return result
+
+
+THROWABLE = re.compile(r'(?:Exception|Error|Throwable)$')
+LOGGERS = {'Lorg/slf4j/Logger;','Lorg/apache/logging/log4j/Logger;','Ljava/util/logging/Logger;'}
+LOGGER_OWNERS = {'org/slf4j/Logger','org/apache/logging/log4j/Logger','java/util/logging/Logger'}
+LOG_METHODS = {'trace','debug','info','warn','error','fatal','log','warning','severe','fine','finer','finest','config'}
+
+
+def developer_strings(raw):
+    """UTF-8 constant indexes of text used only as an exception message or a log line, never shown in play.
+
+    A use counts when the string (or the string-concatenation recipe holding it, where character U+0001 marks
+    the values) is passed straight to `new SomethingException(...)` or to a Logger call. One use of any
+    other kind keeps the string among the candidates that need checking.
+    """
+    cf = ClassFile(raw)
+    def class_name(index):
+        return cf.utf.get(u2(cf.cp[index][1], 0), '') if cf.cp.get(index, (0,))[0] == 7 else ''
+    def field_type(index):
+        tag, value = cf.cp.get(index, (0, b''))
+        return cf.utf.get(u2(cf.cp[u2(value, 2)][1], 2), '') if tag == 9 else ''
+    def consumer(op):
+        if op[1] not in (182, 183, 185):return ''
+        method = cf.method(u2(op[2], 0))
+        if not method:return ''
+        owner, name, desc = method
+        if op[1] == 183 and name == '<init>' and THROWABLE.search(owner) and desc.startswith('(Ljava/lang/String;'):return 'error'
+        if owner in LOGGER_OWNERS and name in LOG_METHODS and desc.startswith('(Ljava/lang/String;'):return 'log'
+        return ''
+    uses = {}
+    for code, handlers in cf.codes:
+        ops = list(instructions(code))
+        for i, op in enumerate(ops):
+            if op[1] in (18, 19):
+                tag, value = cf.cp.get(ldc_index(op), (0, b''))
+                if tag != 8:continue
+                index = u2(value, 0)
+                # new X; dup; "message" … <init> — or LOGGER; "message" … log call.
+                developer = (i >= 2 and ops[i-1][1] == 89 and ops[i-2][1] == 187 and THROWABLE.search(class_name(u2(ops[i-2][2], 0))))
+                developer = developer or (i >= 1 and ops[i-1][1] in (178, 180) and field_type(u2(ops[i-1][2], 0)) in LOGGERS)
+                developer = developer or (i+1 < len(ops) and consumer(ops[i+1]) != '')
+                uses.setdefault(index, []).append(bool(developer))
+            elif op[1] == 186:
+                tag, value = cf.cp.get(u2(op[2], 0), (0, b''))
+                if tag != 18:continue
+                args = cf.bootstrap[u2(value, 0)] if u2(value, 0) < len(cf.bootstrap) else []
+                developer = i+1 < len(ops) and consumer(ops[i+1]) != ''
+                for arg in args:
+                    if cf.cp.get(arg, (0,))[0] == 8:uses.setdefault(u2(cf.cp[arg][1], 0), []).append(developer)
+    return {index for index, found in uses.items() if found and all(found)}
 
 
 def ldc_index(op):

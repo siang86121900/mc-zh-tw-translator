@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from mc_zh_tw_translator.translator import CTE2QuestTranslator, PATCHOULI_SKIP_FIELDS
 from opencc import OpenCC
-from mc_zh_tw_translator.class_text import proven_strings, config_tooltips
+from mc_zh_tw_translator.class_text import proven_strings, config_tooltips, developer_strings
 from mc_zh_tw_translator import quest_lang
 
 HAN=re.compile('[\u3400-\u9fff]'); LATIN=re.compile('[A-Za-z]{3,}')
@@ -241,13 +241,15 @@ class Audit:
                         try:
                             cf,safe=proven_strings(raw);constants=cf.utf.items()
                             tips=config_tooltips(raw) if any('設定說明' in use for _,use in safe.values()) else {}
+                            developer=developer_strings(raw)
                         except (ValueError,KeyError,IndexError,struct.error,UnicodeError):
                             # An unsupported class remains visible for inspection; it is never writable.
-                            safe={};tips={};constants=enumerate(utf8_constants(raw))
+                            safe={};tips={};developer=set();constants=enumerate(utf8_constants(raw))
                         for i,s in constants:
                             if (i in safe and LATIN.search(s)) or HAN.search(s) or (len(s)<1200 and re.search(r'\b[A-Za-z]{3,} [A-Za-z]{3,} [A-Za-z]{3,}\b',s)):
                                 supported=i in safe and label.startswith('mods/') and label.count('!/')==0
                                 self.add(label+'!/'+n,i,None,s,kind='class_display' if supported else 'class_candidate')
+                                if not supported and i in developer:self.rows[-1]['developer_use']=True
                                 if supported:
                                     self.rows[-1]['display_use']=safe[i][1]
                                     if tips.get(i):linked.append((self.rows[-1],tips[i]))

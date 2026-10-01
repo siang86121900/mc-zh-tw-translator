@@ -307,10 +307,13 @@ class ReviewDialog(QDialog):
             QMessageBox.information(self,'請先校對','核對完成後，請勾選確認欄位。');return
         text=self.value.toPlainText()
         original=jobs.original_of(self.row)
-        if not jobs.validate_text(original,text) and jobs.validate_text(original,jobs.repair(original,text)):
-            text=jobs.repair(original,text)  # only line breaks or parameter order were off; they follow the original now
-        if not jobs.validate_text(original,text):
+        text=jobs.index_placeholders(original,text)  # parameters numbered for Chinese word order
+        # What the user typed keeps the user's own line breaks, even when the English has more lines.
+        own_lines=not jobs.validate_text(original,text) and jobs.fits(original,text,True)
+        if not jobs.fits(original,text,own_lines):
             QMessageBox.warning(self,'格式不符',jobs.format_problem(original,text));return
+        if own_lines:self.row['own_lines']=True
+        else:self.row.pop('own_lines',None)
         if text!=self.row['proposed']:
             self.row['previous_origin']=self.row['origin'];self.row['origin']='manual'
         self.row.update(proposed=text,reviewed=True,changed=text!=self.row.get('current'),review_method='user_confirmed_in_ui')
@@ -489,9 +492,10 @@ class MainWindow(QMainWindow):
         row.addWidget(self.history,1);row.addWidget(button('重新整理',self.refresh_history));self.folder_btn=button('開啟報告資料夾',self.open_report);row.addWidget(self.folder_btn);box.addLayout(row)
         f,b=card();head=QHBoxLayout();head.addWidget(label('本次結果','section'));head.addStretch();self.report_state=label('','pill');head.addWidget(self.report_state);b.addLayout(head)
         self.report_summary=label('尚未有翻譯紀錄。完成掃描後，這裡會顯示實際結果。');b.addWidget(self.report_summary)
-        # Overview first: applied / not applied and why / worth checking / backup. Sources stay folded.
+        # Overview first, the same two numbers as the start page (how much the game shows in Chinese, how much
+        # is still English), then what is worth checking and the backup. Sources stay folded.
         grid=QHBoxLayout();grid.setSpacing(12);self.overview={}
-        for key,title in (('applied','已套用'),('not_applied','未套用'),('check','建議確認'),('backup','備份')):
+        for key,title in (('rate',jobs.HOME_CARDS[0]),('english',jobs.HOME_CARDS[1]),('check','建議確認'),('backup','備份')):
             cell=QFrame();cell.setObjectName('overview');line=QVBoxLayout(cell);line.setContentsMargins(12,10,12,10);line.setSpacing(2)
             line.addWidget(label(title,'sub'));value=label('—','number');line.addWidget(value);detail=label('','sub');line.addWidget(detail);line.addStretch()
             self.overview[key]=(value,detail);grid.addWidget(cell,1)
@@ -1551,18 +1555,19 @@ class MainWindow(QMainWindow):
 
     def fill_overview(self):
         o=jobs.report_overview(self.session)
-        value,detail=self.overview['applied'];value.setText(f"{o['applied']:,}")
-        detail.setText('筆譯文已寫入整合包'+(f"（含先前套用 {o['recovered']:,} 筆）" if o['recovered'] else ''))
-        value,detail=self.overview['not_applied'];value.setText(f"{sum(n for n,_ in o['not_applied']):,}")
-        detail.setText('\n'.join(f'{n:,} 筆 {why}' for n,why in o['not_applied']) or '沒有')
+        cards=jobs.home_cards(self.session)
+        for key,(number,text) in zip(('rate','english'),cards['cards']):
+            value,detail=self.overview[key];value.setText(number);detail.setText(text)
         value,detail=self.overview['check'];value.setText(f"{o['check']:,}")
         detail.setText('、'.join(f'{k} {n:,}' for k,n in o['check_kinds'])+'\n按上方「建議確認」查看' if o['check'] else '沒有需要確認的翻譯')
         value,detail=self.overview['backup']
         if o['backup']:value.setText('已備份');detail.setText(stamp_text(Path(o['backup']).name)+'\n可在「備份與還原」復原')
         else:value.setText('—');detail.setText('這次沒有寫入；先前的備份在「備份與還原」' if o['recovered'] else '還沒有套用，所以沒有備份')
         notes=[]
+        if cards['written']:notes.append(cards['written'])
+        if o['applied']:notes.append(f"這一批寫入 {o['applied']:,} 筆譯文"+(f"（含先前套用 {o['recovered']:,} 筆）" if o['recovered'] else ''))
+        if o['not_applied']:notes.append('沒有寫入：'+'、'.join(f'{n:,} 筆{why}' for n,why in o['not_applied']))
         if o['rechecked']:notes.append('套用後已重新掃描整合包確認寫入')
-        if o.get('held'):notes.append(f"{o['held']:,} 句是寫在模組程式裡的玩家文字，CurseForge 開遊戲時會把改過的模組換回原版，目前無法保留翻譯（見「程式內文字（CurseForge 會換回）」）")
         if o['context']:notes.append(f"另有 {o['context']:,} 筆程式或設定裡的文字，需確認是否顯示在遊戲中（見「待查程式與設定」）")
         if o['renamed']:notes.append(f"{o['renamed']:,} 筆是整合包改過名稱的文字，只採用符合新名稱的來源")
         if self.session.get('ai_checked'):notes.append(f"AI 對照英文核對過 {self.session['ai_checked']:,} 筆有疑點的譯文，判斷無誤")
