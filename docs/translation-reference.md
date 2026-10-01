@@ -42,6 +42,11 @@
 - Patchouli 1.20.1-84 的 `Book` 讀取 `name` 與 `landing_text`，`GuiBookLanding` 以 `Component.translatable` 顯示（javap 查證）。Simply Swords 的 Runic Grimoire 把英文直接寫在 `data/simplyswords/patchouli_books/runic_grimoire/book.json`，所以以英文原句為鍵寫入翻譯資源包。首頁的「1st版」是 Patchouli 自己的序數加上它內建繁中的「版」。
 - Call of Yucatán 1.0.13（MCreator）把「While Kukulkan's Bless is Applied:」等提示用 `Component.literal` 寫在 class（`AncientGoldPillarBlock` 等 7 個），沒有語系鍵；CurseForge 整合包會把改過的模組檔換回原版，因此無法安全翻譯，報告列在「無法寫入」。
 - Apotheosis 的 `config/apotheosis/names.cfg`（Forge 舊式清單，每行一個名字，用來隨機組成名稱）與 yzzz-fix 的 `.yaml` 標籤含簡中，原地轉換。
+- FancyMenu 版面檔（`config/fancymenu/customization/*.txt`）以沒有引號的 `label = 開始遊戲` 寫按鈕、滑鼠提示（hoverlabel）、說明（description）與文字元件（source），照原樣顯示；`%n%` 是換行、`&e` 是顏色碼。`identifier` 等其他欄位不改。Elemental Awakening、VEF、Tensura 都有簡中按鈕。
+- KubeJS 的 `kubejs/config/client.properties` 的 `title=` 是遊戲視窗標題（Elemental Awakening：元素觉醒）。
+- Tensura 的 `config/ymktn/welcome.txt` 是 Markdown 純文字，`##` 是標題不是註解；不確定由哪個模組讀取，依 2026-10-02 的放寬規則逐行轉繁並標示未確認。YSM 的 `builtin/notice.txt` 每次啟動重新產生、遊戲不顯示，不改；`blacklist.txt` 只有註解是中文，不改。
+- 整合包根目錄的 `data/` 是模組執行時寫的資料：Collective 每次啟動重建 `data/serilum/translations`，寫入會被蓋掉，不處理。
+- 同一模組的兩個版本同時放在 mods（Elemental Awakening 的 IMBlocker 5.5.4 與 5.6.2）：Forge／NeoForge 的 UniqueModListBuilder 只載入版本最新的一份，所以只採用那份的語系檔（desktop_jobs.older_copies），否則兩份的譯文會在每次重跑時互相覆蓋。
 
 ## 硬編碼文字（修改 class 前必讀）
 

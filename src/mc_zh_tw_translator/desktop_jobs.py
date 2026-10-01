@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from full_translation_audit import (Audit, parse, parse_binary_nbt, rewrite_binary_nbt, placeholders, at, string_literals,
-                                    LOOSE_FOLDERS, CONTENT_PACK_FOLDERS)
+                                    LOOSE_FOLDERS, CONTENT_PACK_FOLDERS, FANCYMENU, plain_text)
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_free
 from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
@@ -709,6 +709,16 @@ def unsupported_note(session):
             f'（例如 {shown}）。完整清單在下方明細的「無法確定是否顯示」分類；請把截圖或檔案名稱回報給開發者。')
 
 
+def unverified_note(session):
+    """A grey report line for text written into files no reader covers (Audit.unverified_literals/unscanned):
+    done, restorable, but no mod's code was checked to read them, so it is not counted in the completion rate."""
+    rows=[r for r in session.get('rows',[]) if r.get('unverified') and r.get('installed') and r.get('changed')]
+    if not rows:return ''
+    files=len({r['source'] for r in rows})
+    return (f'另外在 {files:,} 個程式還不認得的檔案裡，把 {len(rows):,} 句簡體轉成繁體或補上繁中語系檔；'
+            '還沒確認遊戲會讀這些檔案，所以不算進中文化完成率，可在「備份與還原」還原。')
+
+
 def report_overview(session):
     """What the player cares about first: applied, not applied (and why), worth checking, backup."""
     rows=session.get('rows',[])
@@ -1020,6 +1030,38 @@ def declared_mod_ids(toml):
         return ids
 
 
+def version_key(text):
+    """A version string as numbers to compare (5.6.2 > 5.5.4, 1.10 > 1.9); words are left out."""
+    return tuple(int(n) for n in re.findall(r'\d+',text or ''))
+
+
+def older_copies(instance, jars):
+    """Mod files the game does not load because a newer copy of the same mod sits beside them.
+
+    Forge and NeoForge keep the most recent version when two files declare the same mod id
+    (UniqueModListBuilder), so only that copy's text is shown. Translating both wrote the two copies' wording
+    into the same language file in turn, and every run changed it again (Elemental Awakening has IMBlocker
+    5.5.4 and 5.6.2). The version is the mods.toml one, the jar manifest's when the toml leaves it to the jar,
+    else the file name's.
+    """
+    copies=collections.defaultdict(list)
+    for jar in sorted(jars):
+        try:
+            with zipfile.ZipFile(contained(instance,jar)) as z:
+                names=set(z.namelist())
+                toml=next((z.read(n).decode('utf-8','replace') for n in ('META-INF/neoforge.mods.toml','META-INF/mods.toml') if n in names),'')
+                ids=declared_mod_ids(toml) if toml else []
+                if not ids:continue
+                version=re.search(r"""(?m)^\s*version\s*=\s*["']([^"']+)["']""",toml)
+                version=version[1] if version else ''
+                if not version_key(version) and 'META-INF/MANIFEST.MF' in names:
+                    m=re.search(r'(?m)^Implementation-Version:\s*(\S+)',z.read('META-INF/MANIFEST.MF').decode('utf-8','replace'))
+                    version=m[1] if m else ''
+        except (OSError,zipfile.BadZipFile,ValueError):continue
+        copies[ids[0]].append((version_key(version) or version_key(Path(jar).stem),jar))
+    return {jar for found in copies.values() if len(found)>1 for _,jar in sorted(found)[:-1]}
+
+
 def present_mods(z, depth=0):
     """Namespaces whose text the game can show: a mod the jar declares, or one it holds language files
     or world generation for. Textures or recipes added for another mod (compatibility files) do not
@@ -1120,6 +1162,11 @@ def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
                 contained(instance,p.relative_to(instance).as_posix())
                 audit.source_hashes[p.relative_to(instance).as_posix()]=file_hash(p)
     audit.loose(instance)
+    for r in audit.rows:
+        # Files read outside the folders above (Audit.unscanned) are written too: record them so a change is noticed.
+        name=r['source'].removeprefix('instance!/')
+        if '!/' not in name and name not in audit.source_hashes and (instance/name).is_file():
+            audit.source_hashes[name]=file_hash(contained(instance,name))
     # The report keeps every row it needs in session.json; the scan's own lists are for diagnosis.
     audit.finish(details=details,quiet=True)
     return audit
@@ -1209,6 +1256,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     # The mods' own English, to notice strings a modpack renamed through KubeJS or resource packs.
     name_terms={}  # English name -> (trust rank, Chinese); given to AI so sentences use the same names
     mod_en={};main_copy=set();screen_keys=set();lang_text=set()
+    # Strings some mod's program holds: a file no reader covers may hold one a mod compares with or looks up.
+    program_text={r['current'].strip() for r in audit.rows if r['kind'] in ('class_candidate','class_display') and isinstance(r['current'],str)}
     for r in audit.rows:
         if r['kind']=='language' and '/lang/' in r['source'] and not SERVER_LANG.search(r['source'].split('!/')[-1]):screen_keys.add(r['key'])
         if r['kind']=='language' and r['source'].startswith('mods/'):
@@ -1224,6 +1273,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     installed=getattr(audit,'installed_namespaces',None) if any(r['source'].startswith('mods/') for r in audit.rows) else None
     present=getattr(audit,'present_mods',None) if installed is not None else None
     last_publish=time.monotonic();decided=[]
+    older=older_copies(instance,{r['source'].split('!/')[0] for r in audit.rows
+                                 if r['source'].startswith('mods/') and r['kind'] in ('language','book')})
     for i,r in enumerate(audit.rows):
         if i%200==0:
             if cancelled():
@@ -1235,6 +1286,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 result['source_counts']=dict(counts)
                 publish();last_publish=time.monotonic()
         if r['source'].startswith(OWN_PACK):continue  # our own output; its text is what the mod rows below show
+        if r['kind'] in ('language','book') and r['source'].split('!/')[0] in older:
+            counts['older_mod_copy']+=1;continue  # the game loads the newer copy of this mod (older_copies)
         if (r['kind']=='language' and r['source'].startswith('mods/') and not r['source'].split('!/')[-1].startswith('assets/')
                 and (r['source'].split('!/')[0],lang_namespace(r['source']),r['key']) in main_copy):
             # A second copy inside the mod (e.g. legacy_pack/assets/...) of text its main assets/ also has:
@@ -1311,6 +1364,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                                                 else '寫在模組程式裡的文字：CurseForge 啟動遊戲時會把改過的模組檔換回原版，無法保留翻譯' if not writable else ''),
                                 supported=bool(writable),reviewed=False,changed=value!=original,**extra))
             continue
+        if r.get('unverified') and convertible(r) and r['current'].strip() in program_text:
+            result['rows'].append(dict(slim(r),proposed=r['current'],origin='untranslated',supported=False,reviewed=False,changed=False,
+                                       issue='程式還不認得的檔案；模組程式裡也有同一句，可能拿來比對，改了可能讓模組出錯，所以不改'))
+            counts['unverified_program_text']+=1;continue
         if convertible(r):
             # Chinese written straight into config and quest files (The Foll's quests): Simplified is converted
             # to Taiwan wording in the file itself; Traditional is what the game already shows.
@@ -1701,6 +1758,7 @@ def row_state(r, curseforge=False):
     but the file the game reads does not hold it) or 'waiting' (translated, not written yet).
     """
     if r.get('origin') in ('keep_original','not_display','pending'):return None
+    if r.get('unverified'):return 'candidate'  # written where no mod was checked to read it: not counted either way
     held=r.get('kind')=='class_display' and not r.get('supported')
     if held:return 'unwritable' if held_english(r) else 'done'  # else the program already shows it in Chinese
     if not r.get('supported'):return 'candidate'
@@ -1812,7 +1870,7 @@ def check_shown(instance, rows):
             if ('literals',path) not in files:
                 try:
                     raw=contained(instance,path).read_bytes()
-                    files[('literals',path)]=list(string_literals(raw.decode('utf-8-sig'),PurePosixPath(path).suffix.casefold()))
+                    files[('literals',path)]=list(string_literals(raw.decode('utf-8-sig'),PurePosixPath(path).suffix.casefold(),path))
                 except (OSError,ValueError,UnicodeError):files[('literals',path)]=[]
             literals=files[('literals',path)]
             if re.fullmatch(r'\d+:\d+',r['key']):
@@ -2047,7 +2105,7 @@ def pack_metadata(instance):
 
 LOOSE_TEXT_KINDS = ('config','snbt_display_array','script_candidate','binary_config_candidate')
 LOOSE_TEXT_ROOTS = ('config/','defaultconfigs/','kubejs/','scripts/','tacz/','tlm_custom_pack/')  # scripts/: CraftTweaker
-LOOSE_TEXT_SUFFIXES = ('.json','.snbt','.toml','.txt','.js','.zs','.cfg','.yaml','.yml','.data','.cache')
+LOOSE_TEXT_SUFFIXES = ('.json','.snbt','.toml','.txt','.js','.zs','.cfg','.yaml','.yml','.properties','.data','.cache')
 BINARY_CONFIG_SUFFIXES = ('.data','.cache')
 NOT_THIS_LANGUAGE = {'lang','langs','i18n','locale','locales','.archive-unpack'}
 
@@ -2066,7 +2124,9 @@ def convertible(row):
     """A string in a config, quest, KubeJS or CraftTweaker script file (not a key) whose Chinese is converted in place to
     Taiwan wording. Scripts count only for their Chinese: English in them stays a candidate for checking."""
     source=row.get('source') or ''
-    return (row.get('kind') in LOOSE_TEXT_KINDS and '!/' not in source and source.startswith(LOOSE_TEXT_ROOTS)
+    # unverified: a file no reader covers (Audit.unverified_literals); converted, but not counted as shown.
+    return (row.get('kind') in LOOSE_TEXT_KINDS and '!/' not in source and not source.startswith('saves/')
+            and (source.startswith(LOOSE_TEXT_ROOTS) or bool(row.get('unverified')))
             and source.endswith(LOOSE_TEXT_SUFFIXES) and not other_language_file(source)
             and isinstance(row.get('current'),str) and bool(HAN.search(row['current'])))
 
@@ -2087,19 +2147,21 @@ def rewrite_literals(raw, name, rows):
     bom=raw.startswith(b'\xef\xbb\xbf')
     text=raw[3 if bom else 0:].decode('utf-8')
     escaped=suffix in ('.json','.snbt','.json5')
+    unquoted=suffix in ('.cfg','.properties') or bool(FANCYMENU.search(name)) or (suffix=='.txt' and plain_text(text))
     by_place={};by_text={};found=set()
     for r in rows:
         if re.fullmatch(r'\d+:\d+',r['key']):by_place[tuple(map(int,r['key'].split(':')))]=r
         else:by_text.setdefault(r['current'],[]).append(r)
     edits=[]
-    for lineno,i,value,is_key,start,end in string_literals(text,suffix):
+    for lineno,i,value,is_key,start,end in string_literals(text,suffix,name):
         r=by_place.get((lineno,i))
         if r is not None and value!=r['current']:return None
         # The same text twice in a JSON file is two rows with one translation (one per place in the file).
         same=[r] if r is not None else by_text.get(value,[]) if not is_key else []
         if not same:continue
         r=same[0];literal=text[start:end]
-        new=(json.dumps(r['proposed'],ensure_ascii=literal.isascii()) if escaped else r['proposed'] if suffix=='.cfg'  # cfg values have no quotes
+        new=(json.dumps(r['proposed'],ensure_ascii=literal.isascii()) if escaped
+             else r['proposed'] if unquoted  # .cfg, .properties and FancyMenu values carry no quotes
              else literal[0]+r['proposed']+literal[-1])
         edits.append((start,end,new));found.update(id(x) for x in same)
     if len(found)<len(rows):return None

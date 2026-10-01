@@ -63,6 +63,27 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(any(r['key']=='lib.a' for r in result['rows']))
         self.assertEqual(result['source_counts']['not_installed'],3)
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_two_copies_of_a_mod_use_the_newer_ones_text_and_a_rerun_writes_nothing(self,_):
+        import zipfile
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        (self.instance/'mods').mkdir();(self.instance/'options.txt').write_text('lang:zh_tw\n',encoding='utf-8')
+        for jar,version,en,cn in (('IMBlocker-5.5.4.jar','5.5.4','[Experimental] Enable IME','[实验性功能] 启用输入法'),
+                                  ('IMBlocker-5.6.2.jar','${file.jarVersion}','Enable IME','启用输入法')):
+            with zipfile.ZipFile(self.instance/'mods'/jar,'w') as z:
+                z.writestr('META-INF/mods.toml',f'modLoader="javafml"\n[[mods]]\nmodId="imblocker"\nversion="{version}"\n')
+                z.writestr('META-INF/MANIFEST.MF','Manifest-Version: 1.0\nImplementation-Version: 5.6.2\n')
+                z.writestr('assets/imblocker/lang/en_us.json',json.dumps({'imblocker.ime':en}))
+                z.writestr('assets/imblocker/lang/zh_cn.json',json.dumps({'imblocker.ime':cn},ensure_ascii=False))
+        result=self.make_plan()
+        rows=[r for r in result['rows'] if r['key']=='imblocker.ime']
+        self.assertEqual([r['source'].split('!/')[0] for r in rows],['mods/IMBlocker-5.6.2.jar'])
+        done=apply_session(self.confirm_all(result),self.home,lambda *_:None)
+        with zipfile.ZipFile(self.instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:
+            self.assertEqual(json.loads(z.read('assets/imblocker/lang/zh_tw.json'))['imblocker.ime'],'啟用輸入法')
+        self.assertEqual(done['shown_mismatch'],0)
+        self.assertFalse([r for r in self.make_plan()['rows'] if r.get('changed') and not r.get('installed')])
+
     def test_broken_optional_chinese_and_nontext_json_do_not_block_translation(self):
         import zipfile
         (self.instance/'mods').mkdir()
@@ -450,20 +471,79 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual({p:p.read_bytes() for p in before},before)
         self.assertFalse((gun/'assets/ocle/lang/zh_tw.json').exists())
 
-    def test_text_in_a_folder_no_reader_covers_is_listed_not_lost(self):
-        other=self.instance/'mystery_mod';(other/'lang').mkdir(parents=True)
-        (other/'quests.json').write_text('{"title": "龙之试炼", "id": "a"}',encoding='utf-8')
-        (other/'lang/en_us.json').write_text('{"a": "Dragon trial"}',encoding='utf-8')
-        (other/'lang/ja_jp.json').write_text('{"a": "竜の試練"}',encoding='utf-8')  # another language: not listed
-        (other/'readme.txt').write_text('作者的说明',encoding='utf-8')
-        (self.instance/'logs').mkdir();(self.instance/'logs/latest.log').write_text('载入完成',encoding='utf-8')
-        rows=[r for r in self.make_plan()['rows'] if r['kind']=='unsupported_config_text']
-        self.assertEqual(sorted(r['source'] for r in rows),['mystery_mod/lang/en_us.json','mystery_mod/quests.json'])
-        self.assertTrue(all(not r['supported'] and r['origin']=='untranslated' for r in rows))
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_fancymenu_buttons_and_kubejs_window_title_are_converted_in_place(self,_):
         from mc_zh_tw_translator import desktop_jobs as jobs
-        note=jobs.unsupported_note(dict(rows=rows))
-        self.assertIn('有 2 個檔案',note);self.assertIn('mystery_mod/quests.json',note)
+        menu=self.instance/'config/fancymenu/customization';menu.mkdir(parents=True)
+        layout=('type = fancymenu_layout\n\nlayout-meta {\n  identifier = 开始界面\n}\n\ncustomization {\n'
+                '  action = addbutton\n  label = &e开始游戏\n  hoverlabel = "进入世界"\n  description = 请作者喝一杯%n%谢谢\n'
+                '  source = [source:local]/config/fancymenu/assets/a.png\n}\n')
+        (menu/'title_screen_layout.txt').write_text(layout,encoding='utf-8')
+        props=self.instance/'kubejs/config';props.mkdir(parents=True)
+        (props/'client.properties').write_text('#KubeJS Client Properties\nbackgroundColor=2E3440\ntitle=元素觉醒\n',encoding='utf-8')
+        note=self.instance/'config/ymktn';note.mkdir(parents=True)
+        welcome='## 当前版本说明\n## Current Version Notes\n\n本整合包目前还在持续更新中！  \nThis modpack is still updated.\n'
+        (note/'welcome.txt').write_text(welcome,encoding='utf-8')
+        (note/'notice.txt').write_text('该目录会在每次游戏启动时清空！\n',encoding='utf-8')  # a note for people, recreated by the mod
+        (note/'blacklist.txt').write_text('# 黑名单说明\nwine_fox\n',encoding='utf-8')  # Chinese only in comments: a settings file
+        before={p:p.read_bytes() for p in (menu/'title_screen_layout.txt',props/'client.properties',note/'welcome.txt',note/'notice.txt')}
+        result=self.make_plan()
+        self.assertFalse([r for r in result['rows'] if r['kind']=='unsupported_config_text'])
+        unverified={r['source'] for r in result['rows'] if r.get('unverified')}
+        self.assertEqual(unverified,{'config/ymktn/welcome.txt'})  # FancyMenu and KubeJS are known readers
+        jobs.auto_confirm_safe(result);done=apply_session(result,self.home,lambda *_:None)
+        self.assertEqual((menu/'title_screen_layout.txt').read_text(encoding='utf-8'),
+                         layout.replace('&e开始游戏','&e開始遊戲').replace('"进入世界"','"進入世界"').replace('请作者喝一杯%n%谢谢','請作者喝一杯%n%謝謝'))
+        self.assertEqual((props/'client.properties').read_text(encoding='utf-8'),'#KubeJS Client Properties\nbackgroundColor=2E3440\ntitle=元素覺醒\n')
+        self.assertEqual((note/'welcome.txt').read_text(encoding='utf-8'),
+                         welcome.replace('当前版本说明','當前版本說明').replace('本整合包目前还在持续更新中！','本整合包目前還在持續更新中！'))
+        self.assertEqual((note/'notice.txt').read_text(encoding='utf-8'),'该目录会在每次游戏启动时清空！\n')
+        self.assertEqual((note/'blacklist.txt').read_text(encoding='utf-8'),'# 黑名单说明\nwine_fox\n')
+        self.assertEqual(done['shown_mismatch'],0)
+        self.assertFalse([r for r in self.make_plan()['rows'] if r.get('changed') and not r.get('installed')])
+        restore_backup(Path(done['backup']),self.instance)
+        self.assertEqual({p:p.read_bytes() for p in before},before)
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_text_in_a_folder_no_reader_covers_is_converted_or_listed_not_lost(self,_):
+        import zipfile
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        other=self.instance/'mystery_mod';(other/'lang').mkdir(parents=True)
+        quests='{"title": "龙之试炼", "id": "a", "model": "geometry.四叶十字", "tip": "开启传送门"}'
+        (other/'hints.json').write_text('{"hint": "开启传送门，需要钥匙。"}',encoding='utf-8')  # a sentence under an unknown field
+        (other/'quests.json').write_text(quests,encoding='utf-8')
+        (other/'lang/en_us.json').write_text('{"a.trial": "Dragon trial", "a.cn": "Only Chinese"}',encoding='utf-8')
+        (other/'lang/zh_cn.json').write_text('{"a.cn": "只有简中"}',encoding='utf-8')
+        (other/'lang/ja_jp.json').write_text('{"a": "竜の試練"}',encoding='utf-8')  # another language
+        (other/'readme.txt').write_text('作者的说明',encoding='utf-8')
+        (other/'page.xml').write_text('<page>龙之试炼</page>\n',encoding='utf-8')  # Chinese outside quotes: listed
+        (other/'names.yaml').write_text('boss: "暗影龙"\n',encoding='utf-8')
+        (self.instance/'logs').mkdir();(self.instance/'logs/latest.log').write_text('载入完成',encoding='utf-8')
+        world=self.instance/'saves/w/data';world.mkdir(parents=True);(world/'shop.json').write_text('{"title": "商店分类"}',encoding='utf-8')
+        # A mod whose program holds the same Chinese: it may compare with it, so that string stays.
+        (self.instance/'mods').mkdir()
+        with zipfile.ZipFile(self.instance/'mods/boss.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="boss"\n')
+            z.writestr('a/Boss.class',b'\xca\xfe\xba\xbe\x00\x00\x00\x34\x00\x03\x01\x00\x09'+'暗影龙'.encode('utf-8')+b'\x01\x00\x01x')
+        before={p:p.read_bytes() for p in (other/'quests.json',other/'names.yaml',world/'shop.json')}
+        result=self.make_plan()
+        red=sorted(r['source'] for r in result['rows'] if r['kind']=='unsupported_config_text')
+        self.assertEqual(red,['mystery_mod/hints.json','mystery_mod/page.xml'])
+        self.assertIn('有 2 個檔案',jobs.unsupported_note(result));self.assertIn('page.xml',jobs.unsupported_note(result))
+        unverified=[r for r in result['rows'] if r.get('unverified')]
+        self.assertTrue(unverified and all(jobs.row_state(r)=='candidate' for r in unverified))  # never counted
+        self.assertFalse([r for r in result['rows'] if r['source'].startswith('saves/')])
+        jobs.auto_confirm_safe(result);done=apply_session(result,self.home,lambda *_:None)
+        self.assertEqual((other/'quests.json').read_text(encoding='utf-8'),quests.replace('龙之试炼','龍之試煉'))  # model name and tip stay
+        self.assertEqual((other/'names.yaml').read_text(encoding='utf-8'),'boss: "暗影龙"\n')
+        self.assertEqual(json.loads((other/'lang/zh_tw.json').read_text(encoding='utf-8')),{'a.cn':'只有簡中'})
+        self.assertEqual((world/'shop.json').read_text(encoding='utf-8'),'{"title": "商店分类"}')
+        self.assertIn('2 句簡體轉成繁體或補上繁中語系檔',jobs.unverified_note(done))
         self.assertEqual(jobs.unsupported_note(dict(rows=[])),'')
+        again=self.make_plan()
+        self.assertFalse([r for r in again['rows'] if r.get('changed') and not r.get('installed')])
+        restore_backup(Path(done['backup']),self.instance)
+        self.assertEqual({p:p.read_bytes() for p in before},before);self.assertFalse((other/'lang/zh_tw.json').exists())
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_patchouli_book_name_and_landing_text_go_into_the_pack_as_language_entries(self,_):

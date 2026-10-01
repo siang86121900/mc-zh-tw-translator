@@ -1,7 +1,7 @@
 """Read-only inventory and fail-closed, fingerprinted translation review gate."""
 import argparse, hashlib, json, re, struct, zipfile, gzip, io
 from collections import Counter, defaultdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from mc_zh_tw_translator.translator import CTE2QuestTranslator, PATCHOULI_SKIP_FIELDS
 from opencc import OpenCC
 from mc_zh_tw_translator.class_text import proven_strings, plain_strings, config_tooltips, developer_strings
@@ -24,23 +24,12 @@ LOOSE_FOLDERS=('kubejs','config','defaultconfigs','patchouli_books','datapacks',
 # Little Maid custom packs (LanguageLoader reads assets/<ns>/lang/<code>.json). Only their language files and
 # books are text; their other JSON is game data naming language keys.
 CONTENT_PACK_FOLDERS=('tacz','tlm_custom_pack')
-# Folders that hold no text the game shows from a file of their own, left out of the sweep for unscanned text.
-NOT_PLAYER_TEXT={'mods','saves','logs','crash-reports','screenshots','backups','cache','shaderpacks','.mixin.out','natives',
+# Top-level folders holding no text the game shows from a file of their own: left out of the unscanned sweep.
+# data/ is what mods write while the game runs (Collective rebuilds data/serilum/translations at every start).
+NOT_PLAYER_TEXT={'mods','saves','data','logs','crash-reports','screenshots','backups','cache','shaderpacks','.mixin.out','natives',
                  'libraries','versions','assets','modernfix','lightspeed-cache','customskinloader','journeymap','xaero',
                  'xaerominimap','xaeroworldmap','schematics','.cache','.fabric','.idea','local','dlc','output','downloads'}
-# Folders of loose files the game reads player text from (mods and other archives are scanned on their own).
-# scripts/ holds CraftTweaker's ZenScript (.zs): tooltips and names written straight into the script.
-LOOSE_FOLDERS=('kubejs','config','defaultconfigs','patchouli_books','datapacks','resourcepacks','vaultpatcher','hotai',
-               'immersive_furniture','scripts')
-# Content packs a mod loads as resource packs: TACZ gun packs (GunPackLoader is a RepositorySource) and Touhou
-# Little Maid custom packs (LanguageLoader reads assets/<ns>/lang/<code>.json). Only their language files and
-# books are text; their other JSON is game data naming language keys.
-CONTENT_PACK_FOLDERS=('tacz','tlm_custom_pack')
-# Top-level folders holding no text the game shows from a file of their own: left out of the unscanned sweep.
-NOT_PLAYER_TEXT={'mods','saves','logs','crash-reports','screenshots','backups','cache','shaderpacks','.mixin.out','natives',
-                 'libraries','versions','assets','modernfix','lightspeed-cache','customskinloader','journeymap','xaero',
-                 'xaerominimap','xaeroworldmap','schematics','.cache','.fabric','local','dlc','downloads'}
-TEXT_CONFIG_SUFFIXES={'.js','.zs','.zs','.json','.snbt','.toml','.txt','.local','.lang','.cfg','.yaml','.yml','.xml','.csv','.properties','.ini','.conf','.data','.cache'}
+TEXT_CONFIG_SUFFIXES={'.js','.zs','.json','.snbt','.toml','.txt','.local','.lang','.cfg','.yaml','.yml','.xml','.csv','.properties','.ini','.conf','.data','.cache'}
 CC=OpenCC('s2twp')
 
 def decode(b):
@@ -135,15 +124,66 @@ QUOTED=re.compile(r'"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27')
 DOUBLE_QUOTED=re.compile(r'"(?:\\.|[^"\\])*"')
 
 SCRIPT_SUFFIXES=('.js','.zs')
+# Chinese that reads as a sentence rather than a name (geometry.四叶十字, a bone called 头发): punctuation, or a long run.
+SENTENCE=re.compile(r'[，。！？；：、]|^(?=(?:[^.()_/\=]*[\u3400-\u9fff]){8})[^.()_/\=]*$')
+NOT_TEXT_FIELD=re.compile(r'(?i)author|credit|identifier|uuid|bone|(?:^|_)id$')
+# Formats whose strings string_literals can find and the writer can put back byte for byte.
+UNVERIFIED_SUFFIXES=('.json','.snbt','.toml','.txt','.yaml','.yml','.cfg','.properties','.js','.zs')
 
-def string_literals(text,suffix):
+def other_language(n):
+    """A path naming another language (zh_cn/, ja-JP.json): its Chinese is that language, not something to convert."""
+    parts=PurePosixPath(n).parts
+    return any(re.fullmatch(r'[a-z]{2,3}[_-][a-z]{2,4}',part,re.I) and part.casefold().replace('-','_')!='zh_tw'
+               for part in parts[:-1]+(PurePosixPath(n).stem,))
+
+# FancyMenu layouts (title and pause screen buttons): "label = 開始遊戲" lines, the text shown as written.
+FANCYMENU=re.compile(r'(?:^|/)config/fancymenu/customization/[^/]+\.txt$',re.I)
+FANCYMENU_TEXT={'label','hoverlabel','description','source','tooltip','text','title'}
+ASSIGNED=re.compile(r'^(\s*)([^=#!\s][^=]*?)\s*=\s*(.*?)\s*$')
+
+def assigned_values(text,fields=None):
+    """string_literals' form for "name = value" lines with no quotes (.properties, FancyMenu): each value whose
+    name is in `fields` (any name when None). The value's own span is its literal."""
+    offset=0
+    for lineno,line in enumerate(text.splitlines(True),1):
+        body=line.rstrip('\r\n');m=ASSIGNED.match(body)
+        if m and not body.lstrip().startswith(('#','!')) and m[3] and (fields is None or m[2].strip() in fields):
+            yield lineno,0,m[3],False,offset+m.start(3),offset+m.end(3)
+        offset+=len(line)
+
+def plain_text(text):
+    """A .txt whose Chinese lines hold no quotes: text shown as written, line by line (Tensura's welcome.txt, a
+    Markdown note). Decided from the text itself, so the scan, the writer and the read-back always agree."""
+    lines=[line for line in text.splitlines() if HAN.search(line)]
+    # Chinese only in # lines is a settings file's comments (YSM's blacklist.txt), not a note to show.
+    return (any(not line.lstrip().startswith('#') for line in lines)
+            and not any(q in line for line in lines for q in '"\''))
+
+def text_lines(text):
+    """string_literals' form for a plain_text file: every line with Chinese, without its surrounding spaces.
+    Headings (## ...) are shown too, so no line is taken for a comment."""
+    offset=0
+    for lineno,line in enumerate(text.splitlines(True),1):
+        body=line.rstrip('\r\n');value=body.strip()
+        if HAN.search(value):
+            start=offset+body.index(value);yield lineno,0,value,False,start,start+len(value)
+        offset+=len(line)
+
+def string_literals(text,suffix,path=''):
     """(line number, index on the line, value, is_key, start, end) of every quoted string, one line at a time.
 
     The scan, the writer and the read-back check all locate config and quest text with this, so a row's
     "line:index" key names the same string in all three. Keys (followed by : or =) are marked; comment lines
     are skipped. JSON/SNBT values are unescaped; TOML/TXT values are the raw text between the quotes, as the
-    scan has always recorded them. Forge's old .cfg files write values without quotes (see cfg_values).
+    scan has always recorded them. Forge's old .cfg files write values without quotes (see cfg_values), as do
+    .properties files and FancyMenu layouts (assigned_values; `path` names the file).
     """
+    if FANCYMENU.search(path):
+        yield from assigned_values(text,FANCYMENU_TEXT);return
+    if suffix=='.properties':
+        yield from assigned_values(text);return
+    if suffix=='.txt' and plain_text(text):
+        yield from text_lines(text);return
     if suffix=='.cfg':
         yield from cfg_values(text);return
     escaped=suffix in ('.json','.snbt','.json5');pattern=DOUBLE_QUOTED if escaped else QUOTED;offset=0
@@ -168,7 +208,7 @@ def string_literals(text,suffix):
         offset+=len(line)
 
 # Files that describe a pack rather than hold game text, and tool caches (JEI's sort order and lookup history).
-NOT_TEXT_FILE=re.compile(r'(?i)(?:^|/)(?:readme|changelog|change_log|update_?log|licen[cs]e|credits?)[^/]*$|^config/jei/')
+NOT_TEXT_FILE=re.compile(r'(?i)(?:^|/)(?:readme|changelog|change_log|update_?log|licen[cs]e|credits?|notice)[^/]*$|^config/jei/|(?:^|/)\.idea/')
 
 def unsupported_sample(n,text,root,strict=False):
     """A line of what may be player text in a file no reader produced a row for, or None.
@@ -188,7 +228,10 @@ def unsupported_sample(n,text,root,strict=False):
         try:data=parse(text.encode('utf-8'))
         except ValueError:data=None
         if data is not None:return next((v for _,field,v in leaves(data) if field in DISPLAY and HAN.search(v)),None)
-    lines=[line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(('#','//','--'))]
+    if n.lower().endswith(('.js','.zs','.json','.json5')):
+        text=re.sub(r'/\*.*?\*/',' ',text,flags=re.S)  # block comments (string contents are already blanked)
+        text=re.sub(r'(?m)(?<![:"\'])//.*$','',text)
+    lines=[line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(('#','//','--','*','/*'))]
     sample=next((line for line in lines if HAN.search(line)),None)
     if sample is None and not strict:
         sample=next((line for line in lines if re.search(
@@ -525,7 +568,8 @@ class Audit:
                             if field in DISPLAY and HAN.search(value):self.add(n,json.dumps(path),None,value,kind='config')
                     except (ValueError,UnicodeError):pass
                 continue
-            if p.suffix not in ('.js','.zs','.json','.snbt','.toml','.txt','.local','.lang','.cfg','.yaml','.yml'):continue
+            if p.suffix not in ('.js','.zs','.json','.snbt','.toml','.txt','.local','.lang','.cfg','.yaml','.yml','.properties'):continue
+            if NOT_TEXT_FILE.search(n):continue  # notes for people (readme, notice), tool caches, IDE files
             try:
                 raw=decode(p.read_bytes())
                 if p.suffix=='.snbt':
@@ -556,14 +600,16 @@ class Audit:
                         if field in DISPLAY or HAN.search(value):self.add(n,json.dumps(path),None,value,kind='config')
                 elif p.suffix!='.snbt':  # SNBT text is read above
                     lines=raw.splitlines()
-                    for lineno,i,value,is_key,_,_ in string_literals(raw,p.suffix):
+                    for lineno,i,value,is_key,_,_ in string_literals(raw,p.suffix,n):
                         if is_key:continue  # a setting's or an object's name, not text
-                        if p.suffix in ('.cfg','.yaml','.yml') and not HAN.search(value):continue  # English stays unlisted
+                        if (p.suffix in ('.cfg','.yaml','.yml','.properties') or FANCYMENU.search(n)) and not HAN.search(value):continue  # English stays unlisted
                         line=lines[lineno-1]
                         visible=HAN.search(value) or re.search(r'\b(title|subtitle|description|Text\.of|text\.add|tooltip|displayName|label|message)\b'
                                                                r'|\.(?:add(?:Shift)?Tooltip|setDisplayName|addJEIInfo|addInfo)\(',line)
                         if visible and (HAN.search(value) or LATIN.search(value)):
                             self.add(n,f'{lineno}:{i}',None,value,kind='script_candidate' if p.suffix in SCRIPT_SUFFIXES else 'config')
+                            # A plain note read by some mod (welcome.txt): converted, but no reader was checked.
+                            if p.suffix=='.txt' and not FANCYMENU.search(n) and plain_text(raw):self.rows[-1]['unverified']=True
             except Exception as e:
                 if p.suffix.lower()=='.json' and isinstance(e,(ValueError,UnicodeError)):
                     # OpenLoader also stores recipes, affixes and combat numbers under config. Broken JSON
@@ -574,9 +620,9 @@ class Audit:
                     if not HAN.search(text) and not display:
                         self.counts['invalid_nontext_json_skipped']+=1;continue
                 self.errors.append([n,str(e)])
-        # Do not silently lose a future shop/config format. A file with Chinese, or a likely display field in
-        # a known text format, that produced no row above is listed as an unsupported candidate. It is never
-        # written until its reader and format have been verified.
+        # Do not silently lose a future shop/config format. In a file that produced no row above, Chinese in quotes
+        # is converted to Taiwan wording in place, marked as not proven to be read (unverified_literals); what is
+        # left (Chinese outside quotes, a likely display field in English) is listed as an unsupported candidate.
         produced={r['source'].removeprefix('instance!/') for r in self.rows}
         for n,p in names.items():
             content=n.split('/',1)[0] in CONTENT_PACK_FOLDERS
@@ -587,7 +633,7 @@ class Audit:
                 if '\0' in text:continue
             except (OSError,UnicodeError):continue
             # A content pack's own data (TACZ gun definitions, model files) is read for display fields only.
-            sample=unsupported_sample(n,text,root,strict=content)
+            sample=unsupported_sample(n,self.unverified_literals(n,text,content),root,strict=content)
             if sample:
                 self.add(n,'file',None,sample[:500],kind='unsupported_config_text')
                 self.counts['unsupported_config_text_files']+=1
@@ -596,8 +642,10 @@ class Audit:
         """List text in folders no reader covers, so a new kind of text (CraftTweaker scripts, TACZ gun packs) is
         never silently left out: a text file with Chinese, a language file, or an archive carrying language files,
         in any top-level folder of the modpack other than those scanned and those holding no player text.
-        Nothing listed here is written; the report shows it as a format not supported yet."""
-        scanned={f.casefold() for f in LOOSE_FOLDERS+CONTENT_PACK_FOLDERS+('mods',)}
+        Language files there are read like any other (a missing zh_tw.json is added beside them) and Chinese in
+        quotes is converted in place (unverified_literals); both are marked unverified, since no mod's code was
+        checked to read them. What is left is listed in the report as a format not supported yet."""
+        scanned={f.casefold() for f in LOOSE_FOLDERS+CONTENT_PACK_FOLDERS+('mods',)};langs=[]
         try:folders=[d for d in root.iterdir() if d.is_dir() and d.name.casefold() not in scanned|NOT_PLAYER_TEXT]
         except OSError:return
         for folder in sorted(folders):
@@ -616,10 +664,51 @@ class Audit:
                     text=decode(p.read_bytes())
                 except (OSError,UnicodeError,ValueError,zipfile.BadZipFile):continue
                 if '\0' in text:continue
-                sample=unsupported_sample(n,text,root,strict=True)
+                if LANG.match('/'+n):langs.append(n);continue  # read below as language files
+                sample=unsupported_sample(n,self.unverified_literals(n,text,True),root,strict=True)
                 if sample:
                     self.add(n,'file',None,sample[:500],kind='unsupported_config_text')
                     self.counts['unscanned_text_files']+=1
+        if langs:
+            first=len(self.rows);files={n:root/n for n in langs}
+            self.collection('instance',set(files),lambda n:files[n].read_bytes())
+            for row in self.rows[first:]:row['unverified']=True
+            self.counts['unverified_language_rows']+=len(self.rows)-first
+    def unverified_literals(self,n,text,strict):
+        """Rows for the Chinese strings of a file no reader covers, to be converted to Taiwan wording in place;
+        returns the text with every quoted string blanked, so what is left over can still be listed.
+
+        Only quoted strings that are not keys count (string_literals, the same reader the writer and the read-back
+        use); strict keeps JSON to display fields, as a model's bone names or a gun's identifier are names other
+        files look up. Saves (player progress), other languages' files and tool caches are never touched."""
+        suffix=PurePosixPath(n).suffix.lower()
+        if (suffix not in UNVERIFIED_SUFFIXES or n.startswith('saves/') or NOT_TEXT_FILE.search(n)
+                or re.search(r'(?:^|/)lang/',n) or other_language(n)):return text
+        try:literals=list(string_literals(text,suffix,n))
+        except Exception:return text
+        starts=[0]
+        for line in text.splitlines(True):starts.append(starts[-1]+len(line))
+        blank=list(text);fields=defaultdict(set)
+        if strict and suffix=='.json':
+            # Each value's field, arrays included (an "author": [...] list names its people on lines of their own).
+            try:
+                for _,field,value in leaves(parse(text.encode('utf-8'))):fields[value].add(field)
+            except ValueError:pass
+        for lineno,i,value,is_key,start,end in literals:
+            if strict and suffix=='.json' and not is_key and HAN.search(value):
+                line_field=re.search(r'"([^"]+)"\s*:\s*$',text[starts[lineno-1]:start])
+                names=fields.get(value) or ({line_field[1]} if line_field else set())
+                if not names or not names<=DISPLAY:
+                    # A sentence under a field of unknown use stays in the text, so it is listed; a name is not.
+                    if (not SENTENCE.search(value) or any(NOT_TEXT_FIELD.search(str(f)) for f in names)
+                            or re.search(r"['\";]",value)):
+                        blank[start:end]=' '*(end-start)  # a name, an author list or a model's expression
+                    continue
+            blank[start:end]=' '*(end-start)
+            if is_key or not HAN.search(value):continue
+            self.add(n,f'{lineno}:{i}',None,value,kind='config');self.rows[-1]['unverified']=True
+            self.counts['unverified_literals']+=1
+        return ''.join(blank)
     def finish(self,details='full',quiet=False):
         # details: 'full' writes plain lists (command-line audits); 'compressed' writes the two lists the
         # desktop report keeps for diagnosis as .gz; 'summary' writes the counts only.

@@ -1688,6 +1688,7 @@ class MainWindow(QMainWindow):
         if self.session.get('is_preview'):message+=f"\n已記錄 {self.session['preview_total']:,} 筆，處理中先預覽最近 200 筆；結束後載入完整報告。"
         if self.session.get('apply_error'):message+='\n'+self.session['apply_error']
         if self.session.get('status')=='installed':message+=''.join('\n'+n for n in self.applied_notes(self.session))
+        if jobs.unverified_note(self.session):message+='\n'+jobs.unverified_note(self.session)
         self.report_summary.setText(message)
         self.fill_overview()
         # Red is only for what still needs the player; broken files the game skips too and rebuilt files are notes.
