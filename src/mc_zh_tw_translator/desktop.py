@@ -585,7 +585,10 @@ class MainWindow(QMainWindow):
         if index==2:self.refresh_backups()
         if index==5:self.refresh_terms()
         if index==6 and self.catalog is None:self.refresh_catalog()
-        elif index==6:self.mark_catalog_seen()
+        elif index==6:
+            # Modpacks may have been installed or removed since the list was read; match them again.
+            if self.catalog_packs and not self.busy:self.catalog_loaded(self.catalog_packs)
+            self.mark_catalog_seen()
 
     def make_shared(self):
         box=self.page('已翻譯整合包','已經翻好的整合包，按一個按鈕就裝好。整合包和翻譯者加裝的模組都從 CurseForge 官方下載，這裡只提供翻譯文字；安裝前會先備份。')
@@ -594,7 +597,7 @@ class MainWindow(QMainWindow):
         self.catalog_refresh=button('重新整理',self.refresh_catalog);head.addWidget(self.catalog_refresh,0,Qt.AlignTop);box.addLayout(head)
         self.catalog_box=QVBoxLayout();self.catalog_box.setSpacing(12);box.addLayout(self.catalog_box)
         box.addStretch()
-        self.catalog=None;self.pack_buttons=[]
+        self.catalog=None;self.catalog_packs=None;self.pack_buttons=[]
 
     @staticmethod
     def catalog_key(pack):return f"{pack['projectID'] or pack['name']}:{pack['fileID']}:{pack['sha256'][:12]}"
@@ -639,6 +642,7 @@ class MainWindow(QMainWindow):
         self.background.append(worker);worker.start()
 
     def catalog_loaded(self,packs):
+        self.catalog_packs=packs
         self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home))
         # New = published translations this user has not seen yet; shown until the page is opened.
         seen=self.seen_catalog()
@@ -676,7 +680,7 @@ class MainWindow(QMainWindow):
                    if pack['status'] in ('exact','applied','update') and not pack['latest'] else '')
             extra=pack.get('addedMods') or []
             added=(f"翻譯者另外加裝了 {len(extra)} 個模組：" +'、'.join(m['name'] for m in extra[:8])+('…' if len(extra)>8 else '')
-                   +'。安裝時可以選擇要不要一起加入。') if extra else ''
+                   +'。安裝時會從 CurseForge 一起加入。') if extra else ''
             for text in (pack['notes'],added,notes.get(pack['status'],''),newer):
                 if text:b.addWidget(label(text,'sub'))
             row=QHBoxLayout()
@@ -698,18 +702,14 @@ class MainWindow(QMainWindow):
         return dict(options).get(name) if ok else None
 
     def ask_install(self,title,text,pack):
-        """Ask before installing. Returns None (do nothing), True (also add the translator's mods) or False."""
+        """Ask before installing. Returns None (do nothing), True (also add the translator's mods) or False (there are none)."""
         mods=pack.get('addedMods') or []
         if not mods:return False if QMessageBox.question(self,title,text+'\n\n是否繼續？')==QMessageBox.Yes else None
         names='、'.join(m['name'] for m in mods[:12])+('…' if len(mods)>12 else '')
-        box=QMessageBox(self);box.setIcon(QMessageBox.Question);box.setWindowTitle(title)
-        box.setText(text+f"\n\n翻譯者另外加裝了 {len(mods)} 個模組（共 {sum(m['size'] for m in mods)/1024/1024:.1f} MB）：{names}\n"
-                    '選擇加入時，本程式從 CurseForge 的官方檔案伺服器下載，確認和翻譯者用的是同一個檔案才放進模組資料夾；'
-                    '之後可在「備份與還原」移除。不加入的話，這些模組的翻譯會略過。')
-        both=box.addButton('加入模組並安裝翻譯',QMessageBox.AcceptRole);only=box.addButton('只安裝翻譯',QMessageBox.ActionRole)
-        box.addButton('取消',QMessageBox.RejectRole);box.setDefaultButton(both)
-        box.exec()
-        return True if box.clickedButton() is both else False if box.clickedButton() is only else None
+        # The owner chose one confirmation for everything: agreeing to install also adds the translator's mods.
+        text+=(f"\n\n翻譯者另外加裝了 {len(mods)} 個模組（共 {sum(m['size'] for m in mods)/1024/1024:.1f} MB），會一起加入：{names}\n"
+               '本程式從 CurseForge 的官方檔案伺服器下載，確認和翻譯者用的是同一個檔案才放進模組資料夾；之後可在「備份與還原」移除。')
+        return True if QMessageBox.question(self,title,text+'\n\n是否繼續？')==QMessageBox.Yes else None
 
     def confirm_patch(self,target,pack,other_version):
         warn='\n\n整合包版本和翻譯時不同：只會翻譯檔案完全相同的模組，其餘略過（不會覆蓋）。' if other_version else ''
@@ -717,6 +717,10 @@ class MainWindow(QMainWindow):
         return self.ask_install('安裝翻譯',f"將把「{pack['name']}」的翻譯安裝到{language}：\n{target}\n\n會先備份要修改的原檔，之後可在「備份與還原」復原。請先關閉這個整合包的遊戲。{warn}",pack)
 
     def apply_catalog_patch(self,pack):
+        if pack['projectID'] and not any(x['projectID']==pack['projectID'] for x in jobs.curseforge_instances()):
+            # The modpack was removed after the list was shown: install it with CurseForge first.
+            if self.catalog_packs:self.catalog_loaded(self.catalog_packs)
+            self.install_pack_and_translation(pack);return
         target=self.choose_patch_target(pack['projectID'],pack['fileID'],'安裝翻譯')
         if not target:return
         identity=patches.instance_identity(Path(target))

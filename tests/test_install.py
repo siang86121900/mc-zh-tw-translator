@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mc_zh_tw_translator import patches
+from mc_zh_tw_translator import desktop_jobs as jobs
 from mc_zh_tw_translator.desktop_jobs import plan, apply_session
 
 
@@ -248,13 +249,16 @@ class AddedModTests(unittest.TestCase):
             window.catalog_loaded([entry])
             shown=' '.join(l.text() for l in window.pages.widget(6).findChildren(type(window.patch_status)))
             self.assertIn('翻譯者另外加裝了 1 個模組：IMBlocker',shown)
-            for answer,expected in ((None,None),(True,True),(False,False)):
+            for answer,expected in ((None,None),(True,True)):
                 with patch.object(window,'ask_install',return_value=answer) as ask,patch.object(window,'run_worker') as run:
                     window.apply_catalog_patch(window.catalog[0])
                 self.assertEqual(ask.call_args[0][2]['addedMods'][0]['name'],'IMBlocker')
                 self.assertEqual(run.called,expected is not None)
-        with patch.object(QMessageBox,'exec',return_value=0),patch.object(QMessageBox,'clickedButton',return_value=None):
+        with patch.object(QMessageBox,'question',return_value=QMessageBox.No):
             self.assertIsNone(window.ask_install('安裝翻譯','說明',window.catalog[0]))  # closing the dialog is not a yes
+        with patch.object(QMessageBox,'question',return_value=QMessageBox.Yes) as ask:
+            self.assertIs(window.ask_install('安裝翻譯','說明',window.catalog[0]),True)  # one yes also adds the mods
+        self.assertIn('會一起加入：IMBlocker',ask.call_args[0][2])
         done=dict(instance=str(self.friend),applied=['a'],already=[],skipped=[],backup='x',language_set=True,notes='',mods_offered=[],
                   mods=dict(installed=['imblocker-5.jar'],present=[],backup='y',
                             skipped=[dict(name='Other',file='o.jar',reason='作者只開放由 CurseForge 安裝，請在 CurseForge 加裝這個模組',page='https://www.curseforge.com/minecraft/mc-mods/other')]))
@@ -337,6 +341,44 @@ class InstallTests(unittest.TestCase):
         other=lambda:[dict(name='Demo Pack',path=self.friend,projectID=123,fileID=999)]
         with self.assertRaisesRegex(ValueError,'還沒有裝好'):
             patches.wait_for_modpack(self.pack,self.manifest,find=other,timeout=30,clock=self.clock,pause=self.clock.pause)
+
+    def test_a_modpack_curseforge_just_installed_is_found_before_its_list_is_written(self):
+        # CurseForge wrote MinecraftGameInstance.json only later; the instance's own record is read meanwhile.
+        user=Path(self.home)/'user';appdata=user/'AppData'
+        listed=user/'curseforge/minecraft/Instances/Old';fresh=listed.parent/'Demo Pack'
+        for folder in (listed,fresh):(folder/'mods').mkdir(parents=True)
+        (fresh/'minecraftinstance.json').write_text(json.dumps(dict(name='Demo Pack',projectID=123,fileID=456,gameVersion='1.21.1')),encoding='utf-8')
+        (listed.parent/'half-made').mkdir()  # no record and no mods yet: not a modpack
+        store=appdata/'CurseForge/agent/GameInstances';store.mkdir(parents=True)
+        (store/'MinecraftGameInstance.json').write_text(json.dumps([dict(name='Old',installPath=str(listed),projectID=1,fileID=2)]),encoding='utf-8')
+        with patch.dict('os.environ',{'APPDATA':str(appdata)}),patch('pathlib.Path.home',return_value=user):
+            found=jobs.curseforge_instances()
+            self.assertEqual(sorted((x['name'],x['projectID'],x['fileID']) for x in found),[('Demo Pack',123,456),('Old',1,2)])
+            (store/'MinecraftGameInstance.json').unlink()  # someone whose CurseForge never wrote the list
+            self.assertEqual([x['name'] for x in jobs.curseforge_instances()],['Demo Pack'])
+
+    def test_modpack_removed_after_the_list_was_read_goes_to_curseforge(self):
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from mc_zh_tw_translator.desktop import MainWindow
+        app=QApplication.instance() or QApplication([])
+        entry=dict(self.pack,gameVersion='1.21.1',translator='我',updated='2026-09-30',modpackDate='2026-09-18',revision=1,
+                   url='https://raw.githubusercontent.com/x',sha256='a'*64,size=1)
+        window=MainWindow(self.home)
+        found=[dict(name='Demo Pack',path=self.friend,projectID=123,fileID=456,gameVersion='1.21.1')]
+        with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=found):window.catalog_loaded([entry])
+        self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯'])
+        # the player deletes the modpack in CurseForge, then presses the stale button
+        with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=[]), \
+             patch.object(window,'install_pack_and_translation') as install,patch.object(QMessageBox,'information') as told:
+            window.apply_catalog_patch(window.catalog[0])
+            self.assertEqual([b.text() for b in window.pack_buttons],['安裝整合包與翻譯'])
+        self.assertEqual(install.call_args[0][0]['projectID'],123);told.assert_not_called()
+        # opening the page again matches the installed modpacks again, without going online
+        with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=found), \
+             patch.object(window,'refresh_catalog') as online:
+            window.navigate(6)
+        online.assert_not_called();self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯'])
+        window.close()
 
     def test_card_offers_one_button_and_the_result_shows_the_translators_note(self):
         from PySide6.QtWidgets import QApplication, QMessageBox

@@ -852,16 +852,30 @@ def curseforge_instances():
     try:
         data=json.loads((appdata/'CurseForge/agent/GameInstances/MinecraftGameInstance.json').read_text(encoding='utf-8-sig'))
     except (OSError,ValueError):
-        return []
-    result=[]
+        data=[]
+    result=[];seen=set();roots={Path.home()/'curseforge/minecraft/Instances'}
+    def add(x,path):
+        result.append(dict(name=x.get('name') or path.name,path=path,projectID=int(x.get('projectID') or 0),
+                           fileID=int(x.get('fileID') or 0),gameVersion=x.get('gameVersion') or ''))
+        seen.add(str(path).rstrip('\\/').casefold())
     for x in data if isinstance(data,list) else []:
         try:
-            path=Path(x['installPath'])
-            if not is_instance(path):continue
-            result.append(dict(name=x.get('name') or path.name,path=path,projectID=int(x.get('projectID') or 0),
-                               fileID=int(x.get('fileID') or 0),gameVersion=x.get('gameVersion') or ''))
+            path=Path(x['installPath']);roots.add(path.parent)
+            if is_instance(path):add(x,path)
         except (KeyError,TypeError,ValueError,OSError):
             continue
+    # CurseForge writes that list some time after a modpack finishes installing (seen: not within
+    # 90 seconds), so a modpack it just installed is found from the instance's own record instead.
+    for root in roots:
+        try:children=list(root.iterdir()) if root.is_dir() else []
+        except OSError:continue
+        for path in children:
+            if str(path).rstrip('\\/').casefold() in seen:continue
+            try:
+                x=json.loads((path/'minecraftinstance.json').read_text(encoding='utf-8-sig'))
+                if isinstance(x,dict) and is_instance(path):add(x,path)
+            except (OSError,ValueError,TypeError):
+                continue
     return result
 
 
