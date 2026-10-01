@@ -80,6 +80,34 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['audit_counts']['broken_zh_cn_skipped'],1)
         self.assertEqual(result['audit_counts']['invalid_nontext_json_skipped'],1)
 
+    def test_empty_book_page_is_not_an_error(self):
+        import zipfile
+        (self.instance/'mods').mkdir()
+        with zipfile.ZipFile(self.instance/'mods/monsters.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="sample"\n')
+            z.writestr('assets/sample/lang/en_us.json',json.dumps({'sample.title':'Readable English'}))
+            z.writestr('assets/sample/guidebook/habitats/empty.json','')
+            z.writestr('assets/sample/guidebook/habitats/full.json',json.dumps({'title':'Deep Caves'}))
+
+        result=self.make_plan()
+        self.assertFalse(result['errors'])
+        self.assertEqual(result['audit_counts']['empty_book_skipped'],1)
+        self.assertTrue(any(r['current']=='Deep Caves' or r.get('en')=='Deep Caves' for r in result['rows']))
+
+    def test_broken_json_message_is_plain_chinese(self):
+        from mc_zh_tw_translator.desktop_jobs import describe_error
+        line=describe_error(['mods/a.jar','assets/a/guidebook/x.json','Expecting value: line 1 column 1 (char 0)'])
+        self.assertTrue(line.startswith('a.jar：檔案本身格式錯誤'))
+        self.assertIn('技術細節',line)
+
+    def test_only_actionable_errors_are_red(self):
+        from mc_zh_tw_translator.desktop_jobs import broken_source_file
+        self.assertTrue(broken_source_file(['mods/a.jar','x.json','Expecting value: line 1 column 1 (char 0)']))
+        self.assertTrue(broken_source_file(['mods/a.jar','x.json','Invalid \\escape: line 2 column 5 (char 9)']))
+        # Our own scanner failing is still shown: the text may be on screen and unscanned.
+        self.assertFalse(broken_source_file(['mods/a.jar',{},"'utf-8' codec can't encode character"]))
+        self.assertFalse(broken_source_file(['mods/a.jar','class extraction: bad constant pool']))
+
     def make_mod(self, nested=True):
         import io, zipfile
         (self.instance/'mods').mkdir(exist_ok=True)

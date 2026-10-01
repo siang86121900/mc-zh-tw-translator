@@ -328,6 +328,9 @@ class Audit:
             try:
                 target=n.replace('/en_us/','/zh_tw/');c=n.replace('/en_us/','/zh_cn/')
                 raw=read(n);twraw=read(target) if target in names else None;cnraw=read(c) if c!=n and c in names else None
+                if not decode(raw).strip():
+                    # Some mods ship 0-byte placeholder pages; there is no text to translate or show.
+                    self.counts['empty_book_skipped']+=1;continue
                 if n.endswith('.txt'):
                     self.add(label+'!/'+n,'text',decode(raw),decode(twraw) if twraw else None,decode(cnraw) if cnraw else None,'book');continue
                 en=parse(raw);tw=parse(twraw) if twraw else {};cn=parse(cnraw) if cnraw else {}

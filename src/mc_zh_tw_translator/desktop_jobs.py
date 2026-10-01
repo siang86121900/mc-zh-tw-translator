@@ -173,13 +173,21 @@ def readopt_rejected(session):
     return taken
 
 
+JSON_BROKEN=re.compile(r'^(Expecting|Unterminated string|Invalid control character|Invalid \\escape|Extra data)')
+
+def broken_source_file(error):
+    """A file that ships broken: the game cannot read it either, so no text is missing from the screen."""
+    parts=[p for p in error if isinstance(p,str)] if isinstance(error,(list,tuple)) else [str(error)]
+    return len(parts)>1 and bool(JSON_BROKEN.match(parts[-1]))
+
+
 def describe_error(error):
     """Turn a raw audit error list into one readable report line."""
     parts=[p for p in error if isinstance(p,str)] if isinstance(error,(list,tuple)) else [str(error)]
     where=Path(parts[0]).name if parts else ''
     detail=parts[-1] if len(parts)>1 else ''
     if 'Expecting' in detail:
-        detail='檔案本身 JSON 格式錯誤（'+detail+'）'
+        detail='檔案本身格式錯誤，遊戲也讀不到，這個檔案的文字這次沒有掃描（檔案沒有被修改）。（技術細節：'+detail[:160]+'）'
         if any(isinstance(p,dict) and 'zh_tw' in p for p in error):detail+='。重新執行一鍵翻譯時會自動重建這個繁中檔。'
     elif detail and not HAN.search(detail):
         # The audit keeps the raw exception text; the screen gets what it means for the player.

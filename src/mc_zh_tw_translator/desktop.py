@@ -1690,8 +1690,8 @@ class MainWindow(QMainWindow):
         if self.session.get('status')=='installed':message+=''.join('\n'+n for n in self.applied_notes(self.session))
         self.report_summary.setText(message)
         self.fill_overview()
-        problems=[jobs.describe_error(e) for e in self.session.get('errors',[])]
-        problems+=[Path(str(r[0])).name+'：原本的 zh_tw.json 格式錯誤（遊戲也讀不到），已依英文與簡中重建' for r in self.session.get('repairs',[])]
+        # Red is only for what still needs the player; broken files the game skips too and rebuilt files are notes.
+        problems=[jobs.describe_error(e) for e in self.session.get('errors',[]) if not jobs.broken_source_file(e)]
         self.report_errors.setVisible(bool(problems))
         self.report_errors.setText('需要留意：\n'+'\n'.join('• '+p for p in problems[:5])+(f'\n另有 {len(problems)-5} 項，詳見報告資料夾。' if len(problems)>5 else ''))
 
@@ -1719,6 +1719,10 @@ class MainWindow(QMainWindow):
         if self.session.get('ai_checked'):notes.append(f"AI 對照英文核對過 {self.session['ai_checked']:,} 筆有疑點的譯文，判斷無誤")
         reused=sum(bool(r.get('ai_reused')) for r in self.session.get('rows',[]))
         if reused:notes.append(f'{reused:,} 筆沿用先前 AI 翻過的同一句，沒有再消耗額度')
+        repaired=len(self.session.get('repairs',[]))
+        if repaired:notes.append(f'{repaired:,} 個原本格式錯誤的繁中語系檔已自動依英文與簡中重建')
+        broken=sum(jobs.broken_source_file(e) for e in self.session.get('errors',[]))
+        if broken:notes.append(f'{broken:,} 個模組自帶的檔案本身格式錯誤，遊戲也讀不到，不影響畫面上的文字（已略過，檔案沒有修改）')
         notes.append('外部翻譯 API 未使用（0 筆）')
         self.report_counts.setText('　·　'.join(notes))
 
