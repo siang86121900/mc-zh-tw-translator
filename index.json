@@ -1,0 +1,25 @@
+{
+  "packs": [
+    {
+      "name": "Tensura Neo Otherworld",
+      "projectID": 1478248,
+      "fileID": 8908669,
+      "version": "1.1.1a",
+      "modpackDate": "2026-09-18",
+      "revision": 1,
+      "gameVersion": "1.21.1",
+      "translator": "MC Translator",
+      "updated": "2026-10-01",
+      "notes": "建議記憶體 12128 MB（整合包作者建議），請在 CurseForge 的整合包設定調整。",
+      "addedMods": [
+        {
+          "name": "IMBlocker",
+          "size": 225648
+        }
+      ],
+      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1478248/8908669-87d27b8d.zip",
+      "sha256": "87d27b8d4dd6aaa4344961e75784bd9f3aaec848299d7011e08f9f5d86f7b4da",
+      "size": 3540200
+    }
+  ]
+}
