@@ -111,7 +111,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 '''
 
 # Table state colours reuse the four DESIGN.md status roles.
-STATE_ROLE={'不需更動':'text40','已套用':'green','已套用・建議確認':'orange','待套用':'primary','已確認':'primary','待校對':'orange','比對中':'text60','待查':'text60','無需翻譯':'text40'}
+STATE_ROLE={'不需更動':'text40','已套用':'green','已套用・建議確認':'orange','待套用':'primary','已確認':'primary','待校對':'orange','比對中':'text60','無法確定是否顯示':'text60','無需翻譯':'text40'}
 
 
 def stylesheet(theme):
@@ -1101,7 +1101,7 @@ class MainWindow(QMainWindow):
         model=self.ai_ready()
         if not model:return
         count=len(ai.pending_rows(self.session))
-        if not count:QMessageBox.information(self,'沒有可補翻缺漏','已完成的 AI 候選不會重送；待查程式與設定不會交給 AI 直接修改。');return
+        if not count:QMessageBox.information(self,'沒有可補翻缺漏','已完成的 AI 候選不會重送；「無法確定是否顯示」的文字不會交給 AI 修改。');return
         if QMessageBox.question(self,'使用原方案額度補翻？',f'模型：{model["model"]}\n待補翻：{count} 筆（分批處理）\n\n'+ai.NOTICE+'\n\n'+ai.PRIVACY)!=QMessageBox.Yes:return
         self.run_worker('ai_translate',lambda w:ai.supplement(self.session,self.home,model['model'],w.progress.emit,lambda:w.cancelled,checkpoint=w.publish),self.ai_done)
 
@@ -1531,7 +1531,7 @@ class MainWindow(QMainWindow):
         for i,r in enumerate(self.visible_rows):
             state=(('已套用・建議確認' if jobs.needs_check(r) else '已套用') if r.get('installed') else '待套用' if r.get('review_method')=='auto_validated_one_click' else '已確認' if r['reviewed']
                    else '無需翻譯' if r['origin'] in ('keep_original','not_display') else '比對中' if r['origin']=='pending' else '待校對' if r['supported'] and r['changed']
-                   else '不需更動' if r['supported'] and r['origin']!='untranslated' else '待查')
+                   else '不需更動' if r['supported'] and r['origin']!='untranslated' else '無法確定是否顯示')
             original=jobs.original_of(r) or r['key']
             for j,text in enumerate((original,r['proposed'],jobs.SOURCE_NAMES.get(r['origin'],r['origin']),'● '+state)):
                 item=QTableWidgetItem(str(text).replace('\n',' ')[:130])
@@ -1606,7 +1606,7 @@ class MainWindow(QMainWindow):
         if o['applied']:notes.append(f"這一批寫入 {o['applied']:,} 筆譯文"+(f"（含先前套用 {o['recovered']:,} 筆）" if o['recovered'] else ''))
         if o['not_applied']:notes.append('沒有寫入：'+'、'.join(f'{n:,} 筆{why}' for n,why in o['not_applied']))
         if o['rechecked']:notes.append('套用後已重新掃描整合包確認寫入')
-        if o['context']:notes.append(f"另有 {o['context']:,} 筆程式或設定裡的文字，需確認是否顯示在遊戲中（見「待查程式與設定」）")
+        if o['context']:notes.append(f"另有 {o['context']:,} 筆程式或設定裡的文字，需確認是否顯示在遊戲中（見「無法確定是否顯示」）")
         if o['renamed']:notes.append(f"{o['renamed']:,} 筆是整合包改過名稱的文字，只採用符合新名稱的來源")
         if self.session.get('ai_checked'):notes.append(f"AI 對照英文核對過 {self.session['ai_checked']:,} 筆有疑點的譯文，判斷無誤")
         reused=sum(bool(r.get('ai_reused')) for r in self.session.get('rows',[]))

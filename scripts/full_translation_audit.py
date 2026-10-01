@@ -83,6 +83,24 @@ def string_literals(text,suffix):
                 yield lineno,i,value,is_key,offset+m.start(),offset+m.end()
         offset+=len(line)
 
+MIXIN=b'Lorg/spongepowered/asm/mixin/Mixin;'
+CLASS_REF=re.compile(r'L([A-Za-z_$][\w$/]*);')
+CLASS_NAME=re.compile(r'[A-Za-z_$][\w$]*(?:[./][\w$]+)+')
+
+def mixin_targets(raw):
+    """Every class a Mixin class names, as internal names (a/b/C). @Mixin(Foo.class) is a type in the class
+    file and @Mixin(targets="a.b.C") a string; both are caught, along with types it merely mentions.
+
+    A Mixin can look for an exact string in its target (@ModifyConstant(stringValue=...)): The Foll's
+    RevelationFix replaces one GoetyRevelation config comment, and the game stopped loading once that
+    comment had been translated. Text in these classes is therefore never rewritten.
+    """
+    names=set()
+    for text in utf8_constants(raw):
+        names|=set(CLASS_REF.findall(text))  # types: LSample; (a/b/C) in annotations and descriptors
+        if CLASS_NAME.fullmatch(text):names.add(text.replace('.','/'))  # @Mixin(targets="a.b.C"), class names
+    return {n for n in names if not n.startswith(('java/','org/spongepowered/'))}
+
 def mend_surrogates(value):
     """Half of an emoji written wrongly as \\uXXXX (seen: TravelOptics zh_cn "\\uD810E\\uDD87") cannot be saved
     as text, and failed the whole file. It becomes U+FFFD, which the format checks already refuse, so that one
@@ -192,6 +210,7 @@ class Audit:
     def __init__(self,out,decisions):
         self.out=out;out.mkdir(parents=True,exist_ok=True)
         self.rows=[];self.files=[];self.errors=[];self.repairs=[];self.counts=Counter();self.decisions=decisions
+        self.mixin_targets=set()  # classes some Mixin changes when the game starts (see mixin_targets)
     def add(self,source,key,en,current,cn=None,kind='language'):
         if not any(isinstance(v,str) and v.strip() for v in (en,current,cn)):return
         row=dict(source=source,key=str(key),en=en,current=current,zh_cn=cn,kind=kind)
@@ -272,11 +291,16 @@ class Audit:
                 self.collection(label,names,z.read)
                 self.nested(z,label,names)
                 screen=False;linked=[]
+                ships_lang=any(re.match(r'assets/[^/]+/lang/[^/]+\.json$',x) for x in names)
                 for n in names:
                     if not n.endswith('.class'):continue
                     try:
                         raw=z.read(n)
                         screen|=CONFIG_SCREEN in raw
+                        # A data generator (Forge/NeoForge/Fabric LanguageProvider) writes the mod's language files
+                        # while the mod is built; the game reads those files, never these strings.
+                        generator=ships_lang and b'LanguageProvider' in raw
+                        if MIXIN in raw:self.mixin_targets|=mixin_targets(raw)
                         try:
                             cf,safe=proven_strings(raw);constants=cf.utf.items()
                             tips=config_tooltips(raw) if any('設定說明' in use for _,use in safe.values()) else {}
@@ -289,6 +313,7 @@ class Audit:
                                 supported=i in safe and label.startswith('mods/') and label.count('!/')==0
                                 self.add(label+'!/'+n,i,None,s,kind='class_display' if supported else 'class_candidate')
                                 if not supported and i in developer:self.rows[-1]['developer_use']=True
+                                if not supported and generator:self.rows[-1]['language_generator']=True
                                 if supported:
                                     self.rows[-1]['display_use']=safe[i][1]
                                     if tips.get(i):linked.append((self.rows[-1],tips[i]))

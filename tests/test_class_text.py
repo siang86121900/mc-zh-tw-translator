@@ -23,6 +23,7 @@ class ClassTextTests(unittest.TestCase):
         cls.raw=(root/'Sample.class').read_bytes()
         cls.config=(root/'ConfigSample.class').read_bytes();cls.main=(root/'ModMain.class').read_bytes()
         cls.dev=(root/'DevSample.class').read_bytes()
+        cls.mixin_raw=(root/'SampleMixin.class').read_bytes()
 
     def test_log_and_exception_text_is_told_apart_from_player_text(self):
         cf=class_text.ClassFile(self.dev);found={cf.utf[i] for i in class_text.developer_strings(self.dev)}
@@ -89,6 +90,66 @@ class ClassTextTests(unittest.TestCase):
             texts=[r['current'] for r in session['rows'] if r['kind']=='class_display']
             self.assertNotIn('Shows the saturation bar',texts);self.assertIn('Uses the mod key',texts)
             self.assertEqual(jobs.coverage(session).get('unwritable',0),2)  # only the section and the computed name
+
+    def test_strings_of_a_language_file_generator_are_not_left_to_check(self):
+        # torchesbecomesunlight: ZhCnProvider holds 驮兽肉 for building zh_cn.json; the game reads the json.
+        gen=(Path(self.tmp.name)/'LangGen.class').read_bytes()
+        for ships_lang in (True,False):
+            with tempfile.TemporaryDirectory() as folder:
+                instance=Path(folder)/'instance';(instance/'mods').mkdir(parents=True)
+                with zipfile.ZipFile(instance/'mods/sample.jar','w') as z:
+                    z.writestr('LangGen.class',gen)
+                    z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="sample"\n')
+                    if ships_lang:
+                        z.writestr('assets/sample/lang/en_us.json',json.dumps({'item.sample.meat':'Burden Beast Meat'}))
+                        z.writestr('assets/sample/lang/zh_cn.json',json.dumps({'item.sample.meat':'驮兽肉'},ensure_ascii=False))
+                session=jobs.plan(instance,Path(folder)/'app',lambda *_:None,references=([{},{}],{'sources':['tw','cn']}))
+                rows=[r for r in session['rows'] if r['kind']=='class_candidate' and r['current'] in ('驮兽肉','纠察队弯刀')]
+                self.assertEqual(len(rows),2)
+                states={jobs.row_state(r) for r in rows}
+                # Without the mod's own language file nothing proves where the game reads it: still listed.
+                self.assertEqual(states,{None} if ships_lang else {'candidate'},ships_lang)
+                if ships_lang:
+                    self.assertTrue(all('產生語系檔' in r['issue'] for r in rows))
+                    self.assertEqual(next(r for r in session['rows'] if r['key']=='item.sample.meat' and r['kind']=='language')['proposed'],'馱獸肉')
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_text_another_mods_mixin_changes_is_never_rewritten(self,_):
+        # The Foll: RevelationFix's Mixin looks for one GoetyRevelation config comment; once it was translated
+        # the game stopped loading. Text in a class a Mixin targets stays as it is, and v0.18.0's goes back.
+        mixin=(Path(self.tmp.name)/'SampleMixin.class').read_bytes()
+        refs=([{},{}],{'sources':['tw','cn']})
+        answers={'If true, shows food values while holding SHIFT':'啟用時，按住 SHIFT 顯示食物數值'}
+        everything={s:s for s,_ in class_text.proven_strings(self.raw)[1].values()}  # the rest kept as it is
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);instance=root/'instance';home=root/'app';mods=instance/'mods';mods.mkdir(parents=True)
+            with zipfile.ZipFile(mods/'sample.jar','w') as z:
+                z.writestr('Sample.class',self.raw);z.writestr('assets/sample/lang/en_us.json','{}')
+            # what v0.18.0 did: the comment was written into the class
+            session=jobs.plan(instance,home,lambda *_:None,references=refs)
+            ai.supplement(session,home,'test-model',lambda *_:None,client_factory=self.client(dict(everything,**answers)))
+            jobs.prepare_to_apply(session);jobs.apply_session(session,home,lambda *_:None)
+            with zipfile.ZipFile(mods/'sample.jar') as z:self.assertNotEqual(z.read('Sample.class'),self.raw)
+            old=json.loads(json.dumps(session))
+            # the fix mod, in a jar of its own
+            with zipfile.ZipFile(mods/'fix.jar','w') as z:z.writestr('SampleMixin.class',mixin)
+            session=jobs.plan(instance,home,lambda *_:None,references=refs)
+            self.assertEqual(session['mixin_targets'],['Sample'])
+            rows=[r for r in session['rows'] if r['kind']=='class_display']
+            back=[r for r in rows if r['changed']]
+            self.assertEqual([(r['proposed'],r['origin']) for r in back],[('If true, shows food values while holding SHIFT','keep_original')])
+            self.assertTrue(all(jobs.HELD_MIXIN in r['issue'] for r in rows))
+            self.assertFalse([r for r in rows if r['supported'] and not r['changed']])
+            self.assertFalse([r for _,r in ai.pending_rows(session) if r['kind']=='class_display'])  # never sent to AI
+            jobs.prepare_to_apply(session);jobs.apply_session(session,home,lambda *_:None)
+            with zipfile.ZipFile(mods/'sample.jar') as z:self.assertEqual(z.read('Sample.class'),self.raw)  # the original again
+            again=jobs.plan(instance,home,lambda *_:None,references=refs)
+            self.assertFalse([r for r in again['rows'] if r['kind']=='class_display' and r['changed']])  # and it stays so
+            # A report made before this version knows no Mixins: retrying it writes no program text.
+            old.pop('mixin_targets',None)
+            for r in old['rows']:r.update(installed=False)  # as if it had never been written
+            with self.assertRaisesRegex(ValueError,'舊版程式產生'):jobs.apply_session(old,home,lambda *_:None)
+            with zipfile.ZipFile(mods/'sample.jar') as z:self.assertEqual(z.read('Sample.class'),self.raw)
 
     def config_instance(self, root, screen=True, lang=None):
         instance=root/'instance';mods=instance/'mods';mods.mkdir(parents=True)

@@ -969,7 +969,8 @@ def present_mods(z, depth=0):
 
 
 # scan-10: lone surrogates mended (v0.17.0 left cached errors in place)
-SCAN_CACHE_VERSION = 'scan-10'
+# scan-11: strings of language-file generators (LanguageProvider) are marked; Mixin targets are kept
+SCAN_CACHE_VERSION = 'scan-11'
 
 
 def scan_cache(home, instance):
@@ -987,10 +988,13 @@ def scan_archive(audit, p, label, digest, cache):
             audit.rows.extend(data['rows']);audit.files.extend(data['files']);audit.errors.extend(data['errors'])
             audit.repairs.extend(data['repairs']);audit.counts.update(data['counts'])
             audit.installed_namespaces|=set(data['namespaces']);audit.present_mods|=set(data['mods']);audit.cache_hits+=1
+            audit.mixin_targets|=set(data['mixin'])
             return key
         except (OSError,ValueError,KeyError):path.unlink(missing_ok=True)
     marks=(len(audit.rows),len(audit.files),len(audit.errors),len(audit.repairs));before=collections.Counter(audit.counts)
+    targets=set(audit.mixin_targets);audit.mixin_targets=set()
     audit.archive(p,label)
+    mixin=audit.mixin_targets;audit.mixin_targets=targets|mixin
     namespaces=set();mods=set()
     if Path(label).parts[0] in ('mods','datapacks'):
         try:
@@ -1002,7 +1006,8 @@ def scan_archive(audit, p, label, digest, cache):
     if path:
         delta=collections.Counter(audit.counts);delta.subtract(before)
         data=dict(rows=audit.rows[marks[0]:],files=audit.files[marks[1]:],errors=audit.errors[marks[2]:],
-                  repairs=audit.repairs[marks[3]:],counts={k:v for k,v in delta.items() if v},namespaces=sorted(namespaces),mods=sorted(mods))
+                  repairs=audit.repairs[marks[3]:],counts={k:v for k,v in delta.items() if v},namespaces=sorted(namespaces),mods=sorted(mods),
+                  mixin=sorted(mixin))
         try:path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(gzip.compress(json.dumps(data,ensure_ascii=False).encode('utf-8'),5))
         except OSError:pass
     return key
@@ -1095,7 +1100,9 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     for r in audit.rows:
         if r['source'].startswith(OWN_PACK) and r['kind'] in ('language','book') and isinstance(r['current'],str):
             pack_text[(r['source'][len(OWN_PACK):],r['key'])]=r['current']
-    curseforge=is_curseforge(instance)
+    curseforge=is_curseforge(instance);mixin=getattr(audit,'mixin_targets',set())
+    # Kept in the report so a later 'retry apply' still knows which program text must not be rewritten.
+    result['mixin_targets']=sorted({class_name(r) for r in audit.rows if r['kind']=='class_display'}&mixin)
     instance_cn={}
     for r in audit.rows:
         if r['kind']!='language' or not isinstance(r['zh_cn'],str): continue
@@ -1176,6 +1183,17 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             if in_pack and in_pack.get('original')==original and any(
                     tooltip_part(pack_text.get((resource,key)),part,parts)==in_pack.get('text') for key,part,parts,resource in r['tooltips']):
                 previous=in_pack
+            if class_name(r) in mixin and not (managed(curseforge,r) and r.get('tooltips')):
+                # Another mod's Mixin changes this class when the game starts and may look for this exact text
+                # (RevelationFix in The Foll); text written into it by v0.18.0 goes back to the original.
+                if previous and previous is not in_pack and previous.get('origin')!='keep_original' and previous.get('original') \
+                        and previous.get('text')==original and previous['original']!=original:
+                    decided.append(dict(slim(r),proposed=previous['original'],origin='keep_original',evidence=r.get('display_use',''),
+                                        issue=HELD_MIXIN+'；先前寫入的譯文已改回原文',supported=True,reviewed=False,changed=True))
+                else:
+                    decided.append(dict(slim(r),proposed=original,origin='untranslated' if not HAN.search(original) else 'existing_zh_tw',
+                                        evidence=r.get('display_use',''),issue=HELD_MIXIN,supported=False,reviewed=False,changed=False))
+                counts['mixin_target']+=1;continue
             reason=keep_original_reason(original,r['key'],'') if not HAN.search(original) else ''
             memory_value=memory.lookup(r['source'],r['key'],original)
             value=original;origin='untranslated';issue='';extra={}
@@ -1227,10 +1245,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 counts['loose_tw']+=1;continue
         if r['kind'] not in ('language','book','inline_lang'):
             if r['flags']:
-                value=r['current'] or r['en'] or '';hidden=internal_reason(value) or ('只用在錯誤訊息或記錄檔' if r.get('developer_use') else '')
+                value=r['current'] or r['en'] or '';hidden=(internal_reason(value) or ('只用在錯誤訊息或記錄檔' if r.get('developer_use') else '')
+                        or ('產生語系檔用的工具程式；遊戲顯示的是模組附的語系檔，那份已另外翻譯' if r.get('language_generator') else ''))
                 # Obvious identifiers, code and log lines are set aside so 待查 lists what may really be shown.
                 result['rows'].append(dict(slim(r),proposed=value,origin='not_display' if hidden else 'untranslated',
-                                           issue='程式內部字串：'+hidden if hidden else '尚未確認安全寫回方式：需追查顯示用途，暫不送 AI',
+                                           issue='程式內部字串：'+hidden if hidden else '無法確定遊戲會不會顯示這句；它也可能是程式拿來比對的名稱，改了可能讓模組出錯，所以先不修改、不送 AI',
                                            supported=False,reviewed=False,changed=False))
                 counts['not_display' if hidden else 'context_candidate']+=1
             continue
@@ -1558,7 +1577,7 @@ TRANSLATED_CATEGORIES = ('mine','tw_ref','mod_tw','official','s2t','version_ref'
 UNTRANSLATED_CATEGORIES = ('missing','held','unshown','context','keep')
 CATEGORY_NAMES = {'mine':'你確認的','tw_ref':'台灣參考庫','mod_tw':'模組／整合包繁中','official':'官方譯名與術語',
                   's2t':'簡中轉繁','version_ref':'版本待確認的參考','ai':'AI 補譯','other':'其他',
-                  'missing':'缺少中文來源','held':'無法寫入（遊戲中是英文）','unshown':'寫入後遊戲讀不到','context':'待查程式與設定','keep':'無需翻譯'}
+                  'missing':'缺少中文來源','held':'無法寫入（遊戲中是英文）','unshown':'寫入後遊戲讀不到','context':'無法確定是否顯示','keep':'無需翻譯'}
 
 
 # Language files in a data folder (mods' data/<mod>/lang/, datapacks): see plan(), which skips them.
@@ -2003,6 +2022,12 @@ def is_curseforge(instance):
     except (OSError,ValueError,KeyError,TypeError,AttributeError):return True
 
 
+def class_name(row):
+    """The internal name (a/b/C) of the class a program-text row is in; inner classes count as their outer class."""
+    inner=(row.get('source') or '').split('!/')[-1]
+    return inner[:-6].split('$')[0] if inner.endswith('.class') else ''
+
+
 def managed(curseforge, row):
     """Whether CurseForge would put back the mod file this row is written into (see is_curseforge)."""
     if not curseforge or curseforge is True:return bool(curseforge)
@@ -2023,6 +2048,8 @@ def pack_resource(entry):
 
 HELD_CURSEFORGE = '是寫在模組程式裡的文字；CurseForge 啟動遊戲時會把改過的模組檔換回原版，寫入也會被洗掉，所以沒有寫入'
 HELD_CURSEFORGE_DATA = '在模組檔裡、不是資源包能覆蓋的語系檔或書本；CurseForge 啟動遊戲時會把改過的模組檔換回原版，寫入也會被洗掉，所以沒有寫入'
+HELD_MIXIN = '另一個模組會在遊戲啟動時修改這段程式，可能要找這句原文；改了可能讓遊戲無法啟動，所以沒有寫入'
+HELD_OLD_REPORT = '這份報告是舊版程式產生的，還不知道哪些程式會被其他模組修改；請重新按「一鍵完整翻譯並套用」再寫入程式文字'
 HELD_NESTED = '在內嵌函式庫的資料檔裡，資源包無法覆蓋，也不能安全改寫，所以沒有寫入'
 
 
@@ -2336,6 +2363,13 @@ def stage_and_apply(session, home, notify, work):
                 (r['source'].split('!/')[0],key,resource) in tooltips for key,_,_,resource in r['tooltips']):
             routes[id(r)]=HELD_TOOLTIP_CONFLICT if any(
                 (r['source'].split('!/')[0],key,resource) in conflicts for key,_,_,resource in r['tooltips']) else HELD_TOOLTIP_PARTS
+    # Program text is rewritten only with this run's knowledge of other mods' Mixins (reports from v0.18.0
+    # and earlier have none; their program text waits for a new scan).
+    patched=session.get('mixin_targets')
+    for r in ready:
+        if r['kind']=='class_display' and routes[id(r)]=='file' and r.get('origin')!='keep_original' and (
+                patched is None or class_name(r) in patched):
+            routes[id(r)]=HELD_MIXIN if patched is not None else HELD_OLD_REPORT
     selected=[r for r in ready if routes[id(r)] in ('pack','file')]
     held=collections.Counter(routes[id(r)] for r in ready if routes[id(r)] not in ('pack','file'))
     if not selected:
@@ -2474,14 +2508,14 @@ def stage_and_apply(session, home, notify, work):
                    held_back=dict(held),resource_pack=RESOURCE_PACK_FILE if uses_pack else None,
                    language_set=bool(session.get('set_language')))  # options.txt changed now or already zh_tw
     write_json(report/'session.json',session)
-    notify(92,'重新掃描實際遊戲資料','檢查套用後的語系與待查項目')
+    notify(92,'重新掃描實際遊戲資料','檢查套用後的語系與還沒處理的項目')
     try:
         after=scan(instance,report/'after',lambda *_:None,lambda:False,scan_cache(home,instance),details='summary')
         session['after_counts']=dict(after.counts)
     except Exception as exc:
         session['errors'].append(['套用後稽核',explain_error(exc)])
     write_json(report/'session.json',session)
-    notify(100,'已套用已校對的文字',f'{len(selected):,} 筆；其他待查內容仍保留在報告')
+    notify(100,'已套用已校對的文字',f'{len(selected):,} 筆；其他還沒處理的內容仍保留在報告')
     return session
 
 

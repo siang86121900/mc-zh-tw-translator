@@ -93,7 +93,7 @@ class PatchTests(unittest.TestCase):
         out=patches.export_patch(self.translator,self.home)
         (self.friend/'mods/real.jar').rename(self.friend/'mods/real-renamed.jar')
         result=patches.apply_patch(self.friend,Path(out['path']),Path(self.temp.name)/'friend-app')
-        self.assertIn('resourcepacks/MCTranslator-zh_tw.zip',result['applied'])
+        self.assertIn('resourcepacks/MCTranslator-zh_tw.zip',result['applied'],result)
 
     def test_patch_with_code_or_traversal_is_rejected(self,_):
         bad=Path(self.temp.name)/'bad.zip'
