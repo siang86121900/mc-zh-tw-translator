@@ -623,8 +623,8 @@ KANA = re.compile('[぀-ヿ]')
 def taiwan_wording(text):
     if not isinstance(text,str) or KANA.search(text):return text
     for pattern,replacement in TW_WORDING:text=pattern.sub(replacement,text)
-    from .desktop_references import minecraft_terms
-    return minecraft_terms(text)  # 下界 → 地獄, 末影 → 終界…: Minecraft's own names as Taiwan's official zh_tw has them
+    from .desktop_references import minecraft_terms, fix_slips
+    return minecraft_terms(fix_slips(text))  # also the wrong characters of a character-only conversion (下界合金鍾)  # 下界 → 地獄, 末影 → 終界…: Minecraft's own names as Taiwan's official zh_tw has them
 
 
 def report_overview(session):

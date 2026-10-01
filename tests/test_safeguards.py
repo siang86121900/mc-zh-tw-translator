@@ -336,6 +336,13 @@ class QualityTests(Base):
         for text in ('略微增加載入時間','請參閱可用的控制代碼','錯誤代碼 404','數據機','大數據分析'):self.assertEqual(jobs.taiwan_wording(text),text)
         self.assertEqual(jobs.taiwan_wording('正在加載數據'),'正在載入資料')
 
+    def test_ordinary_taiwan_characters_are_not_simplified(self):
+        from mc_zh_tw_translator.desktop_references import has_simplified
+        # The converter rewrites these into rare variants (喫, 揹, 遊, 祕, 瞭), which made them look simplified.
+        for text in ('吃掉一件文物','滾動游標物品','背包','了解','秘密','伙伴','公里','栗子','斗篷','准許','皇后','干擾'):
+            self.assertFalse(has_simplified(text),text)
+        for text in ('虚空石','類别','永恒','云杉木','之后','设置'):self.assertTrue(has_simplified(text),text)
+
     def test_minecraft_names_use_taiwan_official_wording(self):
         from mc_zh_tw_translator.desktop_references import to_taiwan
         cases={'探索所有下界生物群系':'探索所有地獄生態域','用下界合金锭升级':'用獄髓錠升級','末影人':'終界使者','腐化末地':'腐化終界',
@@ -345,6 +352,8 @@ class QualityTests(Base):
         for cn,tw in (('力量','力量'),('橡木楼梯','橡木樓梯'),('中毒','中毒')):self.assertEqual(to_taiwan(cn),tw,cn)
         self.assertEqual(to_taiwan('数值的上下界'),'數值的上下界');self.assertEqual(to_taiwan('地牢监守者'),'地牢監守者')
         self.assertEqual(jobs.taiwan_wording('下界合金碎片粒'),'獄髓碎片粒')
+        self.assertEqual(jobs.taiwan_wording('下界合金鍾'),'獄髓鐘');self.assertEqual(jobs.taiwan_wording('強化鍾石劍'),'強化鐘石劍')
+        self.assertEqual(jobs.taiwan_wording('情有獨鍾，鍾愛一生'),'情有獨鍾，鍾愛一生')
 
     def test_travelers_titles_own_commands_are_not_taken_for_a_missing_mod(self):
         self.assertIsNone(jobs.KEY_MOD_REFERENCE.match('travelerstitles.commands.biometitle.invalid'))

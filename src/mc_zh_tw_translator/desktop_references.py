@@ -19,7 +19,12 @@ TAIWAN_FORMS = str.maketrans({'臺':'台','巖':'岩','牀':'床','羣':'群','�
 S2TWP = OpenCC('s2twp')
 S2T = OpenCC('s2t')
 # Correct Traditional Chinese words that a character-by-character conversion would take for simplified.
-KEPT_WORDS = re.compile('干擾|干涉|干預|若干|相干')
+KEPT_WORDS = re.compile('干擾|干涉|干預|若干|相干|皇后|王后|天后|太后|后羿|拮据')
+# Simplified forms that Big5 also holds as old or rare characters (云 for 說, 后 for queen…) but that in
+# today's Taiwan text are simplified. 伙, 准, 凶, 划, 占, 斗, 皂, 栗, 里 and the like are ordinary Taiwan
+# characters and are not listed.
+SIMPLIFIED_IN_BIG5 = set('万与么于云仆价优体余儿党凄几厂厘吁后吨听咨咸圣坏复夸宁尸岭帘干并庄异忏怀怜惊愿扑扰挂据昵晒机杠杰'
+                         '极构柜栖气泞洁洒洼涂涌淀炖瓮痒确离种筑篱网羡肮胜腊腌苹范茧荐虫虱蚕蚝蜡蝎触赶适')
 
 
 # One simplified character can stand for several traditional ones (松 pine / 鬆 loose, 只 only / 隻 a
@@ -29,6 +34,8 @@ SLIPS = [(re.compile(a), b) for a, b in (
     ('鬆(?=[木樹果針鼠林脂香])', '松'), ('(?<=[雪赤黑白紅油])鬆(?![散開動弛懈軟緊])', '松'),
     ('(?<!['+COUNTED+'])隻(?=[能有是要會需在對可允讀限剩想為])', '只'), ('只讀', '唯讀'),
     ('幹草', '乾草'), ('吃幹抹淨', '吃乾抹淨'), ('(?<!頭)髮光', '發光'), ('繫結', '綁定'),
+    # 钟 is both 鐘 (bell, clock: Netherite Bell, Clockstone) and the 鍾 of 鍾愛 / 鍾情 and names.
+    ('(?<!獨)鍾(?![愛情意離馗])', '鐘'),
 )]
 
 
@@ -73,9 +80,18 @@ def to_taiwan(text: str) -> str:
 
 
 def has_simplified(text: str) -> bool:
-    """Whether text contains simplified characters; 台, 岩, 床 and similar Taiwan forms do not count."""
-    masked = KEPT_WORDS.sub(lambda m: '\0'*len(m[0]), text)
-    return fix_slips(S2T.convert(masked).translate(TAIWAN_FORMS)) != fix_slips(masked.translate(TAIWAN_FORMS))
+    """Whether text contains simplified characters; 台, 岩, 床 and similar Taiwan forms do not count.
+
+    A character counts only when Big5, Taiwan's traditional character set, cannot write it and the converter
+    would change it. Comparing the whole text before and after conversion took ordinary Taiwan characters
+    for simplified, because the converter also rewrites 吃, 背, 游, 秘, 了 into rare variants (喫, 揹, 遊…).
+    """
+    for ch in KEPT_WORDS.sub('', text):
+        if '㐀' <= ch <= '鿿' and S2T.convert(ch) != ch:
+            if ch in SIMPLIFIED_IN_BIG5: return True
+            try: ch.encode('big5')
+            except UnicodeEncodeError: return True
+    return False
 
 
 VERSION = re.compile(r'1\.\d+(?:\.\d+)?')
