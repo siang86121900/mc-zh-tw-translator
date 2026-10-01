@@ -63,6 +63,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(any(r['key']=='lib.a' for r in result['rows']))
         self.assertEqual(result['source_counts']['not_installed'],3)
 
+    def test_broken_optional_chinese_and_nontext_json_do_not_block_translation(self):
+        import zipfile
+        (self.instance/'mods').mkdir()
+        with zipfile.ZipFile(self.instance/'mods/patchouli-like.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="sample"\n')
+            z.writestr('assets/sample/lang/en_us.json',json.dumps({'sample.title':'Readable English'}))
+            z.writestr('assets/sample/lang/zh_cn.json','{"sample.title":"损坏" "missing_comma":true}')
+        data=self.instance/'config/openloader/data/pack/data/sample/affixes';data.mkdir(parents=True)
+        (data/'combat.json').write_text('{"values":{"rare":{"min":1},}, "types":["bow"]}}',encoding='utf-8')
+
+        result=self.make_plan()
+        row=next(r for r in result['rows'] if r['key']=='sample.title')
+        self.assertEqual((row['proposed'],row['origin'],row['supported']),('Readable English','untranslated',True))
+        self.assertFalse(result['errors'])
+        self.assertEqual(result['audit_counts']['broken_zh_cn_skipped'],1)
+        self.assertEqual(result['audit_counts']['invalid_nontext_json_skipped'],1)
+
     def make_mod(self, nested=True):
         import io, zipfile
         (self.instance/'mods').mkdir(exist_ok=True)
@@ -366,6 +383,73 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(all(jobs.row_state(r)=='done' for r in loose))
         restore_backup(Path(done['backup']),self.instance)
         self.assertEqual({p:p.read_bytes() for p in before},before)
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_binary_shop_data_and_cache_are_converted_backed_up_and_read_back(self,_):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        from full_translation_audit import parse_binary_nbt
+        import struct
+
+        def text(value):
+            value=value.encode('utf-8');return struct.pack('>H',len(value))+value
+        def named(tag,name,payload):return bytes([tag])+text(name)+payload
+        def compound(fields):return b''.join(fields)+b'\0'
+        tab=compound([named(8,'title',text('货币兑换')),named(3,'sort',struct.pack('>i',7)),
+                      named(8,'icon',text('minecraft:emerald'))])
+        entry=compound([named(6,'price',struct.pack('>d',12.5)),named(4,'count',struct.pack('>q',64)),
+                        named(8,'item',text('minecraft:diamond')),
+                        named(9,'tooltip_list',bytes([8])+struct.pack('>i',1)+text('购买64个钻石'))])
+        original=named(10,'',compound([
+            named(9,'shop_tabs',bytes([10])+struct.pack('>i',1)+tab),
+            named(9,'shop_entries',bytes([10])+struct.pack('>i',1)+entry)]))
+        shops=self.instance/'config/SDMShop/shops';cache=self.instance/'config/SDMShop/cache/server-id'
+        shops.mkdir(parents=True);cache.mkdir(parents=True)
+        files=(shops/'shop.data',cache/'shop.cache')
+        for p in files:p.write_bytes(original)
+        unknown=self.instance/'config/AnotherShop/catalog.yaml';unknown.parent.mkdir(parents=True)
+        unknown.write_text('category: "Limited Offers"\n商店分类: "货币兑换"\n',encoding='utf-8')
+
+        result=self.make_plan()
+        rows=[r for r in result['rows'] if r.get('kind')=='binary_config_candidate']
+        self.assertEqual({r['source'] for r in rows},{'config/SDMShop/shops/shop.data','config/SDMShop/cache/server-id/shop.cache'})
+        self.assertEqual({r['current'] for r in rows},{'货币兑换','购买64个钻石'})
+        unsupported=next(r for r in result['rows'] if r.get('kind')=='unsupported_config_text')
+        self.assertEqual(unsupported['source'],'config/AnotherShop/catalog.yaml')
+        self.assertFalse(unsupported['supported']);self.assertIn('格式尚未支援',unsupported['issue'])
+        jobs.auto_confirm_safe(result);done=apply_session(result,self.home,lambda *_:None)
+        self.assertEqual(done['shown_mismatch'],0)
+        for p in files:
+            raw=p.read_bytes();data=parse_binary_nbt(raw)
+            self.assertEqual(data['shop_tabs'][0],{'title':'貨幣兌換','sort':7,'icon':'minecraft:emerald'})
+            self.assertEqual(data['shop_entries'][0],{'price':12.5,'count':64,'item':'minecraft:diamond',
+                                                       'tooltip_list':['購買64個鑽石']})
+            # Apart from the two length-prefixed UTF-8 string payloads, every byte is identical.
+            reverted=raw.replace(text('貨幣兌換'),text('货币兑换')).replace(text('購買64個鑽石'),text('购买64个钻石'))
+            self.assertEqual(reverted,original)
+        applied=[r for r in done['rows'] if r.get('kind')=='binary_config_candidate' and r.get('installed')]
+        self.assertTrue(applied and all(r.get('shown') for r in applied))
+
+        again=self.make_plan();binary=[r for r in again['rows'] if r.get('kind')=='binary_config_candidate']
+        self.assertTrue(binary);self.assertFalse([r for r in binary if r.get('changed')])
+        self.assertTrue(all(r['origin']=='same_source_zh_cn' and r.get('installed') for r in binary))
+        restore_backup(Path(done['backup']),self.instance)
+        self.assertTrue(all(p.read_bytes()==original for p in files))
+
+    def test_archive_rewrite_tolerates_overlapping_empty_directory_metadata(self):
+        from mc_zh_tw_translator.desktop_jobs import rewrite_archive
+        import struct, zipfile
+        source=Path(self.temp.name)/'overlap.jar';target=Path(self.temp.name)/'rewritten.jar'
+        with zipfile.ZipFile(source,'w') as z:
+            z.writestr('META-INF/',b'');z.writestr('assets/demo.txt',b'old');z.writestr('keep.bin',b'keep')
+        raw=bytearray(source.read_bytes());central=raw.index(b'PK\x01\x02')
+        raw[central+20:central+24]=struct.pack('<I',1000)  # only the empty directory appears to overlap
+        source.write_bytes(raw)
+        with zipfile.ZipFile(source) as z:
+            with self.assertRaises(zipfile.BadZipFile):z.read('META-INF/')
+            rewrite_archive(z,target,{'assets/demo.txt':b'new'},'overlap.jar')
+        with zipfile.ZipFile(target) as z:
+            self.assertEqual((z.read('assets/demo.txt'),z.read('keep.bin')),(b'new',b'keep'))
+            self.assertIsNone(z.testzip())
 
     def test_scan_cache_reuses_unchanged_archives(self):
         from mc_zh_tw_translator import desktop_jobs as jobs

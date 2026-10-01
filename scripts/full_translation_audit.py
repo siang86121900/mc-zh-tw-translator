@@ -16,6 +16,7 @@ def lang_parts(m):
     return (m[1],m[2],m[3]) if m[1] is not None else (m[4],m[5],m[6])
 BOOK=re.compile(r'/(?:patchouli_books|books?|guidebook)/',re.I)
 DISPLAY={'name','Name','text','title','subtitle','description','landing_text','header','customTooltips','displayName','tooltip','label','message','lore','Lore'}
+TEXT_CONFIG_SUFFIXES={'.js','.json','.snbt','.toml','.txt','.local','.lang','.cfg','.yaml','.yml','.xml','.csv','.properties','.ini','.conf','.data','.cache'}
 CC=OpenCC('s2twp')
 
 def decode(b):
@@ -48,6 +49,55 @@ def parse_binary_nbt(data):
     tag=number('B');string();result=value(tag)
     if f.read():raise ValueError('trailing bytes in NBT')
     return result
+
+def rewrite_binary_nbt(data,replacements):
+    """Replace selected TAG_String values by their exact NBT paths.
+
+    ``replacements`` maps tuple paths to ``(expected, new)``. The stream is copied tag for tag, so numeric
+    values, arrays, keys, list types and their byte representation stay untouched. Every requested path must
+    exist once and still contain the value seen by the scan; otherwise the write fails closed.
+    """
+    compressed=data.startswith(b'\x1f\x8b');raw=gzip.decompress(data) if compressed else data
+    f=io.BytesIO(raw);found=set()
+    def take(n):
+        value=f.read(n)
+        if len(value)!=n:raise ValueError('truncated NBT')
+        return value
+    def number(fmt):
+        value=take(struct.calcsize('>'+fmt));return value,struct.unpack('>'+fmt,value)[0]
+    def string_bytes():
+        head,size=number('H');return head+take(size)
+    def value(tag,path):
+        if tag in (1,2,3,4,5,6):return take({1:1,2:2,3:4,4:8,5:4,6:8}[tag])
+        if tag==8:
+            encoded=string_bytes();old=encoded[2:].decode('utf-8',errors='strict')
+            replacement=replacements.get(path)
+            if replacement is None:return encoded
+            if path in found or old!=replacement[0]:raise ValueError('NBT string changed since scan: '+json.dumps(path,ensure_ascii=False))
+            new=replacement[1].encode('utf-8')
+            if len(new)>65535:raise ValueError('NBT string is longer than 65535 bytes')
+            found.add(path);return struct.pack('>H',len(new))+new
+        if tag==9:
+            head=take(1);count_raw,count=number('i')
+            if not 0<=count<=1000000:raise ValueError('invalid NBT list length')
+            return head+count_raw+b''.join(value(head[0],path+(i,)) for i in range(count))
+        if tag==10:
+            out=b''
+            while True:
+                kind=take(1);out+=kind
+                if kind==b'\0':return out
+                name=string_bytes();key=name[2:].decode('utf-8',errors='strict')
+                out+=name+value(kind[0],path+(key,))
+        if tag in (7,11,12):
+            head,count=number('i')
+            if not 0<=count<=1000000:raise ValueError('invalid NBT array length')
+            return head+take(count*{7:1,11:4,12:8}[tag])
+        raise ValueError('unsupported NBT tag '+str(tag))
+    tag=take(1);name=string_bytes();rewritten=tag+name+value(tag[0],())
+    if f.read():raise ValueError('trailing bytes in NBT')
+    missing=set(replacements)-found
+    if missing:raise ValueError('NBT strings not found: '+json.dumps(sorted(missing,key=str),ensure_ascii=False))
+    return gzip.compress(rewritten,mtime=0) if compressed and rewritten!=raw else data if rewritten==raw else rewritten
 
 def parse(b):
     s=CTE2QuestTranslator._strip_json_comments(decode(b))
@@ -247,7 +297,13 @@ class Audit:
                         return {}
                     if ext=='snbt':return quest_lang.parse(decode(b))
                     return parse(b) if ext=='json' else dict(s.split('=',1) for s in decode(b).splitlines() if '=' in s and not s.startswith('#'))
-                en,cn=load('en_us'),load('zh_cn')
+                en=load('en_us')
+                try:cn=load('zh_cn')
+                except (ValueError,UnicodeError):
+                    # A mod's optional Simplified Chinese can be malformed while its English is sound
+                    # (Patchouli 1.20.1-84). Keep scanning from English and other sources instead of
+                    # presenting the whole mod as damaged.
+                    cn={};self.counts['broken_zh_cn_skipped']+=1
                 if ext=='snbt':
                     # Description lines are rows of their own; Chinese lines count only where they line up.
                     self.counts['quest_language_files']+=1
@@ -367,7 +423,7 @@ class Audit:
                             self.add(n,i,None,s,kind='class_candidate')
                 except Exception as e:self.errors.append([n,'loose class extraction: '+str(e)])
                 continue
-            if p.suffix=='.data':
+            if p.suffix.lower() in ('.data','.cache'):
                 try:
                     for path,field,value in leaves(parse_binary_nbt(p.read_bytes())):
                         if field in DISPLAY or HAN.search(value):self.add(n,json.dumps(path),None,value,kind='binary_config_candidate')
@@ -412,7 +468,35 @@ class Audit:
                         visible=HAN.search(value) or re.search(r'\b(title|subtitle|description|Text\.of|text\.add|tooltip|displayName|label|message)\b',line)
                         if visible and (HAN.search(value) or LATIN.search(value)):
                             self.add(n,f'{lineno}:{i}',None,value,kind='script_candidate' if p.suffix=='.js' else 'config')
-            except Exception as e:self.errors.append([n,str(e)])
+            except Exception as e:
+                if p.suffix.lower()=='.json' and isinstance(e,(ValueError,UnicodeError)):
+                    # OpenLoader also stores recipes, affixes and combat numbers under config. Broken JSON
+                    # with no display-looking text is a game-data problem, not a translation failure.
+                    try:text=decode(p.read_bytes())
+                    except (OSError,UnicodeError):text=''
+                    display=re.search(r'(?i)["\x27](?:title|name|description|label|tooltip|message|text|lore)["\x27]\s*:',text)
+                    if not HAN.search(text) and not display:
+                        self.counts['invalid_nontext_json_skipped']+=1;continue
+                self.errors.append([n,str(e)])
+        # Do not silently lose a future shop/config format. A file with Chinese, or a likely display field in
+        # a known text format, that produced no row above is listed as an unsupported candidate. It is never
+        # written until its reader and format have been verified.
+        produced={r['source'].removeprefix('instance!/') for r in self.rows}
+        for n,p in names.items():
+            if (n in produced or LANG.match('/'+n) or BOOK.search('/'+n)
+                    or p.suffix.lower() not in TEXT_CONFIG_SUFFIXES or p.stat().st_size>16*1024*1024):continue
+            try:
+                text=decode(p.read_bytes())
+                if '\0' in text:continue
+            except (OSError,UnicodeError):continue
+            lines=[line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(('#','//'))]
+            sample=next((line for line in lines if HAN.search(line)),None)
+            if sample is None:
+                sample=next((line for line in lines if re.search(
+                    r'(?i)\b(?:title|name|description|label|tooltip|message|category|shop|store|market|vendor|trade)\b\s*[:=].*[A-Za-z]',line)),None)
+            if sample:
+                self.add(n,'file',None,sample[:500],kind='unsupported_config_text')
+                self.counts['unsupported_config_text_files']+=1
     def finish(self,details='full',quiet=False):
         # details: 'full' writes plain lists (command-line audits); 'compressed' writes the two lists the
         # desktop report keeps for diagnosis as .gz; 'summary' writes the counts only.

@@ -17,7 +17,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from full_translation_audit import Audit, parse, placeholders, at, string_literals
+from full_translation_audit import Audit, parse, parse_binary_nbt, rewrite_binary_nbt, placeholders, at, string_literals
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_free
 from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
@@ -1304,6 +1304,12 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                                            issue=previous.get('issue','') if previous else '',supported=True,reviewed=False,changed=False,**extra))
                 counts['loose_tw']+=1;continue
         if r['kind'] not in ('language','book','inline_lang'):
+            if r['kind']=='unsupported_config_text':
+                value=r['current'] or ''
+                result['rows'].append(dict(slim(r),proposed=value,origin='untranslated',
+                                           issue='這個設定檔含有可能顯示給玩家的文字，但檔案格式尚未支援；已列出避免漏掉，暫不修改',
+                                           supported=False,reviewed=False,changed=False))
+                counts['unsupported_config_text']+=1;continue
             if r['flags']:
                 value=r['current'] or r['en'] or '';copy=in_language_file(r,value,lang_text)
                 hidden=(internal_reason(value) or ('只用在錯誤訊息或記錄檔' if r.get('developer_use') else '')
@@ -1772,6 +1778,13 @@ def check_shown(instance, rows):
         if convertible(r):
             # Config and quest strings converted in place: the string at that place (JSON: any string) now reads so.
             path=r['source']
+            if PurePosixPath(path).suffix.casefold() in BINARY_CONFIG_SUFFIXES:
+                try:
+                    if ('binary',path) not in files:
+                        files[('binary',path)]=parse_binary_nbt(contained(instance,path).read_bytes())
+                    r['shown']=at(files[('binary',path)],json.loads(r['key']))==r['proposed']
+                except (OSError,ValueError,KeyError,IndexError,TypeError,UnicodeError):r['shown']=False
+                missing+=not r['shown'];continue
             if ('literals',path) not in files:
                 try:
                     raw=contained(instance,path).read_bytes()
@@ -2007,9 +2020,10 @@ def pack_metadata(instance):
     return json.dumps(dict(pack=pack),ensure_ascii=False,indent=2)
 
 
-LOOSE_TEXT_KINDS = ('config','snbt_display_array','script_candidate')
+LOOSE_TEXT_KINDS = ('config','snbt_display_array','script_candidate','binary_config_candidate')
 LOOSE_TEXT_ROOTS = ('config/','defaultconfigs/','kubejs/')
-LOOSE_TEXT_SUFFIXES = ('.json','.snbt','.toml','.txt','.js')
+LOOSE_TEXT_SUFFIXES = ('.json','.snbt','.toml','.txt','.js','.data','.cache')
+BINARY_CONFIG_SUFFIXES = ('.data','.cache')
 NOT_THIS_LANGUAGE = {'lang','langs','i18n','locale','locales','.archive-unpack'}
 
 
@@ -2038,9 +2052,16 @@ def rewrite_literals(raw, name, rows):
     Rows keyed "line:index" (SNBT, TOML, TXT) name one string; JSON rows (keyed by their path) are found by
     their text, every non-key occurrence of it. Returns None when a row's string is no longer there.
     """
+    suffix=PurePosixPath(name).suffix.casefold()
+    if suffix in BINARY_CONFIG_SUFFIXES:
+        try:
+            replacements={tuple(json.loads(r['key'])):(r['current'],r['proposed']) for r in rows}
+            if len(replacements)!=len(rows):return None
+            return rewrite_binary_nbt(raw,replacements)
+        except (KeyError,TypeError,ValueError,UnicodeError):return None
     bom=raw.startswith(b'\xef\xbb\xbf')
     text=raw[3 if bom else 0:].decode('utf-8')
-    suffix=PurePosixPath(name).suffix.casefold();escaped=suffix in ('.json','.snbt','.json5')
+    escaped=suffix in ('.json','.snbt','.json5')
     by_place={};by_text={};found=set()
     for r in rows:
         if re.fullmatch(r'\d+:\d+',r['key']):by_place[tuple(map(int,r['key'].split(':')))]=r
@@ -2266,12 +2287,16 @@ def rewrite_archive(z, dst, modified, label):
             if info.filename not in modified and not is_jar_signature_file(info.filename):
                 # writestr() rewrites the ZipInfo's offsets; passing the source archive's own
                 # object would make later reads from that archive land in the wrong place.
-                w.writestr(copy.copy(info),z.read(info.filename))
+                # Some valid game jars have overlapping central-directory sizes only on empty directory
+                # entries (celestial_forge 1.1.7). Java accepts them and every real file is readable; copying
+                # the directory as empty avoids Python's false "possible zip bomb" without weakening checks
+                # for overlapping file data.
+                w.writestr(copy.copy(info),b'' if info.is_dir() else z.read(info.filename))
         for n,b in modified.items():w.writestr(n,b)
     with zipfile.ZipFile(dst) as check:
         if check.testzip():raise ValueError('ZIP 完整性驗證失敗：'+label)
         for n in z.namelist():
-            if n not in modified and not is_jar_signature_file(n) and check.read(n)!=z.read(n):
+            if n not in modified and not n.endswith('/') and not is_jar_signature_file(n) and check.read(n)!=z.read(n):
                 raise ValueError('非翻譯內容被改動：'+n)
 
 
