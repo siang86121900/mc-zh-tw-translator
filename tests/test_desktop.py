@@ -413,6 +413,94 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual({p:p.read_bytes() for p in before},before)
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_crafttweaker_scripts_cfg_yaml_and_gun_packs_are_converted_in_place(self,_):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        scripts=self.instance/'scripts';scripts.mkdir()
+        zs=('#priority 10\n// 注释：灵魂\n/* 说明\n   "块注释"\n*/\n'
+            '<item:bhc:soul_heart_canister>.addTooltip("\\u00A7e魂心容器需灵魂项链佩戴，详见礼装章节");\n'
+            'val names = {"灵魂": 1} as int[string];\n<item:a:b>.addTooltip("Plain English tip");\n')
+        (scripts/'bhc.zs').write_text(zs,encoding='utf-8')
+        cfg=self.instance/'config/apotheosis';cfg.mkdir(parents=True)
+        names='# 名字\nnames {\n    S:"Names" <\n        双子座\n        Aries\n     >\n    S:title=狮子座\n}\n'
+        (cfg/'names.cfg').write_text(names,encoding='utf-8')
+        (self.instance/'config/fix.yaml').write_text('# 修改后需重启\nlabels:\n  attack: "攻击属性: "\n  id: "a:b"\n',encoding='utf-8')
+        gun=self.instance/'tacz/[绝对彼方] pack';(gun/'assets/ocle/lang').mkdir(parents=True);(gun/'assets/ocle/display').mkdir(parents=True)
+        (gun/'assets/ocle/lang/en_us.json').write_text(json.dumps({'ocle.gun.a.name':'Rifle'}),encoding='utf-8')
+        (gun/'assets/ocle/lang/zh_cn.json').write_text(json.dumps({'ocle.gun.a.name':'步枪'},ensure_ascii=False),encoding='utf-8')
+        (gun/'assets/ocle/lang/ja_jp.json').write_text(json.dumps({'ocle.gun.a.name':'ライフル'},ensure_ascii=False),encoding='utf-8')
+        display='{"text_show": {"a": {"text": "天际军科|"}}, "identifier": "geometry.四叶十字"}'
+        (gun/'assets/ocle/display/a.json').write_text(display,encoding='utf-8')
+        before={p:p.read_bytes() for p in (scripts/'bhc.zs',cfg/'names.cfg',self.instance/'config/fix.yaml',gun/'assets/ocle/display/a.json')}
+        result=self.make_plan()
+        tip=next(r for r in result['rows'] if r['source']=='scripts/bhc.zs' and '魂心' in (r['current'] or ''))
+        self.assertTrue(jobs.convertible(tip))
+        self.assertFalse([r for r in result['rows'] if r['kind']=='unsupported_config_text'])
+        jobs.auto_confirm_safe(result)
+        done=apply_session(result,self.home,lambda *_:None)
+        self.assertEqual((scripts/'bhc.zs').read_text(encoding='utf-8'),
+                         zs.replace('"\\u00A7e魂心容器需灵魂项链佩戴，详见礼装章节"','"\\u00A7e魂心容器需靈魂項鍊佩戴，詳見禮裝章節"'))  # comments and keys stay
+        self.assertEqual((cfg/'names.cfg').read_text(encoding='utf-8'),names.replace('双子座','雙子座').replace('狮子座','獅子座'))
+        self.assertEqual((self.instance/'config/fix.yaml').read_text(encoding='utf-8'),'# 修改后需重启\nlabels:\n  attack: "攻擊屬性: "\n  id: "a:b"\n')
+        self.assertEqual(json.loads((gun/'assets/ocle/lang/zh_tw.json').read_text(encoding='utf-8')),{'ocle.gun.a.name':'步槍'})
+        self.assertEqual((gun/'assets/ocle/display/a.json').read_text(encoding='utf-8'),display.replace('天际军科','天際軍科'))
+        self.assertEqual(done['shown_mismatch'],0)
+        again=self.make_plan()
+        self.assertFalse([r for r in again['rows'] if r.get('changed') and not r.get('installed') and jobs.HAN.search(r.get('current') or '')])
+        restore_backup(Path(done['backup']),self.instance)
+        self.assertEqual({p:p.read_bytes() for p in before},before)
+        self.assertFalse((gun/'assets/ocle/lang/zh_tw.json').exists())
+
+    def test_text_in_a_folder_no_reader_covers_is_listed_not_lost(self):
+        other=self.instance/'mystery_mod';(other/'lang').mkdir(parents=True)
+        (other/'quests.json').write_text('{"title": "龙之试炼", "id": "a"}',encoding='utf-8')
+        (other/'lang/en_us.json').write_text('{"a": "Dragon trial"}',encoding='utf-8')
+        (other/'lang/ja_jp.json').write_text('{"a": "竜の試練"}',encoding='utf-8')  # another language: not listed
+        (other/'readme.txt').write_text('作者的说明',encoding='utf-8')
+        (self.instance/'logs').mkdir();(self.instance/'logs/latest.log').write_text('载入完成',encoding='utf-8')
+        rows=[r for r in self.make_plan()['rows'] if r['kind']=='unsupported_config_text']
+        self.assertEqual(sorted(r['source'] for r in rows),['mystery_mod/lang/en_us.json','mystery_mod/quests.json'])
+        self.assertTrue(all(not r['supported'] and r['origin']=='untranslated' for r in rows))
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        note=jobs.unsupported_note(dict(rows=rows))
+        self.assertIn('有 2 個檔案',note);self.assertIn('mystery_mod/quests.json',note)
+        self.assertEqual(jobs.unsupported_note(dict(rows=[])),'')
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_patchouli_book_name_and_landing_text_go_into_the_pack_as_language_entries(self,_):
+        import zipfile
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        (self.instance/'mods').mkdir()
+        (self.instance/'options.txt').write_text('lang:zh_tw\n',encoding='utf-8')
+        landing='A Guide to weapon crafting.$(br2)(Entries created with help)'
+        with zipfile.ZipFile(self.instance/'mods/simplyswords.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="simplyswords"\n')
+            z.writestr('assets/simplyswords/lang/en_us.json',json.dumps({'item.simplyswords.a':'Sword'}))
+            z.writestr('data/simplyswords/patchouli_books/runic_grimoire/book.json',
+                       json.dumps({'name':'Runic Grimoire','landing_text':landing,'model':'simplyswords:book'}))
+        # CurseForge would put a changed jar back: the pack is the only place this text can go.
+        (self.instance/'minecraftinstance.json').write_text(json.dumps({'installedAddons':[
+            {'installedFile':{'fileName':'simplyswords.jar','fileNameOnDisk':'simplyswords.jar'}}]}),encoding='utf-8')
+        result=self.make_plan()
+        book=[r for r in result['rows'] if r['source'].endswith('book.json')]
+        self.assertEqual(sorted(r['key'] for r in book),['["landing_text"]','["name"]'])
+        cf=jobs.is_curseforge(self.instance)
+        self.assertTrue(all(jobs.write_route(r,cf)=='pack' and r['supported'] for r in book))
+        self.assertTrue(all(jobs.row_state(r,cf)=='missing' for r in book))  # a gap AI can fill, not an unknown
+        chosen={'["name"]':'符文魔典','["landing_text"]':'武器打造指南。$(br2)（條目由 AI 協助撰寫）'}
+        for r in book:r.update(proposed=chosen[r['key']],origin='manual',supported=True,reviewed=True,changed=True)
+        done=apply_session(result,self.home,lambda *_:None)
+        with zipfile.ZipFile(self.instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:
+            lang=json.loads(z.read('assets/simplyswords/lang/zh_tw.json'))
+        self.assertEqual((lang['Runic Grimoire'],lang[landing]),(chosen['["name"]'],chosen['["landing_text"]']))
+        with zipfile.ZipFile(self.instance/'mods/simplyswords.jar') as z:  # the mod itself untouched
+            self.assertEqual(json.loads(z.read('data/simplyswords/patchouli_books/runic_grimoire/book.json'))['name'],'Runic Grimoire')
+        rows=[r for r in done['rows'] if r['source'].endswith('book.json')]
+        self.assertTrue(all(r.get('installed') and r.get('shown') for r in rows),[(r['key'],r.get('shown')) for r in rows])
+        again=[r for r in self.make_plan()['rows'] if r['source'].endswith('book.json')]  # a rerun sees the pack's text
+        self.assertEqual(sorted(r['current'] for r in again),sorted(chosen.values()))
+        self.assertTrue(all(jobs.row_state(r,cf)=='done' and not r.get('changed') for r in again))
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_binary_shop_data_and_cache_are_converted_backed_up_and_read_back(self,_):
         from mc_zh_tw_translator import desktop_jobs as jobs
         from full_translation_audit import parse_binary_nbt
@@ -434,15 +522,15 @@ class WorkflowTests(unittest.TestCase):
         shops.mkdir(parents=True);cache.mkdir(parents=True)
         files=(shops/'shop.data',cache/'shop.cache')
         for p in files:p.write_bytes(original)
-        unknown=self.instance/'config/AnotherShop/catalog.yaml';unknown.parent.mkdir(parents=True)
-        unknown.write_text('category: "Limited Offers"\n商店分类: "货币兑换"\n',encoding='utf-8')
+        unknown=self.instance/'config/AnotherShop/catalog.xml';unknown.parent.mkdir(parents=True)
+        unknown.write_text('<shop category="Limited Offers">\n  <tab>货币兑换</tab>\n</shop>\n',encoding='utf-8')
 
         result=self.make_plan()
         rows=[r for r in result['rows'] if r.get('kind')=='binary_config_candidate']
         self.assertEqual({r['source'] for r in rows},{'config/SDMShop/shops/shop.data','config/SDMShop/cache/server-id/shop.cache'})
         self.assertEqual({r['current'] for r in rows},{'货币兑换','购买64个钻石'})
         unsupported=next(r for r in result['rows'] if r.get('kind')=='unsupported_config_text')
-        self.assertEqual(unsupported['source'],'config/AnotherShop/catalog.yaml')
+        self.assertEqual(unsupported['source'],'config/AnotherShop/catalog.xml')
         self.assertFalse(unsupported['supported']);self.assertIn('格式尚未支援',unsupported['issue'])
         jobs.auto_confirm_safe(result);done=apply_session(result,self.home,lambda *_:None)
         self.assertEqual(done['shown_mismatch'],0)

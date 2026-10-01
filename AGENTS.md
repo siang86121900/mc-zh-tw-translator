@@ -85,9 +85,10 @@
 - 例外：設定畫面會先查語系檔的設定說明（NeoForge ConfigurationScreen 與 Configured 查「語系鍵.tooltip」，查不到才顯示 comment）。CurseForge 整合包裡，能從 class 證明語系鍵的 comment（Builder.translation 的常數；或模組引用 ConfigurationScreen、檔案只宣告一個 modId 時的「modId.configuration.設定名稱」）寫進翻譯資源包的 assets/<modId>/lang/zh_tw.json，照常送 AI 與檢查；多行 comment 全部翻好才寫；同一模組檔、同一語系鍵、同一英文的多份 comment 經 unify_same_key 統一譯文；模組語系檔已有該鍵的 comment 不另列入計數。ForgeConfigScreens 不查語系檔、Configured 不查預設鍵，這些仍保留原因。查證依據記在 docs/translation-reference.md。
 
 ## 掃描範圍與增量處理
-- 整包掃描目標包括 mods、kubejs、config／defaultconfigs、resourcepacks、datapacks、任務、Patchouli／外部書本及其他玩家文字，不只處理 mods。
+- 整包掃描目標包括 mods、kubejs、scripts（CraftTweaker .zs）、config／defaultconfigs、resourcepacks、datapacks、任務、Patchouli／外部書本、模組當成資源包載入的內容包（tacz 槍械包、tlm_custom_pack，只讀語系檔與顯示欄位）及其他玩家文字，不只處理 mods。資料夾清單在 full_translation_audit.LOOSE_FOLDERS／CONTENT_PACK_FOLDERS。
+- 防止整類漏掃：掃描結束時檢查整合包每個最上層資料夾（NOT_PLAYER_TEXT 列的存檔、日誌、快取等除外），沒有讀取器負責卻含中文、英文或簡中語系檔（同資料夾沒有 zh_tw）、或內含語系檔的壓縮檔，一律列為「格式尚未支援」（Audit.unscanned）；其他語言的語系檔、模型骨架名稱、作者清單、readme 不列。新增讀取器時把資料夾加進清單，不靠使用者回報才發現。這些檔案在報告「需要留意」紅字列出（desktop_jobs.unsupported_note），不只計數；測試新的整合包時先看這份清單，有玩家文字的格式就補讀取器並用真實檔案驗證遊戲會讀，再發布。
 - 同一段文字並列多種語言的格式（{"en_us": …, "zh_cn": …}，例如 Ponderer 的 config/ponderer/scripts）：在同一段加上 zh_tw，不改其他語言。英文可能被整合包作者截斷未寫完，有完整的簡中時照一般順序先用簡中轉台灣用語，英文只作比對。寫入前必須先在模組程式裡確認它會依遊戲語言讀 zh_tw（記在 desktop_jobs.INLINE_ZH_TW 並註明依據）；未確認的格式不寫入、不算進完成率，報告寫明「還沒確認這個模組會讀繁中」。
-- 設定檔與任務檔裡直接寫的中文（config、defaultconfigs、kubejs 的 json／snbt／toml／txt 字串值與 KubeJS 腳本 .js 的字串，例如 FTB Quests 1.20.1 寫在 chapters 裡的任務文字、Text.of('…')）：簡體一律在原檔轉成台灣用語，只改那個字串、其餘位元組不動（desktop_jobs.convertible／rewrite_literals）；鍵名（腳本裡只有開頭、{ 或逗號後接冒號的才算鍵名，三元運算的文字照轉）、註解行、其他語言的檔案（lang 資料夾、zh_cn 等語言代碼命名）與遊戲不讀的 quests-backup 不改。英文仍列待查。
+- 設定檔與任務檔裡直接寫的中文（config、defaultconfigs、kubejs 的 json／snbt／toml／txt／yaml 字串值、Forge 舊式 .cfg 的值與清單行、KubeJS 腳本 .js 與 CraftTweaker 腳本 scripts/*.zs 的字串、內容包 JSON 顯示欄位，例如 FTB Quests 1.20.1 寫在 chapters 裡的任務文字、Text.of('…')）：簡體一律在原檔轉成台灣用語，只改那個字串、其餘位元組不動（desktop_jobs.convertible／rewrite_literals）；鍵名（腳本裡只有開頭、{ 或逗號後接冒號的才算鍵名，三元運算的文字照轉）、註解行（含腳本的 /* */ 區塊）、其他語言的檔案（lang 資料夾、zh_cn 等語言代碼命名）與遊戲不讀的 quests-backup 不改。英文仍列待查。
 - FTB Quests 的任務文字在 config/ftbquests/quests/lang/<語言>.snbt（mc_zh_tw_translator.quest_lang），當成語系檔處理：說明清單逐行成為一筆，簡中清單行數和英文不同時不逐行對應；寫出 zh_tw.snbt 時沿用英文檔的排版，圖片與換頁行原樣保留，英文檔不修改。
 - 新增支援的格式前，用真實整合包列出「有玩家文字卻沒產生任何一筆」的檔案，確認新格式涵蓋它們；參考其他翻譯工具的支援範圍時只讀其內容，不執行不明程式。
 - 附帶語言包裡未安裝模組的文字略過。判定已安裝要有模組本身（宣告的 modId）、它的語系檔或世界生成資料；其他模組附的相容材質、配方不算。
@@ -105,6 +106,7 @@
 - 套用前備份所有受影響的真正原檔至 output/<名稱>/原始備份/<時間戳>/，保留相對路徑；每批新目錄，驗證全部備份雜湊後才寫回。
 - 清冊保存目標絕對路徑、修改前後 SHA-256、新增檔、套用狀態與還原資訊。受影響原檔備份不是完整存檔備份，不混用不同 instance 的備份。
 - 使用 mc_zh_tw_translator.deployment.apply_reviewed 處理通用備份與寫回；它不能代替翻譯審核、遊戲狀態或資源驗證。來源或候選驗證後變動須停止套用。
+- Patchouli 書本設定（data/<ns>/patchouli_books/<書>/book.json）寫死的英文書名與首頁介紹：Patchouli 以 Component.translatable 顯示（GuiBookLanding），所以在翻譯資源包的 assets/<ns>/lang/zh_tw.json 加上「英文原句 → 譯文」，不改模組檔，CurseForge 模組也適用（desktop_jobs.book_title）。
 - 模組裡的語系檔與書本頁一律寫進程式產生的資源包 resourcepacks/MCTranslator-zh_tw.zip，並在 options.txt 的資源包清單放到最後（最高優先），模組檔本身不修改。資源包內含模組原有的 zh_tw 與本程式的譯文，並以 mctranslator.json 記錄每個檔案對應的模組檔與 SHA-256；重跑時以資源包內容作為遊戲目前顯示的文字，內容相同就不重寫。
 - 遊戲偵測須辨識程序工作資料夾、啟動參數及 Forge／NeoForge 參數檔 server target。已確認不同 instance 的伺服器／Java 工具不應阻擋；未知或同目標程序仍須安全阻擋並說明證據，不自行結束程序。
 - 寫入前後檢查 JAR／ZIP、格式與覆蓋衝突；JAR 必須通過 Java ZipFS，Python zipfile 或 jar tf 不能取代。修改 JAR 移除失效簽章，未改內容的 JAR 保持原樣。

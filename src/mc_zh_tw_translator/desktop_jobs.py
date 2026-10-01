@@ -17,7 +17,8 @@ import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from full_translation_audit import Audit, parse, parse_binary_nbt, rewrite_binary_nbt, placeholders, at, string_literals
+from full_translation_audit import (Audit, parse, parse_binary_nbt, rewrite_binary_nbt, placeholders, at, string_literals,
+                                    LOOSE_FOLDERS, CONTENT_PACK_FOLDERS)
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_free
 from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
@@ -694,6 +695,20 @@ def taiwan_wording(text):
     return minecraft_terms(fix_slips(text))  # also the wrong characters of a character-only conversion (下界合金鍾)  # 下界 → 地獄, 末影 → 終界…: Minecraft's own names as Taiwan's official zh_tw has them
 
 
+def unsupported_note(session):
+    """A red report line for files holding what may be player text in a format no reader covers yet (see
+    Audit.unsupported_sample / Audit.unscanned); '' when there are none. These are the gaps a new modpack can
+    bring, so they are shown to the player instead of only being counted."""
+    # Only what is surely text: Chinese, or language files. A config line that merely names a field (name = "minecraft")
+    # stays in the list below without a red line.
+    files=sorted({r['source'] for r in session.get('rows',[]) if r.get('kind')=='unsupported_config_text'
+                  and (HAN.search(r.get('current') or '') or '/lang/' in r['source'])})
+    if not files:return ''
+    shown='、'.join(files[:3])+('…' if len(files)>3 else '')
+    return (f'有 {len(files):,} 個檔案可能含有玩家看得到的文字，但程式還不會讀這種格式，遊戲裡可能仍是英文或簡體'
+            f'（例如 {shown}）。完整清單在下方明細的「無法確定是否顯示」分類；請把截圖或檔案名稱回報給開發者。')
+
+
 def report_overview(session):
     """What the player cares about first: applied, not applied (and why), worth checking, backup."""
     rows=session.get('rows',[])
@@ -1078,7 +1093,7 @@ def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
     audit = Audit(report/'audit',{});audit.cache_hits=0;used=set()
     audit.source_hashes={}
     archives=[]
-    for folder in ('mods','resourcepacks','datapacks','config/openloader'):
+    for folder in ('mods','resourcepacks','datapacks','config/openloader')+CONTENT_PACK_FOLDERS:
         for p in (instance/folder).rglob('*'):
             if p.suffix.lower() in ('.jar','.zip') and p.is_file():
                 contained(instance,p.relative_to(instance).as_posix())
@@ -1099,7 +1114,7 @@ def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
         audit.installed_namespaces|={p.name for p in kubejs.iterdir() if p.is_dir()}
         audit.present_mods|={p.name for p in kubejs.iterdir() if p.is_dir()}
     notify(42,'掃描任務、設定與腳本','正在檢查外部文字和程式字串候選')
-    for folder in ('kubejs','config','defaultconfigs','patchouli_books','datapacks','resourcepacks','vaultpatcher','hotai','immersive_furniture'):
+    for folder in LOOSE_FOLDERS+CONTENT_PACK_FOLDERS:
         for p in (instance/folder).rglob('*'):
             if p.is_file() and p.suffix.lower() not in ('.zip','.jar'):
                 contained(instance,p.relative_to(instance).as_posix())
@@ -1231,7 +1246,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # never read, so it is neither a gap nor something to write.
             counts['server_lang']+=1;continue
         if r['source'].startswith('mods/') and r['kind'] in ('language','book'):
-            shown=pack_text.get((pack_resource(target_for(r)[1]),r['key']),r['current'])
+            title=book_title(r)  # a book's name or landing text: the pack holds it as a language entry
+            shown=pack_text.get(title if title else (pack_resource(target_for(r)[1]),r['key']),r['current'])
             if shown is not None:r=dict(r,current=shown,own_tw=r['current'])
         # Non-language candidates are retained explicitly rather than reclassifying IDs as text.
         if r['kind']=='class_display' and managed(curseforge,r) and r.get('tooltip_in_language'):
@@ -1478,7 +1494,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # Parameters, key names and similar strings stay as-is; they are neither gaps nor AI work.
             origin='keep_original';evidence=reason;issue=''
             if r['en'] is None and r['current'] is None:issue='無需翻譯：'+evidence  # no en_us fallback in game
-        supported=r['kind']=='language' or ('/en_us/' in r['source'] or '/zh_tw/' in r['source'])
+        supported=r['kind']=='language' or ('/en_us/' in r['source'] or '/zh_tw/' in r['source']) or bool(book_title(r))
         if r['kind']=='inline_lang':
             supported=reads_inline_zh_tw(r['source'])
             if not supported:issue=INLINE_UNVERIFIED  # written only where the mod is known to read zh_tw
@@ -1804,10 +1820,10 @@ def check_shown(instance, rows):
                 r['shown']=any((n,i)==place and v==r['proposed'] for n,i,v,_,_,_ in literals)
             else:r['shown']=any(v==r['proposed'] and not is_key for _,_,v,is_key,_,_ in literals)
             missing+=not r['shown'];continue
-        path,entry=target_for(r);where=None
+        path,entry=target_for(r);where=None;route=write_route(r,False);title=book_title(r) if route=='pack' else None
         try:
-            if write_route(r,False)=='pack':
-                name=pack_resource(entry);where=('pack',name);data=load(where,pack.get(name),name) if pack_on else None
+            if route=='pack':
+                name=title[0] if title else pack_resource(entry);where=('pack',name);data=load(where,pack.get(name),name) if pack_on else None
             elif entry is None:
                 p=contained(instance,path);name=path;where=('file',path);data=load(where,p.read_bytes() if p.is_file() else None,path)
             else:
@@ -1815,12 +1831,13 @@ def check_shown(instance, rows):
         except (OSError,ValueError,KeyError,zipfile.BadZipFile):data=None
         if isinstance(data,str):text=data
         elif not isinstance(data,dict):text=None
+        elif title:text=data.get(title[1])
         elif r.get('kind')=='book':text=data if r['key']=='text' else at(data,json.loads(r['key']))
         elif r.get('kind')=='inline_lang':text=at(data,json.loads(r['key'])+['zh_tw'])
         else:text=data.get(r['key'])
         r['shown']=text==r['proposed'];r.pop('shown_other',None)
         if where is None:missing+=not r['shown']
-        else:places[(where,r['key'])].append((r,text))
+        else:places[(where,title[1] if title else r['key'])].append((r,text))
     for found in places.values():
         # Two mods can ship the same file (Goety's book pages in two jars); the pack holds one of them and the
         # game shows that one at this place. The other row is shown in Chinese too, by its twin's wording.
@@ -2029,8 +2046,8 @@ def pack_metadata(instance):
 
 
 LOOSE_TEXT_KINDS = ('config','snbt_display_array','script_candidate','binary_config_candidate')
-LOOSE_TEXT_ROOTS = ('config/','defaultconfigs/','kubejs/')
-LOOSE_TEXT_SUFFIXES = ('.json','.snbt','.toml','.txt','.js','.data','.cache')
+LOOSE_TEXT_ROOTS = ('config/','defaultconfigs/','kubejs/','scripts/','tacz/','tlm_custom_pack/')  # scripts/: CraftTweaker
+LOOSE_TEXT_SUFFIXES = ('.json','.snbt','.toml','.txt','.js','.zs','.cfg','.yaml','.yml','.data','.cache')
 BINARY_CONFIG_SUFFIXES = ('.data','.cache')
 NOT_THIS_LANGUAGE = {'lang','langs','i18n','locale','locales','.archive-unpack'}
 
@@ -2046,7 +2063,7 @@ def other_language_file(path):
 
 
 def convertible(row):
-    """A string in a config, quest or KubeJS script file (not a key) whose Chinese is converted in place to
+    """A string in a config, quest, KubeJS or CraftTweaker script file (not a key) whose Chinese is converted in place to
     Taiwan wording. Scripts count only for their Chinese: English in them stays a candidate for checking."""
     source=row.get('source') or ''
     return (row.get('kind') in LOOSE_TEXT_KINDS and '!/' not in source and source.startswith(LOOSE_TEXT_ROOTS)
@@ -2082,7 +2099,8 @@ def rewrite_literals(raw, name, rows):
         same=[r] if r is not None else by_text.get(value,[]) if not is_key else []
         if not same:continue
         r=same[0];literal=text[start:end]
-        new=(json.dumps(r['proposed'],ensure_ascii=literal.isascii()) if escaped else literal[0]+r['proposed']+literal[-1])
+        new=(json.dumps(r['proposed'],ensure_ascii=literal.isascii()) if escaped else r['proposed'] if suffix=='.cfg'  # cfg values have no quotes
+             else literal[0]+r['proposed']+literal[-1])
         edits.append((start,end,new));found.update(id(x) for x in same)
     if len(found)<len(rows):return None
     for start,end,new in sorted(edits,reverse=True):text=text[:start]+new+text[end:]
@@ -2186,6 +2204,24 @@ def tooltip_texts(rows):
     return texts
 
 
+BOOK_SETTINGS = re.compile(r'(?:^|/)data/([a-z0-9_.\-]+)/patchouli_books/[^/]+/book\.json$')
+
+
+def book_title(row):
+    """(pack language file, key) for a Patchouli book's name or landing text written out in its book.json; else None.
+
+    Patchouli shows both through Component.translatable (GuiBookLanding, checked in Patchouli 1.20.1-84), so the
+    English sentence itself works as a language key: an entry keyed by it in the translation resource pack
+    shows the Chinese, and the book.json in the mod's data folder (which no resource pack reaches) stays as it is.
+    """
+    source=row.get('source') or ''
+    if (row.get('kind')!='book' or not isinstance(row.get('en'),str) or row.get('key') not in ('["name"]','["landing_text"]')
+            or not source.startswith('mods/')):
+        return None
+    m=BOOK_SETTINGS.search(source.split('!/')[-1])
+    return (f'assets/{m[1]}/lang/zh_tw.json',row['en']) if m else None
+
+
 def write_route(row, curseforge):
     """'pack' (the translation resource pack), 'file' (the file itself), or why the row is not written.
 
@@ -2197,7 +2233,7 @@ def write_route(row, curseforge):
     """
     path,entry=target_for(row)
     if entry is None or not path.startswith('mods/'):return 'file'
-    if row.get('kind')!='class_display' and pack_resource(entry):return 'pack'
+    if book_title(row) or (row.get('kind')!='class_display' and pack_resource(entry)):return 'pack'
     curseforge=managed(curseforge,row)
     if curseforge and row.get('kind')=='class_display' and row.get('tooltips') and not is_nested(row):return 'pack'
     if curseforge:return HELD_CURSEFORGE if row.get('kind')=='class_display' else HELD_CURSEFORGE_DATA
@@ -2487,6 +2523,8 @@ def stage_and_apply(session, home, notify, work):
             for key,_,_,resource in row['tooltips']:
                 if (path,key,resource) in tooltips:pack_rows.append((path,resource,dict(row,tooltip_key=key,tooltip_text=tooltips[(path,key,resource)])))
             continue
+        if routes[id(row)]=='pack' and book_title(row):
+            resource,key=book_title(row);pack_rows.append((path,resource,dict(row,kind='language',key=key)));continue
         if routes[id(row)]=='pack':pack_rows.append((path,entry,row));continue
         changes[path].append((entry,row))
     require_space(instance,home,list(changes))
@@ -2675,7 +2713,8 @@ def restore_backup(backup: Path, expected_instance: Path):
     return dict(record,backup_path=str(backup))
 
 
-INSIDE_MODPACK = ('mods','config','kubejs','defaultconfigs','resourcepacks','datapacks','saves','shaderpacks','scripts','logs')
+INSIDE_MODPACK = ('mods','config','kubejs','defaultconfigs','resourcepacks','datapacks','saves','shaderpacks','scripts','logs',
+                  'tacz','tlm_custom_pack')
 
 
 def resolve_instance(chosen):

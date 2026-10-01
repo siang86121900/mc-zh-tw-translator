@@ -39,8 +39,10 @@ CATALOG_URL = f'https://raw.githubusercontent.com/{REPOSITORY}/translations/inde
 # Text resources only: a shared patch must never carry code, scripts or binaries.
 TEXT_SUFFIXES = ('.json', '.lang', '.txt', '.md', '.snbt')
 ARCHIVE_SUFFIXES = ('.jar', '.zip')
-LOOSE_ROOTS = ('kubejs/assets/', 'kubejs/data/', 'config/', 'defaultconfigs/', 'resourcepacks/', 'datapacks/', 'patchouli_books/')
-ARCHIVE_ROOTS = ('mods/', 'resourcepacks/', 'datapacks/', 'config/openloader/')
+# tacz/ and tlm_custom_pack/: content packs (TACZ gun packs, Touhou Little Maid models) the game reads as resource packs.
+LOOSE_ROOTS = ('kubejs/assets/', 'kubejs/data/', 'config/', 'defaultconfigs/', 'resourcepacks/', 'datapacks/', 'patchouli_books/',
+               'tacz/', 'tlm_custom_pack/')
+ARCHIVE_ROOTS = ('mods/', 'resourcepacks/', 'datapacks/', 'config/openloader/', 'tacz/', 'tlm_custom_pack/')
 # The only things a translation writes: a Traditional Chinese language file, or a page of a zh_tw book.
 # English files, recipes, loot tables, settings and scripts can therefore never come from a patch.
 TRANSLATED = re.compile(r'(?:^|/)lang/zh_tw\.(?:json|lang)$|/zh_tw/[^/].*\.(?:json|txt|md|snbt)$|^config/ftbquests/quests/lang/zh_tw\.snbt$')

@@ -109,6 +109,11 @@ class PatchTests(unittest.TestCase):
         for other in ('config/ftbquests/quests/lang/en_us.snbt','config/ftbquests/quests/chapters/a.snbt','config/x/lang/zh_tw.snbt'):
             self.assertFalse(patches.allowed_file(other,False),other)
 
+    def test_gun_pack_zh_tw_may_be_shared_but_nothing_else_in_it(self,_):
+        self.assertTrue(patches.allowed_file('tacz/[绝对彼方] OCLE/assets/ocle/lang/zh_tw.json',False))
+        for other in ('tacz/a/assets/ocle/lang/en_us.json','tacz/a/assets/ocle/display/a.json','tacz/a/scripts/a.lua'):
+            self.assertFalse(patches.allowed_file(other,False),other)
+
     def test_export_skips_files_changed_after_apply(self,_):
         self.translate()
         (self.translator/'kubejs/assets/demo/lang/zh_tw.json').write_text('{}',encoding='utf-8')

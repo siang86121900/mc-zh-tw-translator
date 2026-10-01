@@ -1692,6 +1692,7 @@ class MainWindow(QMainWindow):
         self.fill_overview()
         # Red is only for what still needs the player; broken files the game skips too and rebuilt files are notes.
         problems=[jobs.describe_error(e) for e in self.session.get('errors',[]) if not jobs.broken_source_file(e)]
+        if jobs.unsupported_note(self.session):problems.insert(0,jobs.unsupported_note(self.session))
         self.report_errors.setVisible(bool(problems))
         self.report_errors.setText('需要留意：\n'+'\n'.join('• '+p for p in problems[:5])+(f'\n另有 {len(problems)-5} 項，詳見報告資料夾。' if len(problems)>5 else ''))
 

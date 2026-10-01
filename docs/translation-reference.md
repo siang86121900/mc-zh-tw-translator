@@ -37,6 +37,11 @@
 - 交付前從實際 instance 讀回改動，跨 JAR、資源包與 KubeJS 核對相同 key 的衝突，依啟用狀態與載入順序判斷最終值；順序不明就記錄未確認。保留修改前後差異及備份，修改過的 JAR 另用真正的修改前備份執行 `verify --input`，不可把輸出本身當作輸入證明未損壞。
 - 規則文件與靜態掃描不是完成證明。新增上述規則後，仍須確認實際翻譯／掃描程式有落實；未涵蓋的檢查明確記錄，不可因更新了 `AGENTS.md` 就宣稱漏翻已全面防止。
 
+- CraftTweaker 腳本（`scripts/*.zs`）的 `addTooltip`、`setDisplayName` 等直接寫字串。Chapter of Yuusha v3.13.15 的 129 個腳本中 128 個含簡中提示（約 5,000 句），v0.20.2 以前完全沒掃描。現在簡體在原檔轉台灣用語；`§` 等跳脫字元保留原樣；註解與 `/* */` 區塊、`{"鍵": 值}` 的鍵不改；英文字串列待查。
+- TACZ 1.1.4 的 `GunPackLoader` 是 `RepositorySource`，`tacz/<槍械包>/assets/<ns>/lang/` 會當一般資源包語系檔讀取；車萬女僕 1.5 的 `LanguageLoader` 讀 `tlm_custom_pack/<包>/assets/<ns>/lang/<語言代碼>.json`。缺 zh_tw 時在該包裡新增 zh_tw.json。TACZ 顯示設定的 `text_show.*.text`（槍身上印的品牌字）是畫面文字，簡體原地轉換；模型檔的 `identifier`、動畫骨架名稱不是。
+- Patchouli 1.20.1-84 的 `Book` 讀取 `name` 與 `landing_text`，`GuiBookLanding` 以 `Component.translatable` 顯示（javap 查證）。Simply Swords 的 Runic Grimoire 把英文直接寫在 `data/simplyswords/patchouli_books/runic_grimoire/book.json`，所以以英文原句為鍵寫入翻譯資源包。首頁的「1st版」是 Patchouli 自己的序數加上它內建繁中的「版」。
+- Call of Yucatán 1.0.13（MCreator）把「While Kukulkan's Bless is Applied:」等提示用 `Component.literal` 寫在 class（`AncientGoldPillarBlock` 等 7 個），沒有語系鍵；CurseForge 整合包會把改過的模組檔換回原版，因此無法安全翻譯，報告列在「無法寫入」。
+- Apotheosis 的 `config/apotheosis/names.cfg`（Forge 舊式清單，每行一個名字，用來隨機組成名稱）與 yzzz-fix 的 `.yaml` 標籤含簡中，原地轉換。
 
 ## 硬編碼文字（修改 class 前必讀）
 
