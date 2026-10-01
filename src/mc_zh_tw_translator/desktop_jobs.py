@@ -1131,13 +1131,19 @@ def scan_archive(audit, p, label, digest, cache):
     return key
 
 
+def generated_copy(path):
+    """A mod file a loader made on this computer from another one in mods/ (Sinytra Connector's
+    mods/.connector/*_mapped_*.jar): the original holds the same text, and other computers make their own."""
+    return any(part.startswith('.') for part in PurePosixPath(path).parts[:-1])
+
+
 def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
     audit = Audit(report/'audit',{});audit.cache_hits=0;used=set()
     audit.source_hashes={}
     archives=[]
     for folder in ('mods','resourcepacks','datapacks','config/openloader')+CONTENT_PACK_FOLDERS:
         for p in (instance/folder).rglob('*'):
-            if p.suffix.lower() in ('.jar','.zip') and p.is_file():
+            if p.suffix.lower() in ('.jar','.zip') and p.is_file() and not generated_copy(p.relative_to(instance).as_posix()):
                 contained(instance,p.relative_to(instance).as_posix())
                 archives.append(p)
     audit.installed_namespaces={'minecraft','realms','c','forge','neoforge','fabric'}
@@ -2336,6 +2342,7 @@ def build_pack(instance, staged, pack_rows, session, notify):
         outer,entry,first=items[0];rows=[row for *_,row in reversed(items)]
         previous=existing.get(resource)
         mine=sources.get(resource) if isinstance(sources.get(resource),dict) else {}
+        mine={jar:h for jar,h in mine.items() if not generated_copy(jar)}  # recorded by versions before 0.21.0
         for jar in {o for o,*_ in items}:
             if jar not in hashes:hashes[jar]=file_hash(contained(instance,jar))
             mine[jar]=hashes[jar]

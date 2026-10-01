@@ -77,6 +77,70 @@ class PatchTests(unittest.TestCase):
         self.assertFalse((self.friend/'resourcepacks/MCTranslator-zh_tw.zip').exists())
         self.assertFalse((self.friend/'kubejs/assets/demo/lang/zh_tw.json').exists())
 
+    def add_converted_files(self,instance):
+        menu=instance/'config/fancymenu/customization';menu.mkdir(parents=True)
+        (menu/'title_screen_layout.txt').write_text('customization {\n  label = &e开始游戏\n  identifier = 开始\n}\n',encoding='utf-8')
+        (instance/'scripts').mkdir()
+        (instance/'scripts/tips.zs').write_text('// 注释\n<item:a:b>.addTooltip("\\u00A7e魂心容器需灵魂项链");\nval x = "a";\n',encoding='utf-8')
+        (instance/'config/quests.json').write_text('{"title": "龙之试炼", "count": 3}',encoding='utf-8')
+
+    def test_converted_config_and_scripts_travel_as_chinese_only_string_edits(self,_):
+        for instance in (self.translator,self.friend):self.add_converted_files(instance)
+        before={p:(self.friend/p).read_bytes() for p in ('config/fancymenu/customization/title_screen_layout.txt','scripts/tips.zs','config/quests.json')}
+        self.translate()
+        out=patches.export_patch(self.translator,self.home)
+        with zipfile.ZipFile(out['path']) as z:
+            names=z.namelist();manifest=json.loads(z.read('manifest.json'))
+        self.assertEqual(manifest['format'],patches.PATCH_FORMAT_LITERALS)
+        literal={f['file']:f['literals'] for f in manifest['files'] if 'literals' in f}
+        self.assertEqual(sorted(literal),sorted(before))
+        self.assertFalse(any(n.startswith(('payload/scripts','payload/config/fancymenu','payload/config/quests')) for n in names))  # never the file
+        self.assertEqual(literal['scripts/tips.zs'],[[2,0,'"\\u00A7e魂心容器需灵魂项链"','"\\u00A7e魂心容器需靈魂項鍊"']])
+        result=patches.apply_patch(self.friend,Path(out['path']),Path(self.temp.name)/'friend-app')
+        for p in before:self.assertEqual((self.friend/p).read_bytes(),(self.translator/p).read_bytes(),p)
+        self.assertIn('scripts/tips.zs',result['applied'])
+        again=patches.apply_patch(self.friend,Path(out['path']),Path(self.temp.name)/'friend-app')
+        self.assertIn('scripts/tips.zs',again['already'])
+        restore_backup(Path(result['backup']),self.friend)
+        self.assertEqual({p:(self.friend/p).read_bytes() for p in before},before)
+
+    def test_a_changed_config_file_is_skipped_and_a_patch_without_edits_stays_format_1(self,_):
+        self.translate()
+        out=patches.export_patch(self.translator,self.home)
+        with zipfile.ZipFile(out['path']) as z:self.assertEqual(json.loads(z.read('manifest.json'))['format'],patches.PATCH_FORMAT)
+        for instance in (self.translator,self.friend):self.add_converted_files(instance)
+        (self.friend/'scripts/tips.zs').write_text('// 改过\n<item:a:b>.addTooltip("\\u00A7e魂心容器需灵魂项链");\n',encoding='utf-8')
+        self.translate()
+        out=patches.export_patch(self.translator,self.home)
+        result=patches.apply_patch(self.friend,Path(out['path']),Path(self.temp.name)/'friend-app')
+        self.assertIn('scripts/tips.zs',[s['file'] for s in result['skipped']])
+        self.assertIn('灵魂',(self.friend/'scripts/tips.zs').read_text(encoding='utf-8'))
+
+    def test_connector_generated_copies_are_neither_scanned_nor_required(self,_):
+        # Sinytra Connector makes mods/.connector/*_mapped_*.jar from a Fabric mod on each computer.
+        shutil.copytree(self.translator/'mods',self.translator/'mods/.connector')
+        session=plan(self.translator,self.home,lambda *_:None,references=([{},{}],{'tested':True}))
+        self.assertFalse([r for r in session['rows'] if '.connector' in r['source']])
+        data=io.BytesIO()
+        with zipfile.ZipFile(data,'w') as z:
+            z.writestr('assets/real/lang/zh_tw.json','{}')
+            z.writestr('mctranslator.json',json.dumps({'sources':{'assets/real/lang/zh_tw.json':{
+                'mods/.connector/real_mapped.jar':'a'*64,'mods/real.jar':'b'*64}}}))
+        entries,requires=patches.pack_entries(data.getvalue())
+        self.assertEqual(requires,{'assets/real/lang/zh_tw.json':{'mods/real.jar':'b'*64}})
+
+    def test_a_string_edit_that_changes_anything_but_chinese_is_refused(self,_):
+        self.assertTrue(patches.edit_safe('scripts/a.zs','"灵魂"','"靈魂"'))
+        self.assertTrue(patches.edit_safe('config/a.json','"\\u7075\\u9b42"','"\\u9748\\u9b42"'))  # escaped Chinese
+        for old,new in (('"灵魂"','"靈魂"); evil(); ("'),('"灵魂"','"靈魂\\n"'),('"灵魂 1"','"靈魂 2"'),('"灵魂"','"灵魂"')):
+            self.assertFalse(patches.edit_safe('scripts/a.zs',old,new),new)
+        bad=Path(self.temp.name)/'bad.zip'
+        item=dict(file='scripts/a.zs',archive=False,before='0'*64,after='1'*64,literals=[[1,0,'"灵魂"','"靈魂"); evil(); ("']])
+        for item,fmt in ((item,patches.PATCH_FORMAT_LITERALS),(dict(item,literals=[[1,0,'"灵魂"','"靈魂"']]),patches.PATCH_FORMAT),
+                         (dict(item,file='saves/w/a.json'),patches.PATCH_FORMAT_LITERALS)):
+            with zipfile.ZipFile(bad,'w') as z:z.writestr('manifest.json',json.dumps(dict(format=fmt,files=[item])))
+            with self.assertRaises(ValueError):patches.read_patch(bad)
+
     def test_different_mod_version_is_skipped_not_overwritten(self,_):
         self.translate()
         out=patches.export_patch(self.translator,self.home)

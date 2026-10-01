@@ -3,8 +3,12 @@
 A patch holds translation text only, never mod code or whole mod jars:
 - for a mod jar or resource-pack zip, just the language/book entries that were changed or added,
   together with the SHA-256 of the untranslated archive they belong to;
-- for a loose file (KubeJS assets, quests, config), the translated file and the SHA-256 of the
-  file it replaced (or null when it was new).
+- for a loose language file or book page (KubeJS assets, quests), the translated file and the SHA-256 of
+  the file it replaced (or null when it was new);
+- for a config file, script or other text whose Chinese was converted in place (FancyMenu buttons,
+  CraftTweaker tooltips), never the file: only which strings changed, from what to what, bound to the
+  file's SHA-256 before and after. Each change may alter Chinese characters only (literal_edits_safe),
+  so no code can travel in a patch.
 
 Applying only touches files whose current content is exactly the untranslated version the patch
 was made from, so a different mod version is skipped instead of being overwritten. Every write
@@ -35,6 +39,16 @@ from .updater import REPOSITORY, VERSION, release_url
 from .verifier import VerifyResult, check_java_zipfs
 
 PATCH_FORMAT = 'mctranslator-patch-1'
+# Format 2 adds per-string edits of config files and scripts (item 'literals'); a patch without them is
+# still written as format 1 so that older versions of the program can install it.
+PATCH_FORMAT_LITERALS = 'mctranslator-patch-2'
+READABLE_FORMATS = (PATCH_FORMAT, PATCH_FORMAT_LITERALS)
+# Where a patch may change strings in place: the folders the program converts (desktop_jobs.LOOSE_TEXT_ROOTS).
+LITERAL_ROOTS = ('config/', 'defaultconfigs/', 'kubejs/', 'scripts/', 'tacz/', 'tlm_custom_pack/')
+LITERAL_SUFFIXES = ('.json', '.snbt', '.toml', '.txt', '.yaml', '.yml', '.cfg', '.properties', '.js', '.zs')
+ESCAPED_SUFFIXES = ('.json', '.snbt', '.json5')
+CJK_TEXT = re.compile('[㐀-鿿豈-﫿　-〿＀-￯‘-”…·]')
+MAX_LITERAL_EDITS = 20000
 CATALOG_URL = f'https://raw.githubusercontent.com/{REPOSITORY}/translations/index.json'
 # Text resources only: a shared patch must never carry code, scripts or binaries.
 TEXT_SUFFIXES = ('.json', '.lang', '.txt', '.md', '.snbt')
@@ -57,8 +71,9 @@ MOD_FILE_NAME = re.compile(r'[^\\/:*?"<>|\x00-\x1f]{1,180}\.jar',re.I)
 ATTEMPTS = 3
 ATTRIBUTION = """MC Translator 繁體中文翻譯補丁
 
-這個補丁只包含翻譯文字，不含任何模組程式或模組檔案。請先安裝同一版本的模組包，
-再用 MC Translator 的「已翻譯整合包」頁套用。
+這個補丁只包含翻譯文字，不含任何模組程式或模組檔案。設定檔與腳本只記下轉成繁體的
+那幾句（只改中文字），不含整份檔案。請先安裝同一版本的模組包，再用 MC Translator 的
+「已翻譯整合包」頁套用。
 
 譯文可能引用以下社群翻譯，依其授權（CC BY-NC-SA 4.0）以相同授權免費分享、不得商用：
 - CFPA Minecraft Mod Language Package  https://github.com/CFPAOrg/Minecraft-Mod-Language-Package
@@ -85,6 +100,62 @@ def allowed_file(file: str, archive: bool) -> bool:
     lower=file.casefold()
     if archive:return lower.startswith(ARCHIVE_ROOTS) and lower.endswith(ARCHIVE_SUFFIXES)
     return lower.startswith(LOOSE_ROOTS) and lower.endswith(TEXT_SUFFIXES) and bool(TRANSLATED.search(lower))
+
+
+def literal_file(file: str) -> bool:
+    """A file a patch may change strings of (never options.txt, saves or another language's file)."""
+    lower=file.casefold()
+    return (lower.startswith(LITERAL_ROOTS) and lower.endswith(LITERAL_SUFFIXES) and not TRANSLATED.search(lower)
+            and not jobs.other_language_file(file))
+
+
+def edit_safe(file: str, old: str, new: str) -> bool:
+    """Whether replacing one string literal `old` with `new` (both as written in the file) changes Chinese only.
+
+    Every character outside Chinese text (letters, digits, quotes, escapes, brackets) must stay exactly as it
+    was, so an edit cannot add code to a script or change a setting. JSON and SNBT strings are compared after
+    unescaping and must stay one well-formed string.
+    """
+    if '\n' in new or '\r' in new or len(new)>len(old)*4+64:return False
+    if file.casefold().endswith(ESCAPED_SUFFIXES):
+        quoted=re.compile(r'"(?:\\.|[^"\\])*"')
+        if not (quoted.fullmatch(old) and quoted.fullmatch(new)):return False
+        try:old,new=json.loads(old,strict=False),json.loads(new,strict=False)
+        except ValueError:return False
+        if not isinstance(old,str) or not isinstance(new,str):return False
+    return old!=new and CJK_TEXT.sub('',old)==CJK_TEXT.sub('',new) and bool(jobs.HAN.search(new))
+
+
+def literal_edits(file: str, original: bytes, current: bytes):
+    """[[line, index, old, new]] that turn `original` into `current` by replacing string literals only, or
+    raises ValueError when the file changed in any other way (then it is not shared)."""
+    suffix=PurePosixPath(file).suffix.casefold()
+    try:a=original.decode('utf-8-sig');b=current.decode('utf-8-sig')
+    except UnicodeError:raise ValueError('不是 UTF-8 文字檔')
+    if original.startswith(b'\xef\xbb\xbf')!=current.startswith(b'\xef\xbb\xbf'):raise ValueError('檔案開頭的編碼標記不同')
+    before=list(jobs.string_literals(a,suffix,file));after=list(jobs.string_literals(b,suffix,file))
+    if [(x[0],x[1]) for x in before]!=[(x[0],x[1]) for x in after]:raise ValueError('檔案結構有文字以外的變動')
+    edits=[];rebuilt=a
+    for x,y in sorted(zip(before,after),key=lambda p:p[0][4],reverse=True):
+        old=a[x[4]:x[5]];new=b[y[4]:y[5]]
+        if old==new:continue
+        if not edit_safe(file,old,new):raise ValueError(f'第 {x[0]} 行的改動不只是中文')
+        edits.append([x[0],x[1],old,new]);rebuilt=rebuilt[:x[4]]+new+rebuilt[x[5]:]
+    if rebuilt!=b or not edits:raise ValueError('檔案有文字以外的變動')
+    return sorted(edits)
+
+
+def apply_literal_edits(file: str, raw: bytes, edits) -> bytes:
+    """`raw` with each edit applied where the same string sits on the same line; raises ValueError otherwise."""
+    suffix=PurePosixPath(file).suffix.casefold();bom=raw.startswith(b'\xef\xbb\xbf')
+    text=raw.decode('utf-8-sig')
+    places={(n,i):(start,end) for n,i,_,_,start,end in jobs.string_literals(text,suffix,file)}
+    for line,index,old,new in sorted(edits,key=lambda e:places.get((e[0],e[1]),(-1,))[0],reverse=True):
+        start,end=places.get((line,index),(None,None))
+        if start is None or text[start:end]!=old or not edit_safe(file,old,new):
+            raise ValueError(f'第 {line} 行的文字和翻譯時不同')
+        text=text[:start]+new+text[end:]
+    return (b'\xef\xbb\xbf' if bom else b'')+text.encode('utf-8')
 
 
 def allowed_entry(name: str) -> bool:
@@ -276,6 +347,8 @@ def pack_entries(data: bytes):
         except (KeyError,ValueError):sources={}
         for name in z.namelist():
             mods=sources.get(name)
+            # A loader's generated copy (Connector's mods/.connector) is made anew on every computer.
+            if isinstance(mods,dict):mods={jar:h for jar,h in mods.items() if not jobs.generated_copy(jar)}
             if not allowed_entry(name) or not isinstance(mods,dict) or not mods:continue
             entries[name]=z.read(name);requires[name]=dict(mods)
     return entries,requires
@@ -322,8 +395,17 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 archive=file.casefold().endswith(ARCHIVE_SUFFIXES)
                 path=contained(instance,file)
                 if file.casefold()=='options.txt':continue  # personal game setting, never shared
-                if not allowed_file(file,archive):skipped.append((file,'不是可分享的翻譯檔'));continue
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
+                if not allowed_file(file,archive) and not archive and literal_file(file) and item['before']:
+                    # A config file or script converted in place: the changed strings only, never the file.
+                    original=contained(item['backup'],file).read_bytes()
+                    if sha256(original)!=item['before']:skipped.append((file,'備份內容與清冊不符'));continue
+                    try:edits=literal_edits(file,original,path.read_bytes())
+                    except ValueError as exc:skipped.append((file,'不是只有轉換中文：'+str(exc)));continue
+                    manifest['files'].append(dict(file=file,archive=False,literals=edits,before=item['before'],after=item['after']))
+                    manifest['format']=PATCH_FORMAT_LITERALS
+                    continue
+                if not allowed_file(file,archive):skipped.append((file,'不是可分享的翻譯檔'));continue
                 current=path.read_bytes()
                 if file==jobs.RESOURCE_PACK_FILE:
                     entries,requires=pack_entries(current)
@@ -368,14 +450,24 @@ def read_patch(path: Path):
     z=zipfile.ZipFile(path)
     try:
         manifest=json.loads(z.read('manifest.json').decode('utf-8'))
-        if manifest.get('format')!=PATCH_FORMAT:raise ValueError('不是 MC Translator 翻譯補丁，或需要更新程式才能讀取。')
+        if manifest.get('format') not in READABLE_FORMATS:raise ValueError('不是 MC Translator 翻譯補丁，或需要更新程式才能讀取。')
         # Sizes are checked before anything is unpacked, so a small download cannot expand without limit.
         if any(i.file_size>MAX_ENTRY_SIZE for i in z.infolist()) or sum(i.file_size for i in z.infolist())>MAX_UNPACKED_SIZE:
             raise ValueError('補丁解開後的大小超過上限，已拒絕。')
         names=set(z.namelist());seen=set()
         for item in manifest['files']:
             file=clean_path(item['file']);archive=bool(item['archive'])
-            if not allowed_file(file,archive):raise ValueError('補丁包含不允許的檔案：'+file)
+            if 'literals' in item:
+                # Strings changed in place: only Chinese may change, in an allowed file the receiver already has.
+                edits=item['literals']
+                if (manifest['format']!=PATCH_FORMAT_LITERALS or archive or not literal_file(file) or not isinstance(edits,list)
+                        or not 0<len(edits)<=MAX_LITERAL_EDITS or not item.get('before') or not item.get('after')):
+                    raise ValueError('補丁的文字修改資料不合理：'+file)
+                for e in edits:
+                    if (not isinstance(e,list) or len(e)!=4 or not all(isinstance(v,int) and not isinstance(v,bool) and v>=0 for v in e[:2])
+                            or not all(isinstance(v,str) for v in e[2:]) or not edit_safe(file,e[2],e[3])):
+                        raise ValueError('補丁的文字修改不只是中文，已拒絕：'+file)
+            elif not allowed_file(file,archive):raise ValueError('補丁包含不允許的檔案：'+file)
             if file.casefold() in seen:raise ValueError('補丁包含重複檔案：'+file)
             seen.add(file.casefold())
             for h in [item.get('before'),item.get('after')]+list((item.get('entries') or {}).values()):
@@ -402,7 +494,7 @@ def read_patch(path: Path):
                     clean_path(name)
                     if not allowed_entry(name):raise ValueError(f'補丁包含不允許的內容：{file} / {name}')
                     if f'payload/{file}/{name}' not in names:raise ValueError(f'補丁缺少內容：{file} / {name}')
-            elif f'payload/{file}' not in names or not item.get('after'):raise ValueError('補丁缺少內容：'+file)
+            elif 'literals' not in item and (f'payload/{file}' not in names or not item.get('after')):raise ValueError('補丁缺少內容：'+file)
         mods=manifest.get('added_mods') or []
         if not isinstance(mods,list) or len(mods)>MAX_ADDED_MODS:raise ValueError('補丁的加裝模組清單不合理，已拒絕。')
         manifest['added_mods']=[checked_mod(m) for m in mods]
@@ -615,6 +707,10 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                     if sha256(data)!=h:raise ValueError('補丁內容損壞：'+item['file'])
                     modified[name]=data
                 with zipfile.ZipFile(target) as src:jobs.rewrite_archive(src,dst,modified,relative)
+            elif 'literals' in item:
+                data=apply_literal_edits(item['file'],target.read_bytes(),item['literals'])
+                if sha256(data)!=item['after']:raise ValueError('補丁的文字修改套用後和翻譯者的檔案不同：'+item['file'])
+                dst.write_bytes(data)
             else:
                 data=z.read(f'payload/{item["file"]}')
                 if sha256(data)!=item['after']:raise ValueError('補丁內容損壞：'+item['file'])
