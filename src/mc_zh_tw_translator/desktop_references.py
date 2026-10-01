@@ -19,7 +19,7 @@ TAIWAN_FORMS = str.maketrans({'臺':'台','巖':'岩','牀':'床','羣':'群','�
 S2TWP = OpenCC('s2twp')
 S2T = OpenCC('s2t')
 # Correct Traditional Chinese words that a character-by-character conversion would take for simplified.
-KEPT_WORDS = re.compile('干擾|干涉|干預|若干|相干|皇后|王后|天后|太后|后羿|拮据|前仆後繼|仆倒')
+KEPT_WORDS = re.compile('干擾|干涉|干預|若干|相干|皇后|王后|天后|太后|母后|蟻后|蜂后|蛛后|后羿|后土|人云亦云|云云|拮据|前仆後繼|仆倒')
 # Simplified forms that Big5 also holds as old or rare characters (云 for 說, 后 for queen…) but that in
 # today's Taiwan text are simplified. 伙, 准, 凶, 划, 占, 斗, 皂, 栗, 里 and the like are ordinary Taiwan
 # characters and are not listed.
@@ -36,13 +36,32 @@ SLIPS = [(re.compile(a), b) for a, b in (
     ('幹草', '乾草'), ('吃幹抹淨', '吃乾抹淨'), ('(?<!頭)髮光', '發光'), ('繫結', '綁定'),
     # 钟 is both 鐘 (bell, clock: Netherite Bell, Clockstone) and the 鍾 of 鍾愛 / 鍾情 and names.
     ('(?<!獨)鍾(?![愛情意離馗])', '鐘'),
+    # The converter keeps 后, 于, 云 and 范 where its word list sees a name or a queen (蜂后, 妖后, 球后,
+    # 于禁, 子云) or a word is split by a line break (小范\n围): in mod text they are 後, 於, 雲 and 範.
+    (r'((?:變成|成為|變為)[^，。、\s]{0,6}?)后(?=[，,])', r'\1後'),  # 變成蜜蜂后，獲得… is after, not a queen bee
+    ('(?<![皇王天太母蟻蜂蛛影歌])后(?![羿土冠妃宮])', '後'), ('于', '於'), ('(?<![人所云亦])云(?![亦云])', '雲'),
+    (r'范(?=\s*[圍疇例本式])', '範'), ('(?<=[規模示防典風])范', '範'),
 )]
+# 输出端口 is mainland players' slang for what deals the damage; the converter's word list makes it a computer
+# port (輸出埠). In a fight it is 輸出手段; next to machines, the output side of a block is 輸出端.
+PORT = re.compile('(輸[出入])埠')
+COMBAT = re.compile('傷害|技能|流派|火球|攻擊|擊殺|法術|武器|魔法|高傷|DPS|打怪|輸出職業')
+CLAUSE_END = re.compile('[。！？!?；;，,\\n]')
+
+
+def fix_port(text: str) -> str:
+    def word(m):
+        start = max((x.end() for x in CLAUSE_END.finditer(text, 0, m.start())), default=0)
+        end = CLAUSE_END.search(text, m.end())
+        clause = text[start:end.start() if end else len(text)]
+        return m[1]+('手段' if m[1] == '輸出' and COMBAT.search(clause) else '端')
+    return PORT.sub(word, text)
 
 
 def fix_slips(text: str) -> str:
     for pattern, replacement in SLIPS:
         text = pattern.sub(replacement, text)
-    return text
+    return fix_port(text)
 
 
 # Minecraft's simplified-Chinese names (after character conversion) whose Taiwan official names differ,
@@ -53,7 +72,8 @@ MC_TERMS = (
     ('下界合金', '獄髓'), ('下界疣', '地獄疙瘩'), ('下界岩', '地獄石'), ('下界磚', '地獄磚'), ('下界之星', '地獄之星'),
     ('下界石英', '地獄石英'), ('下界荒地', '地獄荒原'), ('(?<!上)下界', '地獄'),
     ('末影人', '終界使者'), ('末影螨', '終界蟎'), ('末影蟎', '終界蟎'), ('末影龍火球', '龍炎彈'), ('末影', '終界'), ('末地', '終界'),
-    ('生物群系', '生態域'),
+    # 群系 alone is mainland players' short form of 生物群系 (海洋群系, 記錄群系); 族群系統 and the like are not it.
+    ('生物群系', '生態域'), (r'生物(?=\s+群系)', ''), ('(?<![族人社菌])群系', '生態域'),
     ('失水惡魂', '乾癟幽靈'), ('快樂惡魂', '快樂幽靈'), ('惡魂', '地獄幽靈'),
     ('潛影貝', '界伏蚌'), ('潛影', '界伏'), ('幻翼膜', '夜魅皮膜'), ('幻翼', '夜魅'),
     ('殭屍豬靈', '殭屍化豬布林'), ('豬靈', '豬布林'),

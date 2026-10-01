@@ -97,6 +97,7 @@ class ClassTextTests(unittest.TestCase):
         for ships_lang in (True,False):
             with tempfile.TemporaryDirectory() as folder:
                 instance=Path(folder)/'instance';(instance/'mods').mkdir(parents=True)
+                (instance/'minecraftinstance.json').write_text('{}',encoding='utf-8')  # program text stays as it is
                 with zipfile.ZipFile(instance/'mods/sample.jar','w') as z:
                     z.writestr('LangGen.class',gen)
                     z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="sample"\n')
@@ -119,6 +120,7 @@ class ClassTextTests(unittest.TestCase):
         helper=(Path(self.tmp.name)/'LangHelper.class').read_bytes()
         with tempfile.TemporaryDirectory() as folder:
             instance=Path(folder)/'instance';(instance/'mods').mkdir(parents=True)
+            (instance/'minecraftinstance.json').write_text('{}',encoding='utf-8')  # program text stays as it is
             with zipfile.ZipFile(instance/'mods/sample.jar','w') as z:
                 z.writestr('LangHelper.class',helper)
                 z.writestr('assets/sample/lang/zh_cn.json',json.dumps({'tip.sample.ride':'骑乘驮兽可以穿越沙漠','tip.sample.short':'驮兽'},ensure_ascii=False))
@@ -136,7 +138,45 @@ class ClassTextTests(unittest.TestCase):
             self.assertEqual(state[('mods/other.jar','只写在程序里的说明文字')],'candidate')
             row=next(r for r in session['rows'] if r['kind']=='class_candidate' and r['current']=='骑乘驮兽可以穿越沙漠' and 'sample' in r['source'])
             self.assertIn('語系檔裡有同一句',row['issue'])
+            # Listed with what the game shows, never written: the class stays as it is.
+            self.assertEqual((row['proposed'],row['language_copy'],row['supported'],row['changed']),('騎乘馱獸可以穿越沙漠',True,False,False))
+            kept=next(r for r in session['rows'] if r['kind']=='class_candidate' and r['current']=='驮兽' and 'sample' in r['source'])
+            self.assertEqual(kept['proposed'],'驮兽');self.assertNotIn('language_copy',kept)
             self.assertEqual(next(r for r in session['rows'] if r['key']=='tip.sample.ride')['proposed'],'騎乘馱獸可以穿越沙漠')
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_simplified_literals_in_a_mod_the_launcher_leaves_alone_are_converted(self,_):
+        # Age of Mythology keeps 巫法师 in a list and shows it from another class: the use cannot be proven,
+        # but the characters can change. A literal the mod compares with (here or in another class) stays.
+        catalog=(Path(self.tmp.name)/'NameCatalog.class').read_bytes();user=(Path(self.tmp.name)/'NameUser.class').read_bytes()
+        refs=([{},{}],{'sources':['tw','cn']})
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);instance=root/'instance';home=root/'app';mods=instance/'mods';mods.mkdir(parents=True)
+            with zipfile.ZipFile(mods/'catalog.jar','w') as z:z.writestr('NameCatalog.class',catalog)
+            with zipfile.ZipFile(mods/'both.jar','w') as z:z.writestr('NameCatalog.class',catalog);z.writestr('NameUser.class',user)
+            session=jobs.plan(instance,home,lambda *_:None,references=refs)
+            rows={(r['source'].split('!/')[0],r['current']):r for r in session['rows'] if r['kind'] in ('class_display','class_candidate')}
+            mage=rows[('mods/catalog.jar','巫法师')]
+            self.assertEqual((mage['kind'],mage['proposed'],mage['origin'],mage['supported']),('class_display','巫法師','same_source_zh_cn',True))
+            self.assertEqual(rows[('mods/catalog.jar','战士')]['kind'],'class_candidate')  # compared with "战士".equals
+            self.assertEqual(rows[('mods/both.jar','巫法师')]['kind'],'class_candidate')  # NameUser switches on it
+            jobs.prepare_to_apply(session);jobs.apply_session(session,home,lambda *_:None)
+            with zipfile.ZipFile(mods/'catalog.jar') as z:written=z.read('NameCatalog.class')
+            texts=set(class_text.ClassFile(written).utf.values())
+            self.assertIn('巫法師',texts);self.assertIn('战士',texts);self.assertNotIn('巫法师',texts)
+            with zipfile.ZipFile(mods/'both.jar') as z:self.assertEqual(z.read('NameCatalog.class'),catalog)
+            # A rerun recognises what was written and writes nothing.
+            again=jobs.plan(instance,home,lambda *_:None,references=refs)
+            self.assertFalse([r for r in again['rows'] if r['current']=='巫法師'])  # shown in Chinese, nothing to do
+            self.assertFalse([r for r in again['rows'] if r['kind']=='class_display' and r['changed']])
+            self.assertEqual(jobs.applicable_count(again),0)
+        # Under CurseForge the mod would be put back: nothing is converted.
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);instance=root/'instance';mods=instance/'mods';mods.mkdir(parents=True)
+            (instance/'minecraftinstance.json').write_text('{}',encoding='utf-8')
+            with zipfile.ZipFile(mods/'catalog.jar','w') as z:z.writestr('NameCatalog.class',catalog)
+            session=jobs.plan(instance,root/'app',lambda *_:None,references=refs)
+            self.assertFalse([r for r in session['rows'] if r['kind']=='class_display'])
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_text_another_mods_mixin_changes_is_never_rewritten(self,_):

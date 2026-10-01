@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtTest import QTest
 from mc_zh_tw_translator.desktop import MainWindow
@@ -36,6 +37,8 @@ class DesktopUiTests(unittest.TestCase):
             with patch('mc_zh_tw_translator.desktop_jobs.refresh',return_value=([{},{}],{})):
                 window.start_job()
                 self.assertFalse(window.choose.isEnabled())
+                # A greyed-out button shows the plain arrow, not the hand, so it does not look clickable.
+                self.assertEqual(window.choose.cursor().shape(),Qt.ArrowCursor)
                 for _ in range(500):
                     self.app.processEvents();time.sleep(.02)
                     if not window.busy:break
@@ -47,7 +50,7 @@ class DesktopUiTests(unittest.TestCase):
             # Translated but not written yet: the game still shows English, so nothing counts as done.
             self.assertEqual([n.text() for n in window.stats],['0.0%','1'])
             self.assertIn('還沒寫入',window.stat_notes[1].text())
-            self.assertTrue(window.choose.isEnabled())
+            self.assertTrue(window.choose.isEnabled());self.assertEqual(window.choose.cursor().shape(),Qt.PointingHandCursor)
             window.navigate(1);self.assertEqual(window.table.rowCount(),1)
             self.assertFalse((lang/'zh_tw.json').exists())
             window.close()

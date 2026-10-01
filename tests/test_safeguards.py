@@ -302,7 +302,7 @@ class QualityTests(Base):
         self.write({'a':'Crafting Table','b':'Mother Rock','c':'Platform Bed'},{'a':'工作台','b':'母岩','c':'平台床'})
         rows=self.rows()
         self.assertEqual([rows[k]['proposed'] for k in 'abc'],['工作台','母岩','平台床'])
-        self.assertEqual(references.to_taiwan('岩浆 台阶 群系 这里 为了'),'岩漿 臺階 群系 這裡 為了'.replace('臺','台'))
+        self.assertEqual(references.to_taiwan('岩浆 台阶 群组 这里 为了'),'岩漿 臺階 群組 這裡 為了'.replace('臺','台'))
 
     def test_numbers_written_with_units_are_the_same_number(self):
         for en,zh in (('Have at least 1 million EP','擁有至少100萬存在值'),('Increase its EP by 10,000','增加 1萬存在值'),
@@ -317,6 +317,22 @@ class QualityTests(Base):
                       ('一只能飞的鸟','一隻能飛的鳥'),('三只羊','三隻羊'),('松开按键','鬆開按鍵'),('放松一下','放鬆一下'),('蛇发女妖','蛇髮女妖')):
             self.assertEqual(references.to_taiwan(cn),tw,cn)
         for text in ('剝皮松木原木','最多只能','按鍵綁定','乾草塊'):self.assertFalse(references.has_simplified(text),text)
+
+    def test_characters_the_converter_kept_simplified_are_corrected(self):
+        # The Foll quests and books: the converter's word list saw a queen (蜂后, 妖后), a name (于禁, 子云)
+        # or a word split by a line break, and left simplified characters in the Taiwan text.
+        for cn,tw in (('变成蜜蜂后，获得飞行能力','變成蜜蜂後，獲得飛行能力'),('想办法弄死巫妖后，其','想辦法弄死巫妖後，其'),
+                      ('装备空间撕裂球后，在平行世界','裝備空間撕裂球後，在平行世界'),('生成于海洋','生成於海洋'),
+                      ('于禁书卷轴的解读之中','於禁書卷軸的解讀之中'),('孢子云','孢子雲'),('改变小范\r\n围内','改變小範\r\n圍內'),
+                      # the queens and sayings that are right as they are
+                      ('切叶蚁后：哭泣','切葉蟻后：哭泣'),('若没有蚁后，蚁丘','若沒有蟻后，蟻丘'),('皇后','皇后'),('人云亦云','人云亦云')):
+            self.assertEqual(references.to_taiwan(cn),tw,cn);self.assertFalse(references.has_simplified(tw),cn)
+        # 输出端口: players' slang for what deals the damage, never a computer port; next to machines, the output side.
+        self.assertEqual(references.to_taiwan('变身技能的巨型火球是优质输出端口'),'變身技能的巨型火球是優質輸出手段')
+        self.assertEqual(references.to_taiwan('介绍一下这个流派输出端口——对单高伤技能'),'介紹一下這個流派輸出手段——對單高傷技能')
+        self.assertEqual(references.to_taiwan('机器的物品输出端口在右侧，输入端口在左侧'),'機器的物品輸出端在右側，輸入端在左側')
+        # Text applied by an earlier version is corrected the same way (once, listed for checking).
+        self.assertEqual(jobs.taiwan_wording('魔法箭會提供魔法系前期一個很不錯的輸出埠'),'魔法箭會提供魔法系前期一個很不錯的輸出手段')
 
     def test_glossary_follows_official_names(self):
         from mc_zh_tw_translator.translator import MINECRAFT_GLOSSARY as glossary
@@ -345,7 +361,8 @@ class QualityTests(Base):
 
     def test_minecraft_names_use_taiwan_official_wording(self):
         from mc_zh_tw_translator.desktop_references import to_taiwan
-        cases={'探索所有下界生物群系':'探索所有地獄生態域','用下界合金锭升级':'用獄髓錠升級','末影人':'終界使者','腐化末地':'腐化終界',
+        cases={'探索所有下界生物群系':'探索所有地獄生態域','生成于海洋群系':'生成於海洋生態域','已演奏群系列表':'已演奏生態域列表',
+               '族群系统':'族群系統','用下界合金锭升级':'用獄髓錠升級','末影人':'終界使者','腐化末地':'腐化終界',
                '恶魂刷怪蛋':'地獄幽靈生怪蛋','潜影盒':'界伏盒','幽匿感测体':'伏聆振測器','监守者':'伏守者','凋灵骷髅':'凋零骷髏'}
         for cn,tw in cases.items():self.assertEqual(to_taiwan(cn),tw,cn)
         # Ordinary words, bounds and a mod's own keeper stay as they are.

@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from mc_zh_tw_translator.translator import CTE2QuestTranslator, PATCHOULI_SKIP_FIELDS
 from opencc import OpenCC
-from mc_zh_tw_translator.class_text import proven_strings, config_tooltips, developer_strings
+from mc_zh_tw_translator.class_text import proven_strings, plain_strings, config_tooltips, developer_strings
 from mc_zh_tw_translator import quest_lang
 
 HAN=re.compile('[\u3400-\u9fff]'); LATIN=re.compile('[A-Za-z]{3,}')
@@ -290,7 +290,7 @@ class Audit:
                     self.files.append(dict(source=label+'!/'+info.filename,size=info.file_size,crc=info.CRC,kind='class' if info.filename.endswith('.class') else 'resource'))
                 self.collection(label,names,z.read)
                 self.nested(z,label,names)
-                screen=False;linked=[]
+                screen=False;linked=[];literals=[];compared=set()
                 ships_lang=any(re.match(r'assets/[^/]+/lang/[^/]+\.json$',x) for x in names)
                 for n in names:
                     if not n.endswith('.class'):continue
@@ -305,19 +305,24 @@ class Audit:
                             cf,safe=proven_strings(raw);constants=cf.utf.items()
                             tips=config_tooltips(raw) if any('設定說明' in use for _,use in safe.values()) else {}
                             developer=developer_strings(raw)
+                            _,plain,seen=plain_strings(raw);compared|=seen
                         except (ValueError,KeyError,IndexError,struct.error,UnicodeError):
                             # An unsupported class remains visible for inspection; it is never writable.
-                            safe={};tips={};developer=set();constants=enumerate(utf8_constants(raw))
+                            safe={};tips={};developer=set();plain={};constants=enumerate(utf8_constants(raw))
                         for i,s in constants:
                             if (i in safe and LATIN.search(s)) or HAN.search(s) or (len(s)<1200 and re.search(r'\b[A-Za-z]{3,} [A-Za-z]{3,} [A-Za-z]{3,}\b',s)):
                                 supported=i in safe and label.startswith('mods/') and label.count('!/')==0
                                 self.add(label+'!/'+n,i,None,s,kind='class_display' if supported else 'class_candidate')
                                 if not supported and i in developer:self.rows[-1]['developer_use']=True
                                 if not supported and generator:self.rows[-1]['language_generator']=True
+                                if not supported and i in plain and HAN.search(s):literals.append(self.rows[-1])
                                 if supported:
                                     self.rows[-1]['display_use']=safe[i][1]
                                     if tips.get(i):linked.append((self.rows[-1],tips[i]))
                     except Exception as e:self.errors.append([label,n,'class extraction: '+str(e)])
+                # Chinese literals a class of this file compares with keep their characters in every class.
+                for row in literals:
+                    if row['current'] not in compared:row['plain_literal']=True
                 if linked and label.startswith('mods/') and label.count('!/')==0:
                     mods=declared_mods(z,names)
                     for row,tips in linked:

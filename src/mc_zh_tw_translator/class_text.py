@@ -3,6 +3,7 @@
 Only straight-line literal calls and compiler-generated String[] comment calls
 are supported. Every use of a shared constant must have the same safe proof.
 """
+import collections
 import re
 import struct
 
@@ -192,6 +193,45 @@ def proven_strings(raw):
     return cf, result
 
 
+# Calls that compare or look up text: a literal handed to one of them may be matched against data, so its
+# characters must stay as they are (javac's switch on a String also ends in equals on each literal).
+COMPARE = {'equals','equalsIgnoreCase','hashCode','compareTo','compareToIgnoreCase','contentEquals','startsWith',
+           'endsWith','contains','containsKey','containsValue','get','getOrDefault','remove','indexOf','lastIndexOf',
+           'matches','regionMatches','areEqual','valueOf','forName','parse','lookup','byName','fromString'}
+
+
+def plain_strings(raw):
+    """String literals that are only loaded (ldc) and kept in no annotation, field or other pool role, for a
+    Simplified-to-Traditional conversion whose use is not proven; and the texts this class compares.
+
+    Returns (cf, {UTF-8 constant index: text}, {texts handed to a comparing or lookup call}). A conversion keeps
+    the meaning, and the same literal becomes the same text in every class, so names a mod stores and shows
+    stay consistent; only text it compares with may not change (excluded jar-wide by the caller).
+    """
+    cf = ClassFile(raw)
+    strings = {k:u2(v,0) for k,(t,v) in cf.cp.items() if t == 8}
+    loaded = collections.Counter(); compared = set()
+    for code, _ in cf.codes:
+        ops = list(instructions(code))
+        for i, (_,op,arg) in enumerate(ops):
+            if op not in (18,19):continue
+            index = arg[0] if op == 18 else u2(arg,0)
+            if index not in strings:continue
+            loaded[strings[index]] += 1
+            for _,later,larg in ops[i+1:i+4]:
+                if later in (182,183,184,185):
+                    method = cf.method(u2(larg,0))
+                    if method and method[1] in COMPARE:compared.add(cf.utf[strings[index]])
+                    break
+    result = {}
+    for utf in set(strings.values()):
+        shared = [k for k,v in strings.items() if v == utf]
+        protected = any(struct.pack('>H',k) in b for k in [utf]+shared for b in cf.metadata)
+        protected |= any(t != 8 and t in (7,12,16,19,20) and struct.pack('>H',utf) in v for t,v in cf.cp.values())
+        if loaded[utf] and not protected:result[utf] = cf.utf[utf]
+    return cf, result, compared
+
+
 DEFINES = ('define','defineInRange','defineList','defineListAllowEmpty','defineEnum','defineInList')
 RELOAD = {25,42,43,44,45,178,180,87}  # aload(_n), getstatic, getfield, pop: the builder put back on the stack
 
@@ -306,9 +346,15 @@ def integer(op):
 
 def rewrite(raw, rows):
     cf, safe = proven_strings(raw); edits = {}
+    plain = plain_strings(raw) if any(row.get('literal') for row in rows) else None
     for row in rows:
         index = int(row['key'])
-        if index not in safe or safe[index][0] != row['current']:raise ValueError('程式文字用途或原文已變動，請重新翻譯')
+        if row.get('literal'):
+            # Simplified Chinese whose use is not proven: only its characters change, and only while it is still
+            # a plain literal that this class never compares.
+            _, texts, compared = plain
+            if texts.get(index) != row['current'] or row['current'] in compared:raise ValueError('程式文字用途或原文已變動，請重新翻譯')
+        elif index not in safe or safe[index][0] != row['current']:raise ValueError('程式文字用途或原文已變動，請重新翻譯')
         value = row['proposed']
         if re.findall(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',value) != re.findall(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',row['current']):raise ValueError('程式文字控制字元不一致')
         encoded = encode_mutf(value)

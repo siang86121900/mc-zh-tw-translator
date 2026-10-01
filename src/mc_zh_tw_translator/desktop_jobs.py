@@ -520,6 +520,17 @@ def slim(row):
     return {k:v for k,v in row.items() if k not in ('flags','status','reason','own_tw')}
 
 
+def literal_conversion(r, curseforge, provenance, lang_text):
+    """Whether a program string whose use is unproven is converted from Simplified to Taiwan Traditional in
+    place: plain Chinese literal, in a mod file the launcher does not put back, not inside a nested jar, not
+    a generator's or log line, and Simplified (or written by this program before, so a rerun recognises it)."""
+    if r.get('kind')!='class_candidate' or not r.get('plain_literal'):return False
+    value=r.get('current') or ''
+    if managed(curseforge,r) or is_nested(r) or r.get('language_generator') or r.get('developer_use'):return False
+    if internal_reason(value) or in_language_file(r,value,lang_text):return False
+    return has_simplified(value) or bool(provenance.lookup(r))
+
+
 def in_language_file(r, text, lang_text):
     """A program string whose use is unproven, word for word a sentence of the same mod file's language files:
     a helper of the mod's language-file generator (Age of Mythology's TarotCompletionTranslations hands its
@@ -528,6 +539,21 @@ def in_language_file(r, text, lang_text):
     s=(text or '').strip()
     if r.get('kind')!='class_candidate' or (r['source'].rsplit('!/',1)[0],s) not in lang_text:return False
     return len(HAN.findall(s))>=4 or len(re.findall(r'\b[A-Za-z]{3,}\b',s))>=3
+
+
+def show_language_copies(rows, decided):
+    """A program copy of a language-file sentence is listed with the language file's wording, what the game
+    shows ('長按%s跳過劇情' for 长按%s跳过剧情), so the report never shows text the player does not see.
+    Only the listed wording changes: the row stays unsupported and is never written."""
+    shown={}
+    for row in decided:
+        if row.get('kind')=='language' and row['source'].startswith('mods/') and HAN.search(row.get('proposed') or ''):
+            for v in (row.get('en'),row.get('zh_cn'),row.get('own_tw'),row.get('current')):
+                if isinstance(v,str):shown.setdefault((row['source'].rsplit('!/',1)[0],v.strip()),row['proposed'])
+    for row in rows:
+        if row.get('language_copy'):
+            text=shown.get((row['source'].rsplit('!/',1)[0],str(row.get('current') or row.get('en') or '').strip()))
+            if text:row['proposed']=text
 
 
 def internal_reason(text):
@@ -980,7 +1006,8 @@ def present_mods(z, depth=0):
 
 # scan-10: lone surrogates mended (v0.17.0 left cached errors in place)
 # scan-11: strings of language-file generators (LanguageProvider) are marked; Mixin targets are kept
-SCAN_CACHE_VERSION = 'scan-11'
+# scan-12: plain Chinese literals (plain_literal) are marked for an in-place Simplified-to-Traditional conversion
+SCAN_CACHE_VERSION = 'scan-12'
 
 
 def scan_cache(home, instance):
@@ -1112,7 +1139,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             pack_text[(r['source'][len(OWN_PACK):],r['key'])]=r['current']
     curseforge=is_curseforge(instance);mixin=getattr(audit,'mixin_targets',set())
     # Kept in the report so a later 'retry apply' still knows which program text must not be rewritten.
-    result['mixin_targets']=sorted({class_name(r) for r in audit.rows if r['kind']=='class_display'}&mixin)
+    result['mixin_targets']=sorted({class_name(r) for r in audit.rows if r['kind']=='class_display' or r.get('plain_literal')}&mixin)
     instance_cn={}
     for r in audit.rows:
         if r['kind']!='language' or not isinstance(r['zh_cn'],str): continue
@@ -1187,6 +1214,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # The config screen shows the mod's language entry for this comment, which is a row of its own;
             # counting the class copy too would list text the game already shows from the language file.
             counts['tooltip_in_language']+=1;continue
+        if literal_conversion(r,curseforge,provenance,lang_text):
+            # Simplified Chinese written straight into a mod's program (Age of Mythology's 巫法师): where the
+            # launcher does not put the original back, its characters are converted in place. Only the
+            # characters change, and a literal the mod compares with stays as it is (plain_strings).
+            r=dict(r,kind='class_display',display_use='程式裡的簡體中文（只轉成台灣繁體）',literal=True)
         if r['kind']=='class_display':
             original=r['current'];previous=provenance.lookup(r)
             # Config comments shown through the resource pack leave the class English; what the pack holds tells
@@ -1257,13 +1289,14 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 counts['loose_tw']+=1;continue
         if r['kind'] not in ('language','book','inline_lang'):
             if r['flags']:
-                value=r['current'] or r['en'] or '';hidden=(internal_reason(value) or ('只用在錯誤訊息或記錄檔' if r.get('developer_use') else '')
+                value=r['current'] or r['en'] or '';copy=in_language_file(r,value,lang_text)
+                hidden=(internal_reason(value) or ('只用在錯誤訊息或記錄檔' if r.get('developer_use') else '')
                         or ('產生語系檔用的工具程式；遊戲顯示的是模組附的語系檔，那份已另外翻譯' if r.get('language_generator') else '')
-                        or ('模組附的語系檔裡有同一句；遊戲顯示的是語系檔那句，那份已另外翻譯' if in_language_file(r,value,lang_text) else ''))
+                        or ('模組附的語系檔裡有同一句；遊戲顯示的是語系檔那句，那份已另外翻譯' if copy else ''))
                 # Obvious identifiers, code and log lines are set aside so 待查 lists what may really be shown.
                 result['rows'].append(dict(slim(r),proposed=value,origin='not_display' if hidden else 'untranslated',
                                            issue='程式內部字串：'+hidden if hidden else '無法確定遊戲會不會顯示這句；它也可能是程式拿來比對的名稱，改了可能讓模組出錯，所以先不修改、不送 AI',
-                                           supported=False,reviewed=False,changed=False))
+                                           supported=False,reviewed=False,changed=False,**({'language_copy':True} if copy else {})))
                 counts['not_display' if hidden else 'context_candidate']+=1
             continue
         ns=memory_scope(r)
@@ -1443,6 +1476,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if listed(row) or id(row) in beside:result['rows'].append(row)
         elif row.get('supported') or row.get('kind')=='class_display':already+=1  # shown in Chinese already, nothing to do
     result['already_chinese']=already  # for the completion rate: these rows are not kept in the report
+    show_language_copies(result['rows'],decided)
     result['rate_before']=coverage(result,before=True)['rate']  # what the game showed before this run
     try:write_json(report/'name_terms.json',{en:zh for en,(_,zh) in name_terms.items()})
     except OSError:pass
