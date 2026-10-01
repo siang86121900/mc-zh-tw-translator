@@ -423,6 +423,20 @@ class SameKeyTests(Base):
         self.assertEqual((rows[(self.PACK,'c')]['origin'],rows[(self.PACK,'c')]['proposed']),('same_source_zh_cn','只有中文的句子'))
         self.assertNotIn('en_ref',rows[(self.PACK,'c')])
 
+    def test_reference_mainland_wording_is_corrected_and_listed(self):
+        # ModsTranslationPack had 設置 for cloth-config's Config and replaced the mod's own correct 設定.
+        instance=self.layered('參考用語',{'config':'Config'},mod_tw={'config':'設定'})
+        tw={'real':{'config':'設置'},'__pairs__':{'real':{'config':[('設置','Config')]}}}
+        row=next(r for r in self.make_plan(instance,([tw,{}],{'sources':['tw','cn']}))['rows'] if r['key']=='config')
+        self.assertEqual((row['origin'],row['proposed'],row['changed']),('reference_pack_or_cfpa','設定',False))
+
+    def test_mod_chinese_with_other_numbers_stays_and_is_listed(self):
+        # Chloride's own Chinese says 15 seconds where its English says 30.
+        instance=self.layered('數字不同',{'fps':'Shows the 30 second average FPS'},mod_tw={'fps':'顯示前15秒內的平均幀率'})
+        row=next(r for r in self.make_plan(instance)['rows'] if r['key']=='fps')
+        self.assertEqual((row['origin'],row['proposed'],row['changed']),('existing_zh_tw','顯示前15秒內的平均幀率',False))
+        self.assertTrue(row['number_doubt']);self.assertIn('數值和原文不同',row['issue']);self.assertTrue(jobs.needs_check(row))
+
     def test_unconfirmed_reference_is_used_last_and_listed_for_checking(self):
         instance=self.layered('只有參考',{'x':'Other','gone':'Gone thing'})
         tw={'real':{'gone':'沒有英文的參考'}}  # the reference holds no English for this key

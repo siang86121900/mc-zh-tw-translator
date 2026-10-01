@@ -80,7 +80,7 @@ BRANDS = {'patreon','discord','wiki','github','github releases','curseforge','mo
 # Upper-case script keywords shown in visual script editors (e.g. FancyMenu action blocks).
 SCRIPT_KEYWORDS = {'IF','ELSE','ELSE-IF','ELSEIF','WHILE','FOR','AND','OR','NOT','SWITCH','CASE','END'}
 # Keys that name another mod's biome/dimension/structure; they only show when that mod is installed.
-KEY_MOD_REFERENCE = re.compile(r'^(?:biome|dimension|structure)\.([a-z0-9_]+)[./]|^travelerstitles\.([a-z0-9_]+)\.')
+KEY_MOD_REFERENCE = re.compile(r'^(?:biome|dimension|structure)\.([a-z0-9_]+)[./]|^travelerstitles\.(?!commands\.)([a-z0-9_]+)\.')
 # Measurement units shown next to numbers (energy, fluid, pressure, temperature, time, power).
 UNITS = {'mb','b','kb','bar','psi','rpm','hz','khz','w','kw','mw','v','a','j','kj','t','s','ms','ns','μi','µi','°c','°f','k',
          'fe','rf','eu','cf','mj','su','xp','ep','mp','hp'}
@@ -599,18 +599,21 @@ def needs_check(row):
     """
     if str(row.get('review_method') or '').startswith('user_confirmed'):return False  # the user has looked at it
     if (row.get('ai_review') or {}).get('verdict')=='ok':return False  # AI read it against the English and agreed
+    if row.get('supported') and row.get('number_doubt') and row.get('origin') not in ('untranslated','keep_original'):return True
     return bool(row.get('supported') and (row.get('changed') or row.get('recovered')) and (
-        row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None or row.get('number_doubt')
-        or str(row.get('issue') or '').startswith('既有繁中')))
+        row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None
+        or str(row.get('issue') or '').startswith('既有繁中') or '大陸用語改為台灣用語' in str(row.get('issue') or '')))
 
 
 # Unambiguous mainland words that some mods' "zh_tw" keeps after a character-only conversion.
 # A full OpenCC s2twp pass over traditional text is not used: it turns 用戶端 into 用使者端,
 # 項目 into 專案 and 權限 into 許可權.
 TW_WORDING = [(re.compile(a),b) for a,b in (
-    ('激活','啟用'),('添加','新增'),('代碼','程式碼'),('默認','預設'),('信息','資訊'),('啓','啟'),
+    # 控制代碼, 錯誤代碼, 國家代碼 and the like are Taiwan wording too; only code in the programming sense changes.
+    ('激活','啟用'),('添加','新增'),('(?<![制誤家態言色式區])代碼','程式碼'),('默認','預設'),('信息','資訊'),('啓','啟'),
     ('視頻','影片'),('軟件','軟體'),('硬件','硬體'),('文件夾','資料夾'),('菜單','選單'),('鼠標','滑鼠'),
-    ('屏幕','螢幕'),('界面','介面'),('服務器','伺服器'),('數據','資料'),('加載','載入'),('兼容','相容'),
+    # 數據機 (modem) and 大數據 are Taiwan wording; 增加載入 is 增加 + 載入, not 加載.
+    ('屏幕','螢幕'),('界面','介面'),('服務器','伺服器'),('(?<!大)數據(?!機)','資料'),('(?<![增附追添外])加載(?!入)','載入'),('兼容','相容'),
     # 質量 (mass) and 支持 (支持者, 感謝支持) are left alone: both are also correct Taiwan wording.
     ('用戶(?!端)','使用者'),('網絡','網路'),('設置','設定'),('緩存','快取'),
 )]
@@ -641,7 +644,7 @@ def report_overview(session):
         if needs_check(r):
             check['AI 補譯' if r['origin']=='ai_translation' else '自動統一譯名' if r.get('unified_from') is not None
                   else '版本待確認的參考' if r['origin'] in ('stale_reference','cross_version_reference')
-                  else '數值和原文不同' if r.get('number_doubt') else '改過用語的模組繁中']+=1
+                  else '數值和原文不同' if r.get('number_doubt') else '改成台灣用語']+=1
     after=session.get('after_counts')
     return dict(applied=applied,not_applied=reasons,context=context,held=held,check=sum(check.values()),check_kinds=check.most_common(),
                 backup=session.get('backup'),rechecked=after is not None,renamed=session.get('renamed_count',0),
@@ -1268,6 +1271,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             issue='既有繁中含簡體字，已轉為台灣繁體，請核對'
         elif origin=='existing_zh_tw' and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value)):
             value=taiwan_wording(value);issue='既有繁中已把大陸用語改為台灣用語，請核對'
+        elif (origin not in USER_ORIGINS and origin not in ('official_vanilla','untranslated','keep_original')
+              and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value))):
+            # Reference packs are people-written but not always in Taiwan wording (cloth-config's 設置 replaced
+            # the mod's own correct 設定); the same unambiguous replacements apply to them.
+            value=taiwan_wording(value);issue=(issue+'；' if issue else '')+'已把大陸用語改為台灣用語，請核對'
         reason=keep_original_reason(original,r['key'],ns) if origin=='untranslated' else ''
         if origin=='untranslated' and not reason and earlier and earlier.get('keep'):
             reason=earlier.get('reason') or 'AI 判斷保留原文'  # AI said so in an earlier run; not asked again
@@ -1280,7 +1288,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             supported=reads_inline_zh_tw(r['source'])
             if not supported:issue=INLINE_UNVERIFIED  # written only where the mod is known to read zh_tw
         changed=value!=r['current'] and origin!='untranslated' and (origin!='keep_original' or bool(issue))
-        if doubt and changed and not extra.get('recovered'):issue=(issue+'；' if issue else '')+doubt
+        # A number that differs from the English is listed even when the text stays as the mod wrote it.
+        if doubt and not extra.get('recovered') and (changed or origin!='untranslated'):issue=(issue+'；' if issue else '')+doubt
         if '數值和原文不同' in (issue or ''):extra['number_doubt']=True  # also kept by text applied earlier
         if reused:extra.update(ai_model=earlier.get('model'),ai_reused=True)
         if (NAME_KEY.match(r['key']) and isinstance(r['en'],str) and 2<len(r['en'].strip())<=40 and HAN.search(value)

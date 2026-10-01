@@ -285,7 +285,9 @@ class QualityTests(Base):
 
     def test_traditional_chinese_written_for_this_version_keeps_its_place(self):
         self.write({'a':'Lasts 3 seconds'},{'a':'持续 3 秒'},{'a':'持續片刻'})
-        self.assertNotIn('a',self.rows())  # the mod's own zh_tw is not replaced because of a number
+        row=self.rows()['a']  # the mod's own zh_tw is not replaced because of a number, only listed (AGENTS.md)
+        self.assertEqual((row['origin'],row['proposed'],row['changed']),('existing_zh_tw','持續片刻',False))
+        self.assertTrue(row['number_doubt']);self.assertTrue(jobs.needs_check(row))
 
     def test_taiwan_character_forms_are_not_mistaken_for_simplified(self):
         self.write({'a':'Crafting Table','b':'Bedrock Bed','c':'Interference','d':'Settings'},
@@ -330,6 +332,13 @@ class QualityTests(Base):
     def test_correct_taiwan_words_are_not_rewritten(self):
         for text in ('感謝所有支持者','質量越大，射程越短'):self.assertEqual(jobs.taiwan_wording(text),text)
         self.assertEqual(jobs.taiwan_wording('默認設置'),'預設設定')
+        # Taiwan wording that only looks like a mainland word stays: 增加 + 載入, 控制代碼, 數據機, 大數據.
+        for text in ('略微增加載入時間','請參閱可用的控制代碼','錯誤代碼 404','數據機','大數據分析'):self.assertEqual(jobs.taiwan_wording(text),text)
+        self.assertEqual(jobs.taiwan_wording('正在加載數據'),'正在載入資料')
+
+    def test_travelers_titles_own_commands_are_not_taken_for_a_missing_mod(self):
+        self.assertIsNone(jobs.KEY_MOD_REFERENCE.match('travelerstitles.commands.biometitle.invalid'))
+        self.assertEqual(jobs.KEY_MOD_REFERENCE.match('travelerstitles.bracken.dormis')[2],'bracken')
 
     def test_other_version_and_official_names_are_labelled(self):
         self.write({'block.demo.oak':'Oak Log','item.demo.red':'Red','gui.demo.red':'Red','item.demo.old':'Old Thing'})
