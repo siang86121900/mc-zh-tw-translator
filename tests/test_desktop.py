@@ -133,6 +133,39 @@ class WorkflowTests(unittest.TestCase):
         again=self.make_plan()
         self.assertFalse([r['key'] for r in again['rows'] if r['source'].startswith('mods/') and r['changed']])
 
+    def test_server_language_files_in_a_data_folder_are_not_player_text(self):
+        import zipfile
+        (self.instance/'mods').mkdir()
+        with zipfile.ZipFile(self.instance/'mods/claims.jar','w') as z:
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="claims"\n')
+            z.writestr('assets/claims/lang/en_us.json',json.dumps({'claims.a':'Claim'}))
+            z.writestr('assets/claims/lang/zh_cn.json',json.dumps({'claims.a':'领地'},ensure_ascii=False))
+            # Forge reads only en_us from data/<mod>/lang (for the server); the screen uses assets/
+            z.writestr('data/claims/lang/en_us.json',json.dumps({'claims.a':'Claim','claims.server_only':'Only here'}))
+        result=self.make_plan()
+        self.assertEqual(result['source_counts']['server_lang'],1)
+        self.assertFalse([r for r in result['rows'] if r['key']=='claims.a' and '/data/' in r['source']])
+        self.assertTrue([r for r in result['rows'] if r['key']=='claims.server_only'])  # not on screen elsewhere: still listed
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_a_book_page_two_mods_ship_counts_as_shown_by_the_one_the_game_reads(self,_):
+        import zipfile
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        (self.instance/'mods').mkdir()
+        (self.instance/'options.txt').write_text('lang:zh_tw\n',encoding='utf-8')
+        page='assets/goety/patchouli_books/brew/{}/entries/a.json'
+        for jar,en,cn in (('goety.jar','Catalysts change brews.','催化剂改变药水。'),('addon.jar','Catalysts change brews!','催化剂会改变药水！')):
+            with zipfile.ZipFile(self.instance/'mods'/jar,'w') as z:
+                z.writestr('META-INF/neoforge.mods.toml',f'modLoader="javafml"\n[[mods]]\nmodId="{jar[:-4]}"\n')
+                z.writestr(page.format('en_us'),json.dumps({'pages':[{'text':en}]}))
+                z.writestr(page.format('zh_cn'),json.dumps({'pages':[{'text':cn}]},ensure_ascii=False))
+        done=apply_session(self.confirm_all(self.make_plan()),self.home,lambda *_:None)
+        rows=[r for r in done['rows'] if 'patchouli' in r['source']]
+        self.assertEqual(len(rows),2)
+        self.assertEqual(done['shown_mismatch'],0)  # the pack holds one of the two; the game shows Chinese there
+        self.assertEqual(sum(bool(r.get('shown_other')) for r in rows),1)
+        self.assertFalse(jobs.coverage(done).get('unconfirmed'))
+
     def test_chinese_written_in_the_english_file_is_converted_at_once(self):
         lang=self.instance/'config/ftbquests/quests/lang';lang.mkdir(parents=True)
         (lang/'en_us.snbt').write_text('{\n\tquest.A.title: "食人魔萨满"\n}\n',encoding='utf-8')

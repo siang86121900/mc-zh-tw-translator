@@ -2,10 +2,12 @@
 and confirming many rows at once."""
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
+import collections
 import json
 import tempfile
 import unittest
 from pathlib import Path
+import unittest.mock
 from unittest.mock import patch
 
 from mc_zh_tw_translator import codex_bridge as ai, desktop_jobs as jobs
@@ -701,6 +703,38 @@ class CodeCheckTests(unittest.TestCase):
         self.assertEqual(jobs.readopt_rejected(session),1)
         self.assertEqual((rows[0]['origin'],rows[0]['proposed']),('ai_translation','已從 %2$s 移除 %1$d 位玩家'))
         self.assertEqual(rows[1]['origin'],'untranslated')  # a changed number still waits for the user
+
+    def test_month_names_are_numbers_once_translated(self):
+        en="Holiday Trees generate during December and January, only if 'always' is false"
+        self.assertEqual(jobs.added_numbers(en,'節日樹在 12 月和 1 月期間生成，僅在 always 為 false 時'),'')
+        self.assertEqual(jobs.number_doubt(en,'節日樹在 12 月和 1 月期間生成'),'')
+        self.assertTrue(jobs.number_doubt(en,'節日樹在 11 月和 1 月期間生成'))  # a wrong month is still caught
+        self.assertEqual(jobs.numbers_in('May cause lag'),[])                     # the verb "may" is not a month
+        self.assertEqual(jobs.numbers_in('Starts in May, ends May 5'),['5','5','5'])
+        # An answer the old check turned down for a month is taken when the report is opened again
+        row=dict(source='mods/a.jar!/assets/aether/lang/en_us.json',key='k',en=en,current=None,origin='untranslated',supported=True,
+                 kind='language',proposed=en,ai_rejected=dict(reason='number',text='節日樹在 12 月和 1 月期間生成，僅在 always 為 false 時',model='m'))
+        self.assertEqual(jobs.readopt_rejected(dict(rows=[row])),1)
+        self.assertEqual(row['origin'],'ai_translation')
+
+    def test_start_page_and_report_filters_judge_every_row_the_same_way(self):
+        lang='mods/a.jar!/assets/a/lang/en_us.json'
+        rows=[dict(kind='language',source=lang,key='done',en='A',current=None,proposed='甲',origin='ai_translation',supported=True,changed=True,installed=True,shown=True),
+              dict(kind='language',source=lang,key='gap',en='B',current=None,proposed='B',origin='untranslated',supported=True),
+              dict(kind='class_display',source='mods/a.jar!/A.class',key='1',current='Hi',proposed='Hi',origin='untranslated',supported=False),
+              # translated, but in a place of the mod no resource pack reaches: English in game
+              dict(kind='language',source='mods/a.jar!/other/a/lang/en_us.json',key='odd',en='C',current=None,proposed='丙',origin='ai_translation',supported=True,changed=True),
+              dict(kind='language',source=lang,key='lost',en='D',current=None,proposed='丁',origin='ai_translation',supported=True,changed=True,installed=True,shown=False),
+              dict(kind='language',source=lang,key='wait',en='E',current=None,proposed='戊',origin='ai_translation',supported=True,changed=True),
+              dict(kind='class_candidate',source='mods/a.jar!/B.class',key='2',current='x',proposed='x',origin='untranslated',supported=False)]
+        session=dict(rows=rows,instance='',already_chinese=0)
+        with unittest.mock.patch.object(jobs,'session_curseforge',return_value=True):
+            cov=jobs.coverage(session);groups=collections.Counter(jobs.categories(session))
+        self.assertEqual((cov['missing'],cov['unwritable'],cov['unconfirmed'],cov['waiting']),(1,2,1,1))
+        self.assertEqual((groups['missing'],groups['held'],groups['unshown']),(cov['missing'],cov['unwritable'],cov['unconfirmed']))
+        # 還缺中文 = the untranslated filters plus what is translated and waits to be written
+        self.assertEqual(cov['total']-cov['done'],groups['missing']+groups['held']+groups['unshown']+cov['waiting'])
+        self.assertEqual(groups['context'],cov['candidates'])
 
     def test_program_text_curseforge_puts_back_has_its_own_group(self):
         self.assertEqual(jobs.row_category(dict(kind='class_display',supported=False,origin='untranslated')),'held')

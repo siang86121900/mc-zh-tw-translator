@@ -1463,7 +1463,7 @@ class MainWindow(QMainWindow):
         rows=self.session['rows'];preview=self.session.get('is_preview')
         # Each row is judged once per change of the report; filtering, searching and paging through
         # some 100,000 rows then only read these lists.
-        self.facts=dict(rows=rows,count=len(rows),category=[jobs.row_category(r) for r in rows],check=[jobs.needs_check(r) for r in rows],
+        self.facts=dict(rows=rows,count=len(rows),category=jobs.categories(self.session),check=[jobs.needs_check(r) for r in rows],
                         confirmable=[not preview and self.confirmable(r) for r in rows])
         counts=collections.Counter(self.facts['category']);counts['all']=len(rows)
         counts['translated']=sum(counts[c] for c in jobs.TRANSLATED_CATEGORIES)

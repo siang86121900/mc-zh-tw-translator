@@ -31,7 +31,7 @@ SOURCE_NAMES = {'same_source_zh_cn':'同檔簡中', 'instance_zh_cn':'模組包�
                 'keep_original':'無需翻譯','instance_resourcepack':'已安裝資源包',
                 'not_installed':'未安裝模組（略過）','user_glossary':'自訂譯名','not_display':'程式內部字串',
                 'cross_version_reference':'跨版本參考','official_vanilla':'官方原版譯名','stale_reference':'參考庫（版本待確認）',
-                'duplicate_copy':'模組內的重複舊版文字（略過）'}
+                'duplicate_copy':'模組內的重複舊版文字（略過）','server_lang':'伺服器用的英文語系檔（遊戲不讀繁中，略過）'}
 HAN = re.compile('[\u3400-\u9fff]')
 # §-codes, Patchouli macros, {0} arguments, and FTB Quests' page breaks and inline images.
 FORMAT = re.compile(r'§[0-9a-fk-or]|\$\([^)]+\)|\{[\w.]+\}|\{@\w+\}|\{image:[^}]*\}', re.I)
@@ -157,13 +157,13 @@ def readopt_rejected(session):
     taken=0
     for row in session.get('rows',[]):
         rejected=row.get('ai_rejected') or {}
-        if row.get('origin')!='untranslated' or not row.get('supported') or rejected.get('reason')!='format' or not rejected.get('text'):continue
+        if row.get('origin')!='untranslated' or not row.get('supported') or rejected.get('reason') not in ('format','number') or not rejected.get('text'):continue
         original=original_of(row);text=repair(original,rejected['text'])
         if not validate_text(original,text) or number_doubt(original,text) or added_numbers(original,text):continue
         row.pop('ai_rejected',None)
         row.update(proposed=text,origin='ai_translation',evidence='ChatGPT/Codex: '+str(rejected.get('model') or ''),ai_model=rejected.get('model'),
                    changed=text!=row.get('current'),reviewed=False,
-                   issue='AI 補譯（先前被較嚴的格式檢查退回，現在的檢查已接受），尚未人工校對。')
+                   issue='AI 補譯（先前被較嚴的'+('數字' if rejected['reason']=='number' else '格式')+'檢查退回，現在的檢查已接受），尚未人工校對。')
         taken+=1
     if taken:
         counts=session.setdefault('source_counts',{})
@@ -238,9 +238,15 @@ NUMBER_UNIT = re.compile(r'(\d+(?:\.\d+)?)\s*(thousand|million|billion|k(?![a-z]
 CHINESE_NUMERAL = re.compile('[零〇一二兩三四五六七八九十百千萬億半雙]')
 
 
+MONTHS = ('January','February','March','April','May','June','July','August','September','October','November','December')
+# A month name is a number once translated (December → 12 月). "May" only next to a date or another month name.
+MONTH = re.compile(r'\b(?:'+'|'.join(m for m in MONTHS if m!='May')+r')\b|\bMay\b(?=\s+\d|\s*(?:,|and\b|or\b|to\b|-)\s*[A-Z])|\b(?:(?<=in )|(?<=of )|(?<=and )|(?<=to ))May\b')
+
+
 def numbers_in(text):
-    """The plain numbers a text states, parameters left out and 10k / 1萬 written out."""
+    """The plain numbers a text states, parameters left out, 10k / 1萬 and English month names written out."""
     text=re.sub(r'(?<=\d),(?=\d{3})','',PARAMETER.sub(' ',text))
+    text=MONTH.sub(lambda m:f' {MONTHS.index(m[0])+1} ',text)
     # 1 million, 10k, 100萬 and 1億 are written out so that both sides compare as plain numbers.
     text=NUMBER_UNIT.sub(lambda m:f' {float(m[1])*UNITS_OF_NUMBER[m[2].casefold()]:.10g} ',text)
     return [f'{float(n):.10g}' for n in NUMBER.findall(text)]
@@ -651,8 +657,8 @@ def report_overview(session):
     if waiting:reasons.append((waiting,'已翻好但還沒寫入（'+('關閉遊戲後重試套用' if session.get('status') in ('awaiting_game','apply_failed') else '尚未套用')+'）'))
     for why,n in (session.get('held_back') or {}).items():reasons.append((n,'沒有寫入：'+why))
     # Program/config strings are candidates, not known gaps; they are reported beside, not inside, 未套用.
-    held=sum(row_category(r)=='held' for r in rows)
-    context=sum(row_category(r)=='context' for r in rows)  # the same rows the report filter lists
+    groups=collections.Counter(categories(session))  # the same rows the report filters list
+    held=groups['held'];context=groups['context']
     check=collections.Counter()
     for r in rows:
         if needs_check(r):
@@ -1101,8 +1107,9 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     memory=TranslationMemory(home);ai_memory=AiMemory(home);user_terms=UserGlossary(home);provenance=Provenance(home,instance);special=collections.Counter()
     # The mods' own English, to notice strings a modpack renamed through KubeJS or resource packs.
     name_terms={}  # English name -> (trust rank, Chinese); given to AI so sentences use the same names
-    mod_en={};main_copy=set()
+    mod_en={};main_copy=set();screen_keys=set()
     for r in audit.rows:
+        if r['kind']=='language' and '/lang/' in r['source'] and not SERVER_LANG.search(r['source'].split('!/')[-1]):screen_keys.add(r['key'])
         if r['kind']=='language' and r['source'].startswith('mods/') and r['source'].split('!/')[-1].startswith('assets/'):
             main_copy.add((r['source'].split('!/')[0],lang_namespace(r['source']),r['key']))
         m=re.search(r'assets/([^/]+)/lang/',r['source'])
@@ -1130,6 +1137,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # A second copy inside the mod (e.g. legacy_pack/assets/...) of text its main assets/ also has:
             # the game shows the main copy, and both would go to the same place in the translation pack.
             counts['duplicate_copy']+=1;continue
+        if r['kind']=='language' and r['key'] in screen_keys and SERVER_LANG.search(r['source'].split('!/')[-1]):
+            # Forge reads data/<mod>/lang/ on the server, and only its en_us (LanguageHook.loadLanguagesOnServer);
+            # the screen shows the same key from assets/<mod>/lang/, which is translated there. A zh_tw here is
+            # never read, so it is neither a gap nor something to write.
+            counts['server_lang']+=1;continue
         if r['source'].startswith('mods/') and r['kind'] in ('language','book'):
             shown=pack_text.get((pack_resource(target_for(r)[1]),r['key']),r['current'])
             if shown is not None:r=dict(r,current=shown,own_tw=r['current'])
@@ -1509,10 +1521,14 @@ def module_label(instance, row):
 
 
 TRANSLATED_CATEGORIES = ('mine','tw_ref','mod_tw','official','s2t','version_ref','ai','other')
-UNTRANSLATED_CATEGORIES = ('missing','held','context','keep')
+UNTRANSLATED_CATEGORIES = ('missing','held','unshown','context','keep')
 CATEGORY_NAMES = {'mine':'你確認的','tw_ref':'台灣參考庫','mod_tw':'模組／整合包繁中','official':'官方譯名與術語',
                   's2t':'簡中轉繁','version_ref':'版本待確認的參考','ai':'AI 補譯','other':'其他',
-                  'missing':'缺少中文來源','held':'程式內文字（遊戲中是英文）','context':'待查程式與設定','keep':'無需翻譯'}
+                  'missing':'缺少中文來源','held':'無法寫入（遊戲中是英文）','unshown':'寫入後遊戲讀不到','context':'待查程式與設定','keep':'無需翻譯'}
+
+
+# Language files in a data folder (mods' data/<mod>/lang/, datapacks): see plan(), which skips them.
+SERVER_LANG = re.compile(r'(?:^|/)data/[^/]+/lang/[^/]+$', re.I)
 
 
 def still_english(r):
@@ -1530,16 +1546,37 @@ def held_english(r):
     return still_english(r) or bool(r.get('changed')) or not HAN.search(r.get('current') or '')
 
 
-def row_category(r):
-    """Report grouping: translated (by how) or untranslated (by why). The start page counts the same way."""
+def row_state(r, curseforge=False):
+    """What the game shows for one row, the single judgement both the start page (coverage) and the report
+    filters (row_category) are built on, so their numbers always add up the same way:
+    None (not counted: needs no translation, or not matched yet), 'candidate' (use not proven), 'done'
+    (shown in Chinese), 'missing' (no Chinese source), 'unwritable' (translated or not, the game keeps showing
+    English: program text CurseForge puts back, or a place no file of ours reaches), 'unconfirmed' (written,
+    but the file the game reads does not hold it) or 'waiting' (translated, not written yet).
+    """
+    if r.get('origin') in ('keep_original','not_display','pending'):return None
+    held=r.get('kind')=='class_display' and not r.get('supported')
+    if held:return 'unwritable' if held_english(r) else 'done'  # else the program already shows it in Chinese
+    if not r.get('supported'):return 'candidate'
+    if still_english(r):return 'missing'
+    if not r.get('changed') or (r.get('installed') and r.get('shown') is not False):return 'done'
+    if r.get('installed'):return 'unconfirmed'
+    if write_route(r,curseforge) not in ('pack','file'):return 'unwritable'
+    return 'waiting'
+
+
+def row_category(r, curseforge=False):
+    """Report grouping: translated (by how) or untranslated (by why). Every row the start page counts as
+    still English for a reason of its own (row_state) is listed under that reason, never under a source."""
     o=r.get('origin')
     if o=='pending':return 'pending'
-    if o in ('keep_original','not_display'):return 'keep'
-    # Proven player text inside a mod's program that a CurseForge modpack cannot keep translated.
-    if held_english(r):return 'held'
+    state=row_state(r,curseforge)
+    if state is None:return 'keep'
+    if state=='candidate':return 'context'
+    if state=='unwritable':return 'held'
+    if state=='missing':return 'missing'
+    if state=='unconfirmed':return 'unshown'
     if r.get('kind')=='class_display' and not r.get('supported'):return 'mod_tw'  # already Chinese in the program
-    if not r.get('supported'):return 'context'
-    if still_english(r):return 'missing'
     if o in ('translation_memory','user_glossary','manual'):return 'mine'
     if o=='reference_pack_or_cfpa':return 'tw_ref' if r.get('evidence') in ('reference:tw','reference:para') else 's2t'
     if o in ('existing_zh_tw','instance_resourcepack'):return 'mod_tw'
@@ -1548,6 +1585,16 @@ def row_category(r):
     if o=='ai_translation':return 'ai'
     if o in ('stale_reference','cross_version_reference'):return 'version_ref'
     return 'other'
+
+
+def session_curseforge(session):
+    return is_curseforge(session['instance']) if session.get('instance') else False
+
+
+def categories(session):
+    """row_category of every row of a report, in order."""
+    curseforge=session_curseforge(session)
+    return [row_category(r,curseforge) for r in session.get('rows',[])]
 
 
 def coverage(session, before=False):
@@ -1559,23 +1606,17 @@ def coverage(session, before=False):
     check_shown); rows the scan found in Chinese already count as they are. With before=True it is what the
     game showed when this run scanned it: a line counts when its text on disk (`current`) was Chinese.
     """
-    rows=session.get('rows',[]);curseforge=is_curseforge(session['instance']) if session.get('instance') else False
+    rows=session.get('rows',[]);curseforge=session_curseforge(session)
     c=collections.Counter(done=session.get('already_chinese',0),total=session.get('already_chinese',0))
     for r in rows:
-        if r.get('origin') in ('keep_original','not_display','pending'):continue
-        held=r.get('kind')=='class_display' and not r.get('supported')
-        if not r.get('supported') and not held:
+        state=row_state(r,curseforge)
+        if state is None:continue
+        if state=='candidate':
             c['candidates']+=1;continue
         c['total']+=1
         if before:
             c['done' if r.get('shown_before',HAN.search(r.get('current') or '')) else 'missing']+=1;continue
-        if held and held_english(r):c['unwritable']+=1
-        elif held:c['done']+=1  # the program already shows it in Chinese
-        elif still_english(r):c['missing']+=1
-        elif not r.get('changed') or (r.get('installed') and r.get('shown') is not False):c['done']+=1
-        elif r.get('installed'):c['unconfirmed']+=1  # written, but the game's file does not hold it
-        elif held or write_route(r,curseforge) not in ('pack','file'):c['unwritable']+=1
-        else:c['waiting']+=1
+        c[state]+=1
     c['rate']=(c['done']/c['total']) if c['total'] else None
     return dict(c)
 
@@ -1587,7 +1628,7 @@ def check_shown(instance, rows):
     text from its own file. Program text was already checked by Java and is taken as written.
     Returns how many rows the files do not hold.
     """
-    instance=Path(instance);files={};missing=0
+    instance=Path(instance);files={};missing=0;places=collections.defaultdict(list)
     options=instance/'options.txt'
     pack_on=RESOURCE_PACK_ID in (enabled_packs(options.read_text(encoding='utf-8')) or []) if options.is_file() else False
     pack,_=read_resource_pack(instance)
@@ -1612,22 +1653,30 @@ def check_shown(instance, rows):
                 found.append(isinstance(data,dict) and tooltip_part(data.get(key),part,parts)==r['proposed'])
             r['shown']=any(found);missing+=not r['shown'];continue
         if r.get('kind')=='class_display':r['shown']=True;continue
-        path,entry=target_for(r)
+        path,entry=target_for(r);where=None
         try:
             if write_route(r,False)=='pack':
-                name=pack_resource(entry);data=load(('pack',name),pack.get(name),name) if pack_on else None
+                name=pack_resource(entry);where=('pack',name);data=load(where,pack.get(name),name) if pack_on else None
             elif entry is None:
-                p=contained(instance,path);name=path;data=load(('file',path),p.read_bytes() if p.is_file() else None,path)
+                p=contained(instance,path);name=path;where=('file',path);data=load(where,p.read_bytes() if p.is_file() else None,path)
             else:
-                name=entry.split('!/')[-1];data=load(('archive',path,entry),read_archive_entry(instance,path,entry),name)
+                name=entry.split('!/')[-1];where=('archive',path,entry);data=load(where,read_archive_entry(instance,path,entry),name)
         except (OSError,ValueError,KeyError,zipfile.BadZipFile):data=None
         if isinstance(data,str):text=data
         elif not isinstance(data,dict):text=None
         elif r.get('kind')=='book':text=data if r['key']=='text' else at(data,json.loads(r['key']))
         elif r.get('kind')=='inline_lang':text=at(data,json.loads(r['key'])+['zh_tw'])
         else:text=data.get(r['key'])
-        r['shown']=text==r['proposed']
-        missing+=not r['shown']
+        r['shown']=text==r['proposed'];r.pop('shown_other',None)
+        if where is None:missing+=not r['shown']
+        else:places[(where,r['key'])].append((r,text))
+    for found in places.values():
+        # Two mods can ship the same file (Goety's book pages in two jars); the pack holds one of them and the
+        # game shows that one at this place. The other row is shown in Chinese too, by its twin's wording.
+        if any(r['shown'] for r,_ in found):
+            for r,text in found:
+                if not r['shown'] and isinstance(text,str) and HAN.search(text):r['shown']=True;r['shown_other']=True
+        missing+=sum(not r['shown'] for r,_ in found)
     return missing
 
 
@@ -1660,8 +1709,8 @@ def home_cards(session):
           +(f"；另有 {cov['candidates']:,} 條程式字串無法確認是否顯示，未計入" if cov.get('candidates') else ''))
     parts=[]
     if cov.get('missing'):parts.append(f"{cov['missing']:,} 句找不到中文來源"+('（可勾選 AI 補翻）' if not session.get('ai_translation') else ''))
-    if cov.get('waiting'):parts.append(f"{cov['waiting']:,} 句已翻好、還沒寫入")
-    if cov.get('unwritable'):parts.append(f"{cov['unwritable']:,} 句寫死在模組程式裡，遊戲中是英文（CurseForge 會換回改過的模組，無法寫入）")
+    if cov.get('waiting'):parts.append(f"{cov['waiting']:,} 句已翻好、還沒寫入（列在已翻譯的分類裡）")
+    if cov.get('unwritable'):parts.append(f"{cov['unwritable']:,} 句無法寫入，遊戲中是英文（多半寫在模組程式裡，CurseForge 會換回改過的模組）")
     if cov.get('unconfirmed'):parts.append(f"{cov['unconfirmed']:,} 句寫入後在遊戲檔案裡讀不到")
     left='、'.join(parts) if english else '找得到的玩家文字都已是中文'
     return dict(cards=[(rate_text(cov['rate']),rate),(f'{english:,}',left)],written=written)
@@ -1846,6 +1895,7 @@ def pack_resource(entry):
 
 
 HELD_CURSEFORGE = '是寫在模組程式裡的文字；CurseForge 啟動遊戲時會把改過的模組檔換回原版，寫入也會被洗掉，所以沒有寫入'
+HELD_CURSEFORGE_DATA = '在模組檔裡、不是資源包能覆蓋的語系檔或書本；CurseForge 啟動遊戲時會把改過的模組檔換回原版，寫入也會被洗掉，所以沒有寫入'
 HELD_NESTED = '在內嵌函式庫的資料檔裡，資源包無法覆蓋，也不能安全改寫，所以沒有寫入'
 
 
@@ -1903,7 +1953,7 @@ def write_route(row, curseforge):
     if entry is None or not path.startswith('mods/'):return 'file'
     if row.get('kind')!='class_display' and pack_resource(entry):return 'pack'
     if curseforge and row.get('kind')=='class_display' and row.get('tooltips') and not is_nested(row):return 'pack'
-    if curseforge:return HELD_CURSEFORGE
+    if curseforge:return HELD_CURSEFORGE if row.get('kind')=='class_display' else HELD_CURSEFORGE_DATA
     if is_nested(row):return HELD_NESTED
     return 'file'
 
