@@ -706,6 +706,11 @@ def same_key_groups(rows):
     for r in rows:
         m=re.search(r'assets/([^/]+)/lang/',r.get('source',''))
         if m and r.get('kind')=='language' and r.get('supported'):groups[(m[1],r['key'],english_of(r))].append(r)
+        elif r.get('kind')=='class_display' and r.get('supported'):
+            # A config comment written twice in the mod's program (e.g. client and common config classes)
+            # becomes one '<key>.tooltip' entry: both copies need the same wording to be written at all.
+            jar=r['source'].split('!/')[0]
+            for key,part,parts,_ in r.get('tooltips') or ():groups[(jar,f'{key}#{part}/{parts}',r.get('current'))].append(r)
     return groups
 
 

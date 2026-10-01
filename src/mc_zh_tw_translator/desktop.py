@@ -1478,7 +1478,7 @@ class MainWindow(QMainWindow):
             if mode=='review' and not facts['check'][i]:return False
             if mode=='translated' and facts['category'][i] not in jobs.TRANSLATED_CATEGORIES:return False
             if mode not in ('all','review','translated') and facts['category'][i]!=mode:return False
-            return not query or query in (r['source']+' '+r['key']+' '+str(jobs.original_of(r))+' '+str(r.get('zh_cn') or '')+' '+r['proposed']).casefold()
+            return not query or query in (r['source']+' '+r['key']+' '+str(jobs.original_of(r))+' '+str(r.get('zh_cn') or '')+' '+r['proposed']+' '+str(r.get('issue') or '')).casefold()
         listed=[i for i,r in enumerate(rows) if match(i,r)];pages=max(1,(len(listed)+size-1)//size)
         filtered=[rows[i] for i in listed]
         self.listed_rows=filtered;self.listed_confirmable=sum(facts['confirmable'][i] for i in listed)

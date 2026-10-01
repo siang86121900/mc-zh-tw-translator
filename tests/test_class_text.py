@@ -58,6 +58,22 @@ class ClassTextTests(unittest.TestCase):
         rows[1]['proposed']=rows[0]['proposed']
         self.assertEqual(list(jobs.tooltip_texts(rows).values()),['第一個譯法'])
 
+    def test_same_comment_in_two_classes_gets_one_wording(self):
+        # L_Ender's Cataclysm defines "Range Cap" in two config classes; AI worded the copies differently.
+        tip=[['cataclysm.range_cap.tooltip',0,1,'assets/cataclysm/lang/zh_tw.json']]
+        rows=[dict(source=f'mods/c.jar!/{name}.class',key='9',kind='class_display',current='Range Cap',en=None,
+                   proposed=text,origin='ai_translation',supported=True,changed=True,tooltips=tip)
+              for name,text in (('A','範圍上限'),('B','射程上限'))]
+        rows.append(dict(rows[0],source='mods/c.jar!/C.class',proposed='我確認的說法',origin='manual'))
+        self.assertEqual(jobs.tooltip_texts(rows),{})
+        rows.pop()
+        self.assertEqual(jobs.unify_same_key(rows),1)
+        self.assertEqual({r['proposed'] for r in rows},{'範圍上限'})
+        self.assertEqual(list(jobs.tooltip_texts(rows).values()),['範圍上限'])
+        # What the user confirmed is never replaced: the other copy takes the confirmed wording.
+        rows[1].update(proposed='我確認的說法',origin='manual')
+        self.assertEqual(jobs.unify_same_key(rows),1);self.assertEqual(rows[1]['proposed'],'我確認的說法')
+
     def test_comment_the_screen_shows_from_the_language_file_is_not_counted_twice(self):
         # AppleSkin ships '<key>.tooltip' in its own en_us/zh_tw: the screen shows that, not the class comment.
         with tempfile.TemporaryDirectory() as folder:
