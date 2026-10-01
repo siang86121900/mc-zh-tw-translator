@@ -87,6 +87,32 @@ class AiReviewTests(Base):
         with self.assertRaisesRegex(ai.BridgeError,'沒有需要 AI 核對'):self.review(session)
         self.assertEqual(FakeClient.sent,[])
 
+    def test_ai_answer_gets_taiwan_minecraft_names(self):
+        row=dict(source='mods/a.jar!/assets/a/lang/en_us.json',key='k',current='Netherite Scrap Nugget',en='Netherite Scrap Nugget')
+        self.assertTrue(ai.adopt({},row,'Netherite Scrap Nugget',dict(translation='下界合金碎片粒',note=''),'m',jobs))
+        self.assertEqual(row['proposed'],'獄髓碎片粒');self.assertIn('台灣用語',row['issue'])
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_mainland_minecraft_names_written_earlier_are_corrected_once(self,_):
+        instance=self.pack('舊用語',en={'n':'Nether Portal','e':'Ender Pearl'},cn={'n':'下界传送门','e':'末影珍珠'})
+        session=self.make_plan(instance);rows={r['key']:r for r in session['rows']}
+        self.assertEqual((rows['n']['proposed'],rows['e']['proposed']),('地獄傳送門','終界珍珠'))  # converted with Taiwan's names
+        # What an earlier version wrote, before the Minecraft names were converted.
+        rows['n']['proposed']='下界傳送門';rows['e']['proposed']='末影珍珠'
+        for r in session['rows']:
+            if r['supported'] and r['changed']:r['reviewed']=True
+        apply_session(session,self.home,lambda *_:None)
+        self.assertEqual(self.written(instance)['n'],'下界傳送門')
+        again=self.make_plan(instance);rows={r['key']:r for r in again['rows']}
+        self.assertEqual((rows['n']['proposed'],rows['n']['origin'],rows['n'].get('installed')),('地獄傳送門','same_source_zh_cn',None))
+        self.assertIn('台灣用語',rows['n']['issue']);self.assertTrue(jobs.needs_check(rows['n']))
+        jobs.auto_confirm_safe(again)
+        for r in again['rows']:
+            if r['supported'] and r['changed'] and not r.get('installed'):r['reviewed']=True
+        apply_session(again,self.home,lambda *_:None)
+        self.assertEqual(self.written(instance),{'n':'地獄傳送門','e':'終界珍珠'})
+        self.assertEqual(jobs.applicable_count(self.make_plan(instance)),0)  # corrected once; later runs change nothing
+
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_rewrite_of_applied_text_waits_to_be_applied_again(self,_):
         session=self.make_plan()

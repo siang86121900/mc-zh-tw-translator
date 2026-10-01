@@ -336,6 +336,16 @@ class QualityTests(Base):
         for text in ('略微增加載入時間','請參閱可用的控制代碼','錯誤代碼 404','數據機','大數據分析'):self.assertEqual(jobs.taiwan_wording(text),text)
         self.assertEqual(jobs.taiwan_wording('正在加載數據'),'正在載入資料')
 
+    def test_minecraft_names_use_taiwan_official_wording(self):
+        from mc_zh_tw_translator.desktop_references import to_taiwan
+        cases={'探索所有下界生物群系':'探索所有地獄生態域','用下界合金锭升级':'用獄髓錠升級','末影人':'終界使者','腐化末地':'腐化終界',
+               '恶魂刷怪蛋':'地獄幽靈生怪蛋','潜影盒':'界伏盒','幽匿感测体':'伏聆振測器','监守者':'伏守者','凋灵骷髅':'凋零骷髏'}
+        for cn,tw in cases.items():self.assertEqual(to_taiwan(cn),tw,cn)
+        # Ordinary words, bounds and a mod's own keeper stay as they are.
+        for cn,tw in (('力量','力量'),('橡木楼梯','橡木樓梯'),('中毒','中毒')):self.assertEqual(to_taiwan(cn),tw,cn)
+        self.assertEqual(to_taiwan('数值的上下界'),'數值的上下界');self.assertEqual(to_taiwan('地牢监守者'),'地牢監守者')
+        self.assertEqual(jobs.taiwan_wording('下界合金碎片粒'),'獄髓碎片粒')
+
     def test_travelers_titles_own_commands_are_not_taken_for_a_missing_mod(self):
         self.assertIsNone(jobs.KEY_MOD_REFERENCE.match('travelerstitles.commands.biometitle.invalid'))
         self.assertEqual(jobs.KEY_MOD_REFERENCE.match('travelerstitles.bracken.dormis')[2],'bracken')

@@ -623,7 +623,8 @@ KANA = re.compile('[぀-ヿ]')
 def taiwan_wording(text):
     if not isinstance(text,str) or KANA.search(text):return text
     for pattern,replacement in TW_WORDING:text=pattern.sub(replacement,text)
-    return text
+    from .desktop_references import minecraft_terms
+    return minecraft_terms(text)  # 下界 → 地獄, 末影 → 終界…: Minecraft's own names as Taiwan's official zh_tw has them
 
 
 def report_overview(session):
@@ -1139,6 +1140,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                     value=earlier['text'];origin='ai_translation';extra=dict(ai_reused=True,ai_model=earlier.get('model'))
             # In a CurseForge modpack a changed mod file is replaced by the original when the game starts,
             # so program text there is listed with the reason instead of being translated for nothing.
+            worded=taiwan_wording(value)
+            if origin not in USER_ORIGINS+('keep_original','untranslated') and worded!=value and validate_text(original,worded):
+                # The same Taiwan wording as language files (AI wrote 惡魂 for Ghast); text written earlier is corrected once.
+                value=worded;extra.pop('installed',None);issue=(issue+'；' if issue else '')+'已把大陸用語改為台灣用語，請核對'
             # Config comments that config screens look up in the language files go into the translation pack instead.
             writable=not curseforge or origin in ('keep_original',) or extra.get('installed') or bool(r.get('tooltips'))
             decided.append(dict(slim(r),proposed=value,origin=origin,evidence=r.get('display_use',''),
@@ -1267,6 +1272,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             origin=prior['origin'];evidence=prior['evidence'];issue=prior['issue']
             extra.update(recovered=True,installed=True,unified_from=prior.get('unified_from'),ai_model=prior.get('model'))
             special['recovered']+=1
+            if origin not in USER_ORIGINS and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value)):
+                # Written by an earlier version before a wording rule existed (下界 → 地獄): corrected once and
+                # written again; the corrected text is what later runs find, so they change nothing.
+                value=taiwan_wording(value);extra.pop('installed');issue=(issue+'；' if issue else '')+'已把大陸用語改為台灣用語，請核對'
         elif origin=='existing_zh_tw' and existing is None:
             issue='既有繁中含簡體字，已轉為台灣繁體，請核對'
         elif origin=='existing_zh_tw' and taiwan_wording(value)!=value and validate_text(original,taiwan_wording(value)):

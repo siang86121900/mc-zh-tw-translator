@@ -38,9 +38,38 @@ def fix_slips(text: str) -> str:
     return text
 
 
+# Minecraft's simplified-Chinese names (after character conversion) whose Taiwan official names differ,
+# taken from Mojang's zh_cn and zh_tw of 1.21.1. Only words that mean nothing outside Minecraft are
+# replaced inside sentences; 力量, 橡木, 中毒 and the like are ordinary words and stay. Longer names
+# come first so 下界合金 becomes 獄髓, not 地獄合金.
+MC_TERMS = (
+    ('下界合金', '獄髓'), ('下界疣', '地獄疙瘩'), ('下界岩', '地獄石'), ('下界磚', '地獄磚'), ('下界之星', '地獄之星'),
+    ('下界石英', '地獄石英'), ('下界荒地', '地獄荒原'), ('(?<!上)下界', '地獄'),
+    ('末影人', '終界使者'), ('末影螨', '終界蟎'), ('末影蟎', '終界蟎'), ('末影龍火球', '龍炎彈'), ('末影', '終界'), ('末地', '終界'),
+    ('生物群系', '生態域'),
+    ('失水惡魂', '乾癟幽靈'), ('快樂惡魂', '快樂幽靈'), ('惡魂', '地獄幽靈'),
+    ('潛影貝', '界伏蚌'), ('潛影', '界伏'), ('幻翼膜', '夜魅皮膜'), ('幻翼', '夜魅'),
+    ('殭屍豬靈', '殭屍化豬布林'), ('豬靈', '豬布林'),
+    ('爆裂紫頌果', '爆開的歌萊果'), ('紫頌植株', '歌萊枝'), ('紫頌', '歌萊'),
+    ('幽匿塊', '伏聆'), ('幽匿感測體', '伏聆振測器'), ('幽匿催發體', '伏聆觸媒'), ('幽匿尖嘯體', '伏聆嘯口'), ('幽匿', '伏聆'),
+    ('凋靈', '凋零'), ('烈焰人', '烈焰使者'), ('烈焰棒', '烈焰桿'), ('熒石粉', '螢石粉'), ('熒石', '螢光石'),
+    ('劫掠獸', '劫毀獸'), ('溺屍', '沉屍'), ('刷怪蛋', '生怪蛋'), ('刷怪籠', '生怪磚'),
+)
+MC_TERM = re.compile('|'.join(f'(?P<t{i}>{a})' for i, (a, _) in enumerate(MC_TERMS)))
+# Ordinary words that are Minecraft names only when they are the whole text (a mod's 地牢監守者 stays).
+MC_EXACT = {'監守者': '伏守者', '守衛者': '深海守衛', '遠古守衛者': '遠古深海守衛', '凋靈': '凋零怪', '蠹蟲': '蠹魚'}
+
+
+def minecraft_terms(text: str) -> str:
+    """Minecraft names in Taiwan's official wording (地獄, 終界, 生態域…), in one pass."""
+    if not isinstance(text, str) or not text:return text
+    if text.strip() in MC_EXACT:return text.replace(text.strip(), MC_EXACT[text.strip()])
+    return MC_TERM.sub(lambda m: MC_TERMS[int(m.lastgroup[1:])][1], text)
+
+
 def to_taiwan(text: str) -> str:
     """Simplified Chinese to Taiwan wording, written with the character forms Taiwan uses."""
-    return fix_slips(S2TWP.convert(text).translate(TAIWAN_FORMS))
+    return minecraft_terms(fix_slips(S2TWP.convert(text).translate(TAIWAN_FORMS)))
 
 
 def has_simplified(text: str) -> bool:

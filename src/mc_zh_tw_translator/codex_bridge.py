@@ -721,6 +721,10 @@ def adopt(session, row, original, value, selected_model, jobs, shared=''):
         counts['untranslated'] = max(0, counts.get('untranslated', 0)-1)
         counts['keep_original'] = counts.get('keep_original', 0)+1
         return True
+    worded = jobs.taiwan_wording(text)
+    if worded != text and jobs.validate_text(original, worded):
+        # AI sometimes writes mainland Minecraft names (下界合金); the same Taiwan wording applies to it.
+        text = worded; refit += '已把大陸用語改為台灣用語。'
     row.update(proposed=text, origin='ai_translation', evidence='ChatGPT/Codex: '+selected_model,
                reviewed=False, changed=text != row.get('current'),
                issue='AI 補譯，尚未人工校對。' + refit + shared + value['note'])
