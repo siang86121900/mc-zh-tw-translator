@@ -15,9 +15,9 @@ import time
 import uuid
 import zipfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from full_translation_audit import Audit, parse, placeholders, at
+from full_translation_audit import Audit, parse, placeholders, at, string_literals
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_free
 from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
@@ -968,7 +968,8 @@ def present_mods(z, depth=0):
     return found
 
 
-SCAN_CACHE_VERSION = 'scan-9'
+# scan-10: lone surrogates mended (v0.17.0 left cached errors in place)
+SCAN_CACHE_VERSION = 'scan-10'
 
 
 def scan_cache(home, instance):
@@ -1163,7 +1164,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             shown=pack_text.get((pack_resource(target_for(r)[1]),r['key']),r['current'])
             if shown is not None:r=dict(r,current=shown,own_tw=r['current'])
         # Non-language candidates are retained explicitly rather than reclassifying IDs as text.
-        if r['kind']=='class_display' and curseforge and r.get('tooltip_in_language'):
+        if r['kind']=='class_display' and managed(curseforge,r) and r.get('tooltip_in_language'):
             # The config screen shows the mod's language entry for this comment, which is a row of its own;
             # counting the class copy too would list text the game already shows from the language file.
             counts['tooltip_in_language']+=1;continue
@@ -1171,7 +1172,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             original=r['current'];previous=provenance.lookup(r)
             # Config comments shown through the resource pack leave the class English; what the pack holds tells
             # whether an earlier run already wrote this line.
-            in_pack=curseforge and r.get('tooltips') and not previous and provenance.entries.get(provenance.key(r))
+            in_pack=managed(curseforge,r) and r.get('tooltips') and not previous and provenance.entries.get(provenance.key(r))
             if in_pack and in_pack.get('original')==original and any(
                     tooltip_part(pack_text.get((resource,key)),part,parts)==in_pack.get('text') for key,part,parts,resource in r['tooltips']):
                 previous=in_pack
@@ -1202,12 +1203,28 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 # The same Taiwan wording as language files (AI wrote 惡魂 for Ghast); text written earlier is corrected once.
                 value=worded;extra.pop('installed',None);issue=(issue+'；' if issue else '')+'已把大陸用語改為台灣用語，請核對'
             # Config comments that config screens look up in the language files go into the translation pack instead.
-            writable=not curseforge or origin in ('keep_original',) or extra.get('installed') or bool(r.get('tooltips'))
+            writable=not managed(curseforge,r) or origin in ('keep_original',) or extra.get('installed') or bool(r.get('tooltips'))
             decided.append(dict(slim(r),proposed=value,origin=origin,evidence=r.get('display_use',''),
                                 issue=(r.get('tooltip_note') if not writable else '') or issue or ('等待 AI 補翻（已確認為'+r.get('display_use','玩家文字')+'）' if origin=='untranslated' and writable
                                                 else '寫在模組程式裡的文字：CurseForge 啟動遊戲時會把改過的模組檔換回原版，無法保留翻譯' if not writable else ''),
                                 supported=bool(writable),reviewed=False,changed=value!=original,**extra))
             continue
+        if convertible(r):
+            # Chinese written straight into config and quest files (The Foll's quests): Simplified is converted
+            # to Taiwan wording in the file itself; Traditional is what the game already shows.
+            original=r['current'];previous=provenance.lookup(r)
+            # Text this program wrote is never converted again: a second pass turned 前仆後繼 into 前僕後繼.
+            if has_simplified(original) and not previous:
+                value=taiwan_wording(to_taiwan(original))
+                if validate_text(original,value):
+                    result['rows'].append(dict(slim(r),proposed=value,origin='same_source_zh_cn',evidence='loose_s2t',
+                                               issue='',supported=True,reviewed=False,changed=value!=original))
+                    counts['loose_s2t']+=1;continue
+            else:
+                origin,extra=(previous['origin'],dict(installed=True,recovered=True)) if previous else ('existing_zh_tw',{})
+                result['rows'].append(dict(slim(r),proposed=original,origin=origin,evidence='loose_s2t' if previous else '',
+                                           issue=previous.get('issue','') if previous else '',supported=True,reviewed=False,changed=False,**extra))
+                counts['loose_tw']+=1;continue
         if r['kind'] not in ('language','book','inline_lang'):
             if r['flags']:
                 value=r['current'] or r['en'] or '';hidden=internal_reason(value) or ('只用在錯誤訊息或記錄檔' if r.get('developer_use') else '')
@@ -1670,6 +1687,20 @@ def check_shown(instance, rows):
                 found.append(isinstance(data,dict) and tooltip_part(data.get(key),part,parts)==r['proposed'])
             r['shown']=any(found);missing+=not r['shown'];continue
         if r.get('kind')=='class_display':r['shown']=True;continue
+        if convertible(r):
+            # Config and quest strings converted in place: the string at that place (JSON: any string) now reads so.
+            path=r['source']
+            if ('literals',path) not in files:
+                try:
+                    raw=contained(instance,path).read_bytes()
+                    files[('literals',path)]=list(string_literals(raw.decode('utf-8-sig'),PurePosixPath(path).suffix.casefold()))
+                except (OSError,ValueError,UnicodeError):files[('literals',path)]=[]
+            literals=files[('literals',path)]
+            if re.fullmatch(r'\d+:\d+',r['key']):
+                place=tuple(map(int,r['key'].split(':')))
+                r['shown']=any((n,i)==place and v==r['proposed'] for n,i,v,_,_,_ in literals)
+            else:r['shown']=any(v==r['proposed'] and not is_key for _,_,v,is_key,_,_ in literals)
+            missing+=not r['shown'];continue
         path,entry=target_for(r);where=None
         try:
             if write_route(r,False)=='pack':
@@ -1741,7 +1772,7 @@ def applicable_count(session):
     return sum(bool(r.get('supported') and r.get('changed') and not r.get('installed') and r.get('origin')!='untranslated'
                     and (r.get('reviewed') or row_fits(r))
                     and write_route(r,curseforge) in ('pack','file')
-                    and (not (curseforge and r.get('kind')=='class_display' and r.get('tooltips')) or any(
+                    and (not (managed(curseforge,r) and r.get('kind')=='class_display' and r.get('tooltips')) or any(
                         (r['source'].split('!/')[0],key,resource) in tooltips for key,_,_,resource in r['tooltips'])))
                for r in session.get('rows',[]))
 
@@ -1894,10 +1925,89 @@ def pack_metadata(instance):
     return json.dumps(dict(pack=pack),ensure_ascii=False,indent=2)
 
 
+LOOSE_TEXT_KINDS = ('config','snbt_display_array','script_candidate')
+LOOSE_TEXT_ROOTS = ('config/','defaultconfigs/','kubejs/')
+LOOSE_TEXT_SUFFIXES = ('.json','.snbt','.toml','.txt','.js')
+NOT_THIS_LANGUAGE = {'lang','langs','i18n','locale','locales','.archive-unpack'}
+
+
+def other_language_file(path):
+    """A file holding another language's text (YSM's lang/zh_cn.json, WorldEdit's unpacked zh-CN/strings.json):
+    its Simplified Chinese is that language, not something to convert."""
+    parts=PurePosixPath(path).parts
+    for part in parts[:-1]+(PurePosixPath(path).stem,):
+        if part.casefold() in NOT_THIS_LANGUAGE:return True
+        if re.fullmatch(r'[a-z]{2,3}[_-][a-z]{2,4}',part,re.I) and part.casefold().replace('-','_')!='zh_tw':return True
+    return False
+
+
+def convertible(row):
+    """A string in a config, quest or KubeJS script file (not a key) whose Chinese is converted in place to
+    Taiwan wording. Scripts count only for their Chinese: English in them stays a candidate for checking."""
+    source=row.get('source') or ''
+    return (row.get('kind') in LOOSE_TEXT_KINDS and '!/' not in source and source.startswith(LOOSE_TEXT_ROOTS)
+            and source.endswith(LOOSE_TEXT_SUFFIXES) and not other_language_file(source)
+            and isinstance(row.get('current'),str) and bool(HAN.search(row['current'])))
+
+
+def rewrite_literals(raw, name, rows):
+    """The file with each row's string replaced by its translation; everything else stays byte for byte.
+
+    Rows keyed "line:index" (SNBT, TOML, TXT) name one string; JSON rows (keyed by their path) are found by
+    their text, every non-key occurrence of it. Returns None when a row's string is no longer there.
+    """
+    bom=raw.startswith(b'\xef\xbb\xbf')
+    text=raw[3 if bom else 0:].decode('utf-8')
+    suffix=PurePosixPath(name).suffix.casefold();escaped=suffix in ('.json','.snbt','.json5')
+    by_place={};by_text={};found=set()
+    for r in rows:
+        if re.fullmatch(r'\d+:\d+',r['key']):by_place[tuple(map(int,r['key'].split(':')))]=r
+        else:by_text.setdefault(r['current'],[]).append(r)
+    edits=[]
+    for lineno,i,value,is_key,start,end in string_literals(text,suffix):
+        r=by_place.get((lineno,i))
+        if r is not None and value!=r['current']:return None
+        # The same text twice in a JSON file is two rows with one translation (one per place in the file).
+        same=[r] if r is not None else by_text.get(value,[]) if not is_key else []
+        if not same:continue
+        r=same[0];literal=text[start:end]
+        new=(json.dumps(r['proposed'],ensure_ascii=literal.isascii()) if escaped else literal[0]+r['proposed']+literal[-1])
+        edits.append((start,end,new));found.update(id(x) for x in same)
+    if len(found)<len(rows):return None
+    for start,end,new in sorted(edits,reverse=True):text=text[:start]+new+text[end:]
+    return (b'\xef\xbb\xbf' if bom else b'')+text.encode('utf-8')
+
+
+class CurseForgeFiles(frozenset):
+    """The mod files CurseForge installed in an instance (lower-case names); always true as a flag."""
+    def __bool__(self):return True
+
+
 def is_curseforge(instance):
     """CurseForge re-downloads every mod file it finds changed when the game starts, so text written
-    into mod files there is lost; minecraftinstance.json marks an instance it manages."""
-    return (Path(instance)/'minecraftinstance.json').is_file()
+    into mod files there is lost; minecraftinstance.json marks an instance it manages.
+
+    It can only put back files it installed itself (installedAddons): a jar the player added by hand has
+    no download to restore (The Foll: ageofmythology, torchesbecomesunlight). Returns False, True when the
+    record cannot be read (every file is then treated as CurseForge's), or the names of its files.
+    """
+    record=Path(instance)/'minecraftinstance.json'
+    if not record.is_file():return False
+    try:
+        data=json.loads(record.read_text(encoding='utf-8-sig'))
+        names=set()
+        for addon in data['installedAddons']:
+            f=addon.get('installedFile') or {}
+            names|={str(f[k]).casefold() for k in ('fileName','fileNameOnDisk') if f.get(k)}
+        return CurseForgeFiles(names)
+    except (OSError,ValueError,KeyError,TypeError,AttributeError):return True
+
+
+def managed(curseforge, row):
+    """Whether CurseForge would put back the mod file this row is written into (see is_curseforge)."""
+    if not curseforge or curseforge is True:return bool(curseforge)
+    path=target_for(row)[0] or ''
+    return not path.startswith('mods/') or Path(path.split('!/')[0]).name.casefold() in curseforge
 
 
 def pack_resource(entry):
@@ -1969,6 +2079,7 @@ def write_route(row, curseforge):
     path,entry=target_for(row)
     if entry is None or not path.startswith('mods/'):return 'file'
     if row.get('kind')!='class_display' and pack_resource(entry):return 'pack'
+    curseforge=managed(curseforge,row)
     if curseforge and row.get('kind')=='class_display' and row.get('tooltips') and not is_nested(row):return 'pack'
     if curseforge:return HELD_CURSEFORGE if row.get('kind')=='class_display' else HELD_CURSEFORGE_DATA
     if is_nested(row):return HELD_NESTED
@@ -2088,6 +2199,43 @@ def enabled_packs(text):
     return packs if isinstance(packs,list) and all(isinstance(p,str) for p in packs) else None
 
 
+PACK_ID = re.compile(r'(?!openloader/)[a-z0-9_.\-]+[:/][a-z0-9_.\-/]+')
+
+
+def game_added_packs(instance):
+    """Resource packs the game enables on its own, which it puts above every pack options.txt names.
+
+    OpenLoader 19 (Forge 1.20.1) enables everything in config/openloader/resources as "resources/<name>".
+    Other mods' packs (Fragmentum's "generated/fragmentum_layer") are read from the game's last log: the ids
+    it loaded above every pack the list named. Ids the log could not spell (Windows writes it in the system
+    code page, so Simplified Chinese names come out as ?) are left out.
+    """
+    instance=Path(instance);found=[]
+    folder=instance/'config/openloader/resources'
+    try:
+        enabled=json.loads((instance/'config/openloader/advanced_options.json').read_text(encoding='utf-8-sig')).get('resourcePacks',{}).get('enabled',True) is not False
+    except (OSError,ValueError,AttributeError):enabled=True
+    if enabled and folder.is_dir() and any(p.name.casefold().startswith('openloader') for p in (instance/'mods').glob('*.jar')):
+        found+=[f'resources/{p.name}' for p in sorted(folder.iterdir(),key=lambda p:p.name.casefold())
+                if p.is_dir() or p.suffix.casefold()=='.zip']
+    try:raw=(instance/'logs/latest.log').read_bytes()[-4*1024*1024:]
+    except OSError:raw=b''
+    lines=[l for l in raw.split(b'\n') if b'Reloading ResourceManager: ' in l]
+    if lines:
+        text=lines[-1].split(b'Reloading ResourceManager: ',1)[1].rstrip(b'\r')
+        try:loaded=text.decode('utf-8').split(', ')
+        except UnicodeDecodeError:loaded=text.decode('utf-8','replace').split(', ')
+        try:listed=enabled_packs((instance/'options.txt').read_text(encoding='utf-8')) or []
+        except OSError:listed=[]
+        named=set(listed)-set(found)
+        last=max((i for i,p in enumerate(loaded) if p in named),default=None)
+        if last is not None:
+            # Only plain ids: KubeJS's built-in packs log a display name with commas and stay where they are,
+            # and NeoForge OpenLoader logs a full path.
+            found+=[p for p in loaded[last+1:] if p not in named and p not in found and PACK_ID.fullmatch(p)]
+    return found
+
+
 def options_record(instance, staged, set_language=False, enable_pack=False):
     """Stage options.txt so the game opens in Traditional Chinese (when asked) and uses the translation
     resource pack, placed last so it is above every other pack. None when nothing needs to change."""
@@ -2103,6 +2251,9 @@ def options_record(instance, staged, set_language=False, enable_pack=False):
         # them, above this pack, so a mod's own zh_tw that is still English (Explorer's Compass) would win.
         # Naming it keeps it below; the game drops the name where no such pack exists (Fabric).
         if MOD_RESOURCES not in packs:packs.append(MOD_RESOURCES)
+        # Same for packs the game turns on by itself (OpenLoader's folder, packs a mod generates): when the
+        # list does not name them they go on top of it, above this pack (seen in The Foll: a dog zh_tw won).
+        packs+=[p for p in game_added_packs(instance) if p not in packs]
         packs.append(RESOURCE_PACK_ID)
         new=with_option(new,'resourcePacks',json.dumps(packs,ensure_ascii=False,separators=(',',':')))
     if new==text:return None
@@ -2233,8 +2384,12 @@ def stage_and_apply(session, home, notify, work):
                 raw=(z.read(entry) if z and entry in z.namelist() else dst.read_bytes() if merged
                      else src.read_bytes() if not z and src.exists() else None)
                 name=entry or path
-                is_text=rows[0]['kind']=='book' and rows[0]['key']=='text'
-                if rows[0]['kind']=='class_display':
+                # Strings converted in place are written last, onto whatever the other rows made of the file.
+                literal_rows=[r for r in rows if convertible(r)];rows=[r for r in rows if not convertible(r)]
+                is_text=bool(rows) and rows[0]['kind']=='book' and rows[0]['key']=='text'
+                if not rows:
+                    content=raw
+                elif rows[0]['kind']=='class_display':
                     from .class_text import rewrite
                     content=rewrite(raw,rows)
                     changed_classes.append(content)
@@ -2276,6 +2431,10 @@ def stage_and_apply(session, home, notify, work):
                             node[keys[-1]]=r['proposed']
                     content=(quest_content(instance,name,raw,data) if name.endswith('.snbt')
                              else json.dumps(data,ensure_ascii=False,indent=2) if name.endswith('.json') else '\n'.join(f'{k}={v}' for k,v in data.items())+'\n').encode('utf-8')
+                if literal_rows:
+                    # Line-keyed strings are only ever alone in their file (SNBT/TOML/TXT have no other writer here).
+                    content=rewrite_literals(content,name,literal_rows) if content else None
+                    if content is None:raise changed_since_scan(home,instance,path)
                 modified[entry]=content
             dst.parent.mkdir(parents=True,exist_ok=True)
             if z:rewrite_archive(z,dst,modified,path)

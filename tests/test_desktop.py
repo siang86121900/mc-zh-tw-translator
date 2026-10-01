@@ -268,6 +268,31 @@ class WorkflowTests(unittest.TestCase):
         (self.instance/'options.txt').write_text('resourcePacks:[broken\n',encoding='utf-8')
         with self.assertRaises(ValueError):options_record(self.instance,staged,False,True)
 
+    def test_packs_the_game_turns_on_itself_go_below_the_translation(self):
+        from mc_zh_tw_translator.desktop_jobs import options_record
+        # The Foll: OpenLoader 19 and Fragmentum put their packs above the list when it does not name them
+        (self.instance/'mods').mkdir();(self.instance/'mods/OpenLoader-Forge-1.20.1-19.0.4.jar').write_bytes(b'')
+        (self.instance/'config/openloader/resources').mkdir(parents=True)
+        for name in ('早早汉化补充包.zip','dog-compat.zip','notes.txt'):(self.instance/'config/openloader/resources'/name).write_bytes(b'')
+        (self.instance/'logs').mkdir()
+        loaded=['vanilla','mod_resources','KubeJS Resource Pack [assets]','file/old.zip','file/MCTranslator-zh_tw.zip',
+                'generated/fragmentum_layer','resources/dog-compat.zip','resources/??汉化补充包.zip','KubeJS Virtual Resource Pack [Last, assets]']
+        (self.instance/'logs/latest.log').write_bytes(('[15:34:27] [Render thread/INFO]: Reloading ResourceManager: '+', '.join(loaded)+'\r\n').encode('cp950','replace'))
+        (self.instance/'options.txt').write_text('resourcePacks:["vanilla","mod_resources","file/old.zip","file/MCTranslator-zh_tw.zip"]\n',encoding='utf-8')
+        staged=Path(self.temp.name)/'staged';staged.mkdir()
+        options_record(self.instance,staged,False,True)
+        self.assertEqual((staged/'options.txt').read_text(encoding='utf-8'),
+                         'resourcePacks:["vanilla","mod_resources","file/old.zip","resources/dog-compat.zip","resources/早早汉化补充包.zip",'
+                         '"generated/fragmentum_layer","file/MCTranslator-zh_tw.zip"]\n')
+        # once the list names them (the player moved the pack up), nothing changes
+        (self.instance/'options.txt').write_text((staged/'options.txt').read_text(encoding='utf-8'),encoding='utf-8')
+        self.assertIsNone(options_record(self.instance,staged,False,True))
+        # OpenLoader switched off for resource packs: its folder is not a pack source (the log alone still counts)
+        (self.instance/'config/openloader/advanced_options.json').write_text('{"resourcePacks":{"enabled":false}}',encoding='utf-8')
+        (self.instance/'options.txt').write_text('resourcePacks:["vanilla","mod_resources","file/old.zip"]\n',encoding='utf-8')
+        options_record(self.instance,staged,False,True)
+        self.assertNotIn('早早',(staged/'options.txt').read_text(encoding='utf-8'))
+
     def test_program_text_is_not_written_where_curseforge_puts_mods_back(self):
         from mc_zh_tw_translator.desktop_jobs import write_route, HELD_CURSEFORGE, pack_format
         cls=dict(source='mods/a.jar!/a/B.class',key='3',kind='class_display')
@@ -276,6 +301,66 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([write_route(r,True) for r in (cls,lang,loose)],[HELD_CURSEFORGE,'pack','file'])
         self.assertEqual(write_route(cls,False),'file')
         self.assertEqual((pack_format('1.20.1'),pack_format('1.21.1'),pack_format('1.12.2'),pack_format('')),(15,34,3,34))
+
+    def test_curseforge_only_puts_back_the_mod_files_it_installed(self):
+        from mc_zh_tw_translator.desktop_jobs import write_route, is_curseforge, HELD_CURSEFORGE
+        self.assertIs(is_curseforge(self.instance),False)
+        # The Foll: a profile made in CurseForge, with mods the player added by hand
+        (self.instance/'minecraftinstance.json').write_text(json.dumps({'installedAddons':[
+            {'installedFile':{'fileName':'goety-2.5.jar','fileNameOnDisk':'goety-2.5.jar'}}]}),encoding='utf-8')
+        cf=is_curseforge(self.instance);self.assertTrue(cf)
+        tracked=dict(source='mods/goety-2.5.jar!/a/B.class',key='3',kind='class_display')
+        by_hand=dict(source='mods/ageofmythology-0.3.0-all.jar!/a/B.class',key='3',kind='class_display')
+        self.assertEqual((write_route(tracked,cf),write_route(by_hand,cf)),(HELD_CURSEFORGE,'file'))
+        (self.instance/'minecraftinstance.json').write_text('{broken',encoding='utf-8')
+        self.assertEqual(write_route(by_hand,is_curseforge(self.instance)),HELD_CURSEFORGE)  # unreadable: hold every file
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_simplified_chinese_in_quest_and_config_files_becomes_taiwan_wording(self,_):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        chapters=self.instance/'config/ftbquests/quests/chapters';chapters.mkdir(parents=True)
+        quest=('{\n\tid: "0EE944EA56F99BC9"\n\ttitle: "第二章：乌鸦"\n\tquests: [{\n\t\tdescription: [\n'
+               '\t\t\t"&a2.1章节&r的任务可以&a同时进行&r。"\n\t\t\t""\n\t\t\t"{image:a.png}"\n\t\t]\n'
+               '\t\tsubtitle: "击杀巫法系生物"\n\t\ttitle: "吸引无数人前仆后继，也让巨龙成长"\n\t\ttasks: [{ id: "1", item: "minecraft:stone", count: 64L }]\n\t}]\n}\n')
+        (chapters/'0EE944EA56F99BC9.snbt').write_text(quest,encoding='utf-8')
+        backup=self.instance/'config/ftbquests/quests-backup/chapters';backup.mkdir(parents=True)
+        (backup/'0EE944EA56F99BC9.snbt').write_text(quest,encoding='utf-8')  # never read by the game
+        cfg=self.instance/'config/aom';cfg.mkdir(parents=True)
+        (cfg/'events.json').write_text('{\n  "_comment": ["修改后需要重启游戏"],\n  "names": {"乌鸦": "乌鸦之王"},\n  "title": "乌鸦之王",\n  "id": "aom:crow"\n}\n',encoding='utf-8')
+        scripts=self.instance/'kubejs/client_scripts';scripts.mkdir(parents=True)
+        script="ItemEvents.tooltip(e => {\n  // 注释\n  e.add('aom:crow', Text.of('乌鸦的羽毛'))\n  let names = { '乌鸦': 1 }\n  e.add('aom:x', ok ? '开启' : '关闭')\n})\n"
+        (scripts/'tips.js').write_text(script,encoding='utf-8')
+        (cfg/'client.toml').write_text('# 注释：不用改\ntitle = "显示设置"\nid = \'aom:x\'\n',encoding='utf-8')
+        (self.instance/'config/ysm/lang').mkdir(parents=True)
+        (self.instance/'config/ysm/lang/zh_cn.json').write_text('{"tips": "为你而生"}',encoding='utf-8')  # that language's own file
+        before={p:p.read_bytes() for p in (chapters/'0EE944EA56F99BC9.snbt',cfg/'events.json',cfg/'client.toml',scripts/'tips.js')}
+        result=self.make_plan()
+        rows=[r for r in result['rows'] if r['source'].startswith('config/')]
+        self.assertFalse([r for r in rows if 'quests-backup' in r['source'] or 'ysm/lang' in r['source']])
+        self.assertFalse([r for r in rows if not jobs.convertible(r) and jobs.row_state(r)=='candidate' and jobs.HAN.search(r['current'] or '')])
+        jobs.auto_confirm_safe(result)
+        done=apply_session(result,self.home,lambda *_:None)
+        text=(chapters/'0EE944EA56F99BC9.snbt').read_text(encoding='utf-8')
+        self.assertEqual(text,quest.replace('乌鸦','烏鴉').replace('章节','章節').replace('任务','任務').replace('同时进行','同時進行')
+                         .replace('击杀巫法系生物','擊殺巫法系生物').replace('吸引无数人前仆后继，也让巨龙成长','吸引無數人前仆後繼，也讓巨龍成長'))
+        # only the strings changed; layout, numbers and codes kept
+        self.assertEqual((cfg/'events.json').read_text(encoding='utf-8'),
+                         '{\n  "_comment": ["修改後需要重啟遊戲"],\n  "names": {"乌鸦": "烏鴉之王"},\n  "title": "烏鴉之王",\n  "id": "aom:crow"\n}\n')  # keys stay
+        self.assertEqual((scripts/'tips.js').read_text(encoding='utf-8'),
+                         script.replace("'乌鸦的羽毛'","'烏鴉的羽毛'").replace("'开启'","'開啟'").replace("'关闭'","'關閉'"))  # the object key stays
+        self.assertEqual((cfg/'client.toml').read_text(encoding='utf-8'),'# 注释：不用改\ntitle = "顯示設定"\nid = \'aom:x\'\n')
+        self.assertEqual((backup/'0EE944EA56F99BC9.snbt').read_text(encoding='utf-8'),quest)
+        self.assertEqual((self.instance/'config/ysm/lang/zh_cn.json').read_text(encoding='utf-8'),'{"tips": "为你而生"}')
+        applied=[r for r in done['rows'] if jobs.convertible(r) and r.get('installed')]
+        self.assertTrue(applied and all(r['shown'] for r in applied),[(r['key'],r.get('shown')) for r in applied])
+        # a second run writes nothing and keeps the label
+        again=self.make_plan()
+        loose=[r for r in again['rows'] if jobs.convertible(r)]
+        self.assertFalse([r for r in loose if r['changed']])
+        self.assertTrue(all(r['origin']=='same_source_zh_cn' and r.get('installed') for r in loose),[(r['key'],r['origin']) for r in loose])
+        self.assertTrue(all(jobs.row_state(r)=='done' for r in loose))
+        restore_backup(Path(done['backup']),self.instance)
+        self.assertEqual({p:p.read_bytes() for p in before},before)
 
     def test_scan_cache_reuses_unchanged_archives(self):
         from mc_zh_tw_translator import desktop_jobs as jobs

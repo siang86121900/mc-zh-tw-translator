@@ -79,12 +79,13 @@
 - 模組特殊案例與硬編碼文字處理前讀取 docs/translation-reference.md 對應段落，不任意修改程式邏輯或 bytecode。
 - 設定說明、提示與玩家可見句子也是翻譯範圍，不能只因文字存在 class 裡就全部排除 AI。先追查全部使用位置；確認僅用於 Forge／NeoForge 設定 comment 或直接顯示呼叫的文字，納入一般 AI 同意、補翻、格式與數值檢查、備份及套用流程。句子看起來像人話不構成寫入證據；兼用於設定鍵、比較、公開常數或尚未支援的動態組句，明列未送 AI 的具體原因。
 - 硬編碼文字改寫僅改已證明用途的字串常數，保留 Modified UTF-8、控制字元、常數索引與其餘 class 位元組；套用前重新驗證用途、原文、Java class 解析及 ZipFS。這類文字只能改寫原模組，不能假稱加語系檔即可生效；不匯出到翻譯分享補丁。重跑須保留原文與 AI 來源並認出已套用。
-- CurseForge 管理的整合包（有 minecraftinstance.json）啟動遊戲時會把改過的模組檔從官方重新下載蓋回，所以那裡不寫入 class 文字、也不送 AI 補翻，報告寫明原因；其他啟動器才改寫模組。
+- CurseForge 管理的整合包（有 minecraftinstance.json）啟動遊戲時會把它自己裝的模組檔（installedAddons 列出的）從官方重新下載蓋回，所以這些模組不寫入 class 文字、也不送 AI 補翻，報告寫明原因；玩家自己放進 mods 的模組 CurseForge 沒有下載來源、蓋不回去，照其他啟動器的方式改寫（desktop_jobs.is_curseforge／managed）。紀錄讀不懂時全部當成 CurseForge 的。
 - 例外：設定畫面會先查語系檔的設定說明（NeoForge ConfigurationScreen 與 Configured 查「語系鍵.tooltip」，查不到才顯示 comment）。CurseForge 整合包裡，能從 class 證明語系鍵的 comment（Builder.translation 的常數；或模組引用 ConfigurationScreen、檔案只宣告一個 modId 時的「modId.configuration.設定名稱」）寫進翻譯資源包的 assets/<modId>/lang/zh_tw.json，照常送 AI 與檢查；多行 comment 全部翻好才寫；同一模組檔、同一語系鍵、同一英文的多份 comment 經 unify_same_key 統一譯文；模組語系檔已有該鍵的 comment 不另列入計數。ForgeConfigScreens 不查語系檔、Configured 不查預設鍵，這些仍保留原因。查證依據記在 docs/translation-reference.md。
 
 ## 掃描範圍與增量處理
 - 整包掃描目標包括 mods、kubejs、config／defaultconfigs、resourcepacks、datapacks、任務、Patchouli／外部書本及其他玩家文字，不只處理 mods。
 - 同一段文字並列多種語言的格式（{"en_us": …, "zh_cn": …}，例如 Ponderer 的 config/ponderer/scripts）：在同一段加上 zh_tw，不改其他語言。英文可能被整合包作者截斷未寫完，有完整的簡中時照一般順序先用簡中轉台灣用語，英文只作比對。寫入前必須先在模組程式裡確認它會依遊戲語言讀 zh_tw（記在 desktop_jobs.INLINE_ZH_TW 並註明依據）；未確認的格式不寫入、不算進完成率，報告寫明「還沒確認這個模組會讀繁中」。
+- 設定檔與任務檔裡直接寫的中文（config、defaultconfigs、kubejs 的 json／snbt／toml／txt 字串值與 KubeJS 腳本 .js 的字串，例如 FTB Quests 1.20.1 寫在 chapters 裡的任務文字、Text.of('…')）：簡體一律在原檔轉成台灣用語，只改那個字串、其餘位元組不動（desktop_jobs.convertible／rewrite_literals）；鍵名（腳本裡只有開頭、{ 或逗號後接冒號的才算鍵名，三元運算的文字照轉）、註解行、其他語言的檔案（lang 資料夾、zh_cn 等語言代碼命名）與遊戲不讀的 quests-backup 不改。英文仍列待查。
 - FTB Quests 的任務文字在 config/ftbquests/quests/lang/<語言>.snbt（mc_zh_tw_translator.quest_lang），當成語系檔處理：說明清單逐行成為一筆，簡中清單行數和英文不同時不逐行對應；寫出 zh_tw.snbt 時沿用英文檔的排版，圖片與換頁行原樣保留，英文檔不修改。
 - 新增支援的格式前，用真實整合包列出「有玩家文字卻沒產生任何一筆」的檔案，確認新格式涵蓋它們；參考其他翻譯工具的支援範圍時只讀其內容，不執行不明程式。
 - 附帶語言包裡未安裝模組的文字略過。判定已安裝要有模組本身（宣告的 modId）、它的語系檔或世界生成資料；其他模組附的相容材質、配方不算。

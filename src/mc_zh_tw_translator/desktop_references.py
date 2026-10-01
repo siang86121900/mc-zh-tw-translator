@@ -19,7 +19,7 @@ TAIWAN_FORMS = str.maketrans({'臺':'台','巖':'岩','牀':'床','羣':'群','�
 S2TWP = OpenCC('s2twp')
 S2T = OpenCC('s2t')
 # Correct Traditional Chinese words that a character-by-character conversion would take for simplified.
-KEPT_WORDS = re.compile('干擾|干涉|干預|若干|相干|皇后|王后|天后|太后|后羿|拮据')
+KEPT_WORDS = re.compile('干擾|干涉|干預|若干|相干|皇后|王后|天后|太后|后羿|拮据|前仆後繼|仆倒')
 # Simplified forms that Big5 also holds as old or rare characters (云 for 說, 后 for queen…) but that in
 # today's Taiwan text are simplified. 伙, 准, 凶, 划, 占, 斗, 皂, 栗, 里 and the like are ordinary Taiwan
 # characters and are not listed.

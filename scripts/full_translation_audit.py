@@ -56,6 +56,33 @@ def parse(b):
 
 LONE_SURROGATE=re.compile('[\ud800-\udfff]')
 
+# Text files where a string is written in quotes: JSON and SNBT take JSON escapes, TOML/TXT lines are kept raw.
+QUOTED=re.compile(r'"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27')
+DOUBLE_QUOTED=re.compile(r'"(?:\\.|[^"\\])*"')
+
+def string_literals(text,suffix):
+    """(line number, index on the line, value, is_key, start, end) of every quoted string, one line at a time.
+
+    The scan, the writer and the read-back check all locate config and quest text with this, so a row's
+    "line:index" key names the same string in all three. Keys (followed by : or =) are marked; comment lines
+    are skipped. JSON/SNBT values are unescaped; TOML/TXT values are the raw text between the quotes, as the
+    scan has always recorded them.
+    """
+    escaped=suffix in ('.json','.snbt','.json5');pattern=DOUBLE_QUOTED if escaped else QUOTED;offset=0
+    for lineno,line in enumerate(text.splitlines(True),1):
+        if not line.lstrip().startswith(('//','#')):
+            for i,m in enumerate(pattern.finditer(line)):
+                literal=m[0]
+                if escaped:
+                    try:value=json.loads(literal,strict=False)
+                    except ValueError:continue
+                else:value=literal[1:-1]
+                is_key=line[m.end():].lstrip().startswith((':','='))
+                # In a script, cond ? '是' : '否' is text; a key starts the line or follows { or ,
+                if is_key and suffix=='.js':is_key=line[:m.start()].rstrip()[-1:] in ('','{',',')
+                yield lineno,i,value,is_key,offset+m.start(),offset+m.end()
+        offset+=len(line)
+
 def mend_surrogates(value):
     """Half of an emoji written wrongly as \\uXXXX (seen: TravelOptics zh_cn "\\uD810E\\uDD87") cannot be saved
     as text, and failed the whole file. It becomes U+FFFD, which the format checks already refuse, so that one
@@ -73,6 +100,7 @@ def leaves(value,path=(),field=''):
     elif isinstance(value,str):yield path,field,value
 
 LOCALE=re.compile(r'[a-z]{2,3}_[a-z]{2,3}$')
+NOT_READ=('config/ftbquests/quests-backup/',)
 CONFIG_SCREEN=b'net/neoforged/neoforge/client/gui/ConfigurationScreen'
 LANG_KEY=re.compile(r'[A-Za-z0-9_.\-]+$')
 NAMESPACE=re.compile(r'[a-z0-9_.\-]+$')
@@ -294,6 +322,10 @@ class Audit:
         for folder in ('kubejs','config','defaultconfigs','patchouli_books','datapacks','resourcepacks','vaultpatcher','hotai','immersive_furniture'):
             paths.extend(p for p in (root/folder).rglob('*') if p.is_file() and p.suffix not in ('.zip','.jar'))
         paths.extend(p for p in (root/'saves').rglob('*') if p.is_file() and 'ftbquests' in str(p).lower())
+        # A copy of the quests some modpacks keep beside them (The Foll): FTB Quests never reads it.
+        unread=[p for p in paths if p.relative_to(root).as_posix().startswith(NOT_READ)]
+        self.counts['not_read_by_game']+=len(unread)
+        if unread:paths=[p for p in paths if p not in set(unread)]
         names={p.relative_to(root).as_posix():p for p in paths}
         self.collection('instance',set(names),lambda n:names[n].read_bytes())
         for n,p in names.items():
@@ -317,9 +349,20 @@ class Audit:
             try:
                 raw=decode(p.read_bytes())
                 if p.suffix=='.snbt':
+                    # FTB Quests 1.20.1 and other SNBT files hold their text inline: every Chinese string that is
+                    # not a key (titles, subtitles, descriptions) is a row of its own, keyed by line.
+                    lines=raw.splitlines()
+                    for lineno,i,value,is_key,_,_ in string_literals(raw,'.snbt'):
+                        if is_key:continue
+                        # English is listed where the line names it as display text (title: "..."); array lines are below.
+                        line=lines[lineno-1]
+                        if HAN.search(value) or (LATIN.search(value) and re.search(r'\b(title|subtitle|text|Name)\b',line)
+                                                 and not re.search(r'\b(?:description|Lore):\s*\[',line)):
+                            self.add(n,f'{lineno}:{i}',None,value,kind='snbt_display_array')
                     for m in re.finditer(r'\b(?:description|Lore):\s*\[(?:"(?:\\.|[^"\\])*"|[^"\]])*\]',raw):
                         for i,s in enumerate(re.finditer(r'"(?:\\.|[^"\\])*"',m[0])):
-                            self.add(n,f'array@{m.start()}:{i}',None,json.loads(s[0]),kind='snbt_display_array')
+                            value=json.loads(s[0])
+                            if not HAN.search(value):self.add(n,f'array@{m.start()}:{i}',None,value,kind='snbt_display_array')
                 if p.suffix=='.json':
                     if not raw.strip():
                         self.counts['empty_config_files']+=1;continue
@@ -331,14 +374,14 @@ class Audit:
                     for path,field,value in leaves(data):
                         if tuple(path[:-1]) in inline:continue
                         if field in DISPLAY or HAN.search(value):self.add(n,json.dumps(path),None,value,kind='config')
-                else:
-                    for lineno,line in enumerate(raw.splitlines(),1):
-                        if line.lstrip().startswith(('//','#')):continue
-                        for i,m in enumerate(re.finditer(r'"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27',line)):
-                            value=m[0][1:-1]
-                            visible=HAN.search(value) or re.search(r'\b(title|subtitle|description|Text\.of|text\.add|tooltip|displayName|label|message)\b',line)
-                            if visible and (HAN.search(value) or LATIN.search(value)):
-                                self.add(n,f'{lineno}:{i}',None,value,kind='script_candidate' if p.suffix=='.js' else 'config')
+                elif p.suffix!='.snbt':  # SNBT text is read above
+                    lines=raw.splitlines()
+                    for lineno,i,value,is_key,_,_ in string_literals(raw,p.suffix):
+                        if is_key:continue  # a setting's or an object's name, not text
+                        line=lines[lineno-1]
+                        visible=HAN.search(value) or re.search(r'\b(title|subtitle|description|Text\.of|text\.add|tooltip|displayName|label|message)\b',line)
+                        if visible and (HAN.search(value) or LATIN.search(value)):
+                            self.add(n,f'{lineno}:{i}',None,value,kind='script_candidate' if p.suffix=='.js' else 'config')
             except Exception as e:self.errors.append([n,str(e)])
     def finish(self,details='full',quiet=False):
         # details: 'full' writes plain lists (command-line audits); 'compressed' writes the two lists the

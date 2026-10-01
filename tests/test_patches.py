@@ -160,7 +160,7 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(patches.memory_advice(0,16384),{})
         roomy=patches.memory_advice(12128,32768)
         self.assertIn('約 12 GB',roomy['line']);self.assertEqual((roomy['warning'],roomy['now']),('',''))
-        self.assertIn('Profile Options',roomy['steps']);self.assertIn('Recommended by Author',roomy['steps']);self.assertIn('不會修改',roomy['steps'])
+        self.assertIn('設定檔選項（Profile Options）',roomy['steps']);self.assertIn('作者推薦（Recommended by Author）',roomy['steps']);self.assertIn('不會修改',roomy['steps'])
         self.assertIn('剩下不多',patches.memory_advice(12128,16384)['warning'])  # over 3/4 of the computer, as CurseForge warns
         self.assertIn('可能開不起來',patches.memory_advice(12128,8192)['warning'])
         self.assertEqual(patches.memory_advice(12128,0)['warning'],'')  # unknown total: no guess

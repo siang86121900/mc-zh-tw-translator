@@ -295,7 +295,7 @@ class QualityTests(Base):
         rows=self.rows()
         for key in ('a','b','c'):self.assertNotIn(key,rows,key)  # correct zh_tw is left as it is
         self.assertEqual((rows['d']['origin'],rows['d']['proposed']),('same_source_zh_cn','設定'))
-        for text in ('工作台','岩漿塊','這裡的床鋪','群系','山峰','干擾'):self.assertFalse(references.has_simplified(text),text)
+        for text in ('工作台','岩漿塊','這裡的床鋪','群系','山峰','干擾','前仆後繼'):self.assertFalse(references.has_simplified(text),text)
         for text in ('设置','游戏','云杉木','干草块'):self.assertTrue(references.has_simplified(text),text)
 
     def test_converted_text_uses_the_forms_of_official_traditional_chinese(self):

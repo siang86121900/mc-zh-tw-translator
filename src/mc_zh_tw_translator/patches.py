@@ -140,10 +140,11 @@ def memory_advice(recommended: int, total: int = 0, record: dict | None = None) 
     except (TypeError,ValueError):current=0
     now=(f'這個整合包目前在 CurseForge 設定為 {gb(current)} GB'+('，比建議少。' if current<recommended-256 else '。')
          if current else '')
-    steps=('調整方式（CurseForge 的選項是英文）：\n'
-           '1. 在 CurseForge 的「My Modpacks」對這個整合包按右鍵，選「Profile Options」。\n'
-           '2. 找到「Memory Settings」，選「Recommended by Author」（照整合包作者的建議）；'
-           f'或選「Custom RAM Allocation」，把記憶體拉到約 {gb(recommended)} GB。\n'
+    # CurseForge's Traditional Chinese wording first, its English in brackets for an English CurseForge.
+    steps=('調整方式：\n'
+           '1. 在 CurseForge 的「我的模組包（My Modpacks）」對這個整合包按右鍵，選「設定檔選項（Profile Options）」。\n'
+           '2. 找到「記憶體設定（Memory Settings）」，選「作者推薦（Recommended by Author）」，就會照整合包作者的建議；'
+           f'或選「自訂記憶體分配（Custom RAM Allocation）」，把記憶體拉到約 {gb(recommended)} GB。\n'
            '3. 關掉視窗後重新開遊戲就會生效。\n\n'
            '本程式不會修改 CurseForge 的設定，需要你自己調整。')
     return dict(line=line,warning=warning,now=now,steps=steps)
