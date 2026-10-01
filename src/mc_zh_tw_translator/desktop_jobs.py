@@ -909,7 +909,7 @@ def present_mods(z, depth=0):
     return found
 
 
-SCAN_CACHE_VERSION = 'scan-7'
+SCAN_CACHE_VERSION = 'scan-8'
 
 
 def scan_cache(home, instance):
@@ -1098,6 +1098,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             shown=pack_text.get((pack_resource(target_for(r)[1]),r['key']),r['current'])
             if shown is not None:r=dict(r,current=shown)
         # Non-language candidates are retained explicitly rather than reclassifying IDs as text.
+        if r['kind']=='class_display' and curseforge and r.get('tooltip_in_language'):
+            # The config screen shows the mod's language entry for this comment, which is a row of its own;
+            # counting the class copy too would list text the game already shows from the language file.
+            counts['tooltip_in_language']+=1;continue
         if r['kind']=='class_display':
             original=r['current'];previous=provenance.lookup(r)
             # Config comments shown through the resource pack leave the class English; what the pack holds tells

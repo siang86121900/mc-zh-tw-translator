@@ -145,6 +145,8 @@ def exclude_tooltip_conflicts(rows):
         if kept:row['tooltips']=kept
         else:row.pop('tooltips',None)
         if notes:row['tooltip_note']='；'.join(sorted(set(notes)))
+        # The config screen shows the language entry (its own row) instead of this comment.
+        if not kept and any((jar,tip[0],tip[3]) in existing for tip in tips):row['tooltip_in_language']=True
 
 
 class Audit:

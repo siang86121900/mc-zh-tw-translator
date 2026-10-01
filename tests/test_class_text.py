@@ -45,7 +45,7 @@ class ClassTextTests(unittest.TestCase):
             self.assertTrue(all('原文不同' in r['tooltip_note'] for r in rows))
         rows=[row('Comment'),dict(source='mods/sample.jar!/assets/sample/lang/en_us.json',key='sample.help.tooltip',kind='language')]
         exclude_tooltip_conflicts(rows)
-        self.assertNotIn('tooltips',rows[0]);self.assertIn('語系條目',rows[0]['tooltip_note'])
+        self.assertNotIn('tooltips',rows[0]);self.assertIn('語系條目',rows[0]['tooltip_note']);self.assertTrue(rows[0]['tooltip_in_language'])
         rows=[row('Same comment'),row('Same comment')]
         exclude_tooltip_conflicts(rows)
         self.assertTrue(all(r.get('tooltips') for r in rows))
@@ -58,15 +58,25 @@ class ClassTextTests(unittest.TestCase):
         rows[1]['proposed']=rows[0]['proposed']
         self.assertEqual(list(jobs.tooltip_texts(rows).values()),['第一個譯法'])
 
-    def config_instance(self, root, screen=True):
+    def test_comment_the_screen_shows_from_the_language_file_is_not_counted_twice(self):
+        # AppleSkin ships '<key>.tooltip' in its own en_us/zh_tw: the screen shows that, not the class comment.
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);instance=self.config_instance(root,lang={'sample.configuration.showSaturation.tooltip':'顯示飽和度條'})
+            session=jobs.plan(instance,root/'app',lambda *_:None,references=([{},{}],{'sources':['tw','cn']}))
+            texts=[r['current'] for r in session['rows'] if r['kind']=='class_display']
+            self.assertNotIn('Shows the saturation bar',texts);self.assertIn('Uses the mod key',texts)
+            self.assertEqual(jobs.coverage(session).get('unwritable',0),2)  # only the section and the computed name
+
+    def config_instance(self, root, screen=True, lang=None):
         instance=root/'instance';mods=instance/'mods';mods.mkdir(parents=True)
         (instance/'minecraftinstance.json').write_text('{}',encoding='utf-8')  # CurseForge puts changed mods back
         with zipfile.ZipFile(mods/'sample.jar','w') as z:
             z.writestr('ConfigSample.class',self.config)
             if screen:z.writestr('ModMain.class',self.main)
             z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="sample"\n[[dependencies.sample]]\nmodId="neoforge"\n')
-            z.writestr('assets/sample/lang/en_us.json','{"item.sample.x":"Thing"}')
-            z.writestr('assets/sample/lang/zh_tw.json','{"item.sample.x":"東西"}')
+            english={'item.sample.x':'Thing',**{k:'Shows the saturation bar' for k in lang or {}}}
+            z.writestr('assets/sample/lang/en_us.json',json.dumps(english))
+            z.writestr('assets/sample/lang/zh_tw.json',json.dumps({'item.sample.x':'東西',**(lang or {})},ensure_ascii=False))
         return instance
 
     CHINESE={'Shows the saturation bar':'顯示飽和度條','Uses the mod key':'使用模組語系鍵','First line of help':'說明第一行',
