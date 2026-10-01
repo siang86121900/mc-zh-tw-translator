@@ -43,6 +43,10 @@ class WorkflowTests(unittest.TestCase):
             z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="lib"\n')
             z.writestr('assets/lib/textures/a.png','x')
         with zipfile.ZipFile(self.instance/'mods/real.jar','w') as z:
+            # An optional dependency the jar also carries compatibility textures for: still not installed.
+            z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="real"\n'
+                       '[[dependencies.real]]\nmodId="optional_dep"\ntype="optional"\n')
+            z.writestr('assets/optional_dep/textures/c.png','x')
             z.writestr('assets/real/lang/en_us.json',json.dumps({'real.a':'Real'}))
             z.writestr('assets/compat/textures/b.png','x');z.writestr('data/compat/recipes/b.json','{}')  # files for a mod that is absent
             z.writestr('META-INF/jarjar/lib.jar',nested.getvalue())  # jar-in-jar library counts as installed
@@ -52,11 +56,12 @@ class WorkflowTests(unittest.TestCase):
             z.writestr('assets/real/lang/en_us.json',json.dumps({'real.b':'Real B'}))
             z.writestr('assets/lib/lang/en_us.json',json.dumps({'lib.a':'Library'}))
             z.writestr('assets/compat/lang/en_us.json',json.dumps({'compat.a':'Absent mod'}))
+            z.writestr('assets/optional_dep/lang/en_us.json',json.dumps({'optional_dep.a':'Not installed'}))
         result=self.make_plan()
-        self.assertFalse(any('ghost' in r['source'] or 'compat' in r['source'] for r in result['rows']))
+        self.assertFalse(any(x in r['source'] for r in result['rows'] for x in ('ghost','compat','optional_dep')))
         self.assertTrue(any(r['key']=='real.b' for r in result['rows']))
         self.assertTrue(any(r['key']=='lib.a' for r in result['rows']))
-        self.assertEqual(result['source_counts']['not_installed'],2)
+        self.assertEqual(result['source_counts']['not_installed'],3)
 
     def make_mod(self, nested=True):
         import io, zipfile

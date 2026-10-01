@@ -270,7 +270,7 @@ class DesktopUiTests(unittest.TestCase):
                     if window.catalog:break
             self.assertTrue(window.navs[6].isChecked())
             self.assertEqual(window.catalog[0]['status'],'exact')
-            self.assertEqual(window.catalog_box.count(),1);self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯'])
+            self.assertEqual(window.catalog_box.count(),1);self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯','建立伺服器'])
             window.close()
 
 if __name__=='__main__':unittest.main()

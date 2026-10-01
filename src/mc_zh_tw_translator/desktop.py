@@ -23,6 +23,7 @@ from . import desktop_jobs as jobs
 from . import updater
 from . import codex_bridge as ai
 from . import patches
+from . import server_pack
 
 # Tokens follow ai-agent-team DESIGN.md: one primary blue, neutrals derived from #363533,
 # four status colours, 6px cards, 8px buttons, pill badges and filter chips.
@@ -724,6 +725,10 @@ class MainWindow(QMainWindow):
                 btn=button(text,lambda checked=False,p=pack,fn=fn:fn(p),primary);btn.setEnabled(not self.busy)
                 self.pack_buttons.append(btn);row.addWidget(btn)
             if memory:row.addWidget(button('怎麼調整記憶體',lambda checked=False,p=pack:self.show_memory_help(p)))
+            if pack.get('instances') and pack['status']!='not_installed':
+                btn=button('建立伺服器',lambda checked=False,p=pack:self.build_server(p));btn.setEnabled(not self.busy)
+                btn.setToolTip('用你電腦上的這個整合包建立一個可以直接雙擊 run.bat 開啟的伺服器資料夾')
+                self.pack_buttons.append(btn);row.addWidget(btn)
             row.addStretch();b.addLayout(row);self.catalog_box.addWidget(f)
             self.catalog_cards.append((f,' '.join((pack['name'],pack['version'] or '',pack['gameVersion'] or '',pack['notes'])).casefold()))
         self.catalog_search.setVisible(len(self.catalog)>=self.CATALOG_SEARCH_FROM)
@@ -794,7 +799,7 @@ class MainWindow(QMainWindow):
         self.run_worker('patch_install',operation,self.patch_applied)
 
     def cancel_install(self):
-        if self.worker and self.mode in ('patch_install','patch_apply'):
+        if self.worker and self.mode in ('patch_install','patch_apply','patch_server'):
             self.worker.cancelled=True;self.patch_cancel.setEnabled(False);self.patch_status.setText('正在停止…')
 
     def patch_applied(self,result):
@@ -819,6 +824,99 @@ class MainWindow(QMainWindow):
         if memory:lines+=['',memory['line']]+[memory[k] for k in ('now','warning') if memory[k]]+['（在「已翻譯整合包」按「怎麼調整記憶體」看步驟）']
         self.patch_status.setText('');self.notify_finished('翻譯已安裝',lines[0])
         QMessageBox.information(self,'翻譯已安裝','\n'.join(lines))
+
+    def server_parent(self,instance,pack_name):
+        """Ask where the server goes; the folder may be chosen or pasted. Returns the parent folder or None."""
+        dialog=QDialog(self);dialog.setWindowTitle('建立伺服器：'+pack_name);box=QVBoxLayout(dialog)
+        box.addWidget(label('要把伺服器建在哪個資料夾？程式會在裡面新開一個以整合包命名的資料夾，不會動到裡面原有的東西。','sub'))
+        desktop=Path.home()/'Desktop';default=desktop/'Minecraft server'
+        field=QLineEdit(str(self.settings.value('server_parent','') or (default if default.is_dir() else desktop)))
+        row=QHBoxLayout();row.addWidget(field,1)
+        def browse():
+            value=QFileDialog.getExistingDirectory(dialog,'選擇放伺服器的資料夾',field.text())
+            if value:field.setText(value)
+        row.addWidget(button('選擇資料夾',browse));box.addLayout(row)
+        preview=label('','sub');box.addWidget(preview)
+        buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel);buttons.button(QDialogButtonBox.Ok).setText('下一步')
+        buttons.button(QDialogButtonBox.Cancel).setText('取消');box.addWidget(buttons)
+        buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject)
+        def update():
+            try:
+                target=server_pack.target_folder(Path(server_pack.unquote(field.text())),pack_name,instance)
+                preview.setText('會建立：'+str(target));buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+            except (ValueError,OSError) as exc:
+                preview.setText(str(exc));buttons.button(QDialogButtonBox.Ok).setEnabled(False)
+        field.textChanged.connect(update);update();dialog.resize(640,dialog.sizeHint().height())
+        if dialog.exec()!=QDialog.Accepted:return None
+        parent=Path(server_pack.unquote(field.text()));self.settings.setValue('server_parent',str(parent))
+        return parent
+
+    def build_server(self,pack):
+        if self.busy:return
+        target=self.choose_patch_target(pack['projectID'],pack['fileID'],'建立伺服器')
+        if not target:return
+        instance=Path(target)
+        try:loader=server_pack.loader_of(instance)
+        except ValueError as exc:QMessageBox.information(self,'無法建立伺服器',str(exc));return
+        parent=self.server_parent(instance,pack['name'])
+        if not parent:return
+        server=server_pack.target_folder(parent,pack['name'],instance)
+        if self.memory_total is None:self.memory_total=jobs.total_memory_mb()
+        record=patches.curseforge_record(instance)
+        try:client=int(record.get('allocatedMemory') or 0) if record.get('isMemoryOverride') else 0
+        except (TypeError,ValueError):client=0
+        mods=len(list((instance/'mods').glob('*.jar')))
+        memory=server_pack.server_memory(mods,self.memory_total,client or pack.get('recommendedRam') or 0)
+        untranslated=('\n\n注意：這個整合包的翻譯還沒裝好或有更新。伺服器會複製整合包目前的任務與設定文字，建議先安裝翻譯再建立伺服器。'
+                      if pack['status'] in ('exact','update','other_version') else '')
+        name={'neoforge':'NeoForge','forge':'Forge'}[loader['kind']]
+        text=(f"將用你電腦上的「{instance.name}」建立伺服器：\n{server}\n\n"
+              '1. 複製 mods、config、kubejs 等伺服器需要的資料夾（整合包本身不會被修改）。\n'
+              f"2. 從 {name} 官方網站下載 {loader['version']} 版伺服器程式並核對校驗碼，它會再從官方下載 Minecraft 伺服器（共約數百 MB）。\n"
+              f'3. 自動試開伺服器，玩家端專用的模組會移到「{server_pack.REMOVED_DIR}」資料夾（不刪除），直到開得起來。\n'
+              '4. 寫好 run.bat，之後雙擊就能開伺服器。\n\n'
+              +memory['line']+('\n'+memory['warning'] if memory['warning'] else '')+
+              '\n\n整個過程大約 5～30 分鐘，試開時會用到較多記憶體，請先關閉這個整合包的遊戲。'+untranslated)
+        if QMessageBox.question(self,'建立伺服器',text+'\n\n是否繼續？')!=QMessageBox.Yes:return
+        if not self.ask_eula():
+            QMessageBox.information(self,'建立伺服器','沒有同意 EULA，沒有建立伺服器。');return
+        def operation(w):
+            w.progress.emit(2,'尋找 Java',f"Minecraft {loader['mc']} 需要 Java {server_pack.java_needed(loader['mc'])}")
+            java,_=server_pack.find_java(loader['mc'])
+            return server_pack.build_server(instance,parent,self.home,w.progress.emit,lambda:w.cancelled,
+                                            java=java,memory_mb=memory['mb'],name=pack['name'])
+        self.run_worker('patch_server',operation,self.server_built)
+
+    def ask_eula(self):
+        """Minecraft's EULA is the player's own agreement: asked every time, never answered by the program."""
+        eula=QMessageBox(self);eula.setWindowTitle('Minecraft 使用者授權合約');eula.setIcon(QMessageBox.Question)
+        eula.setTextFormat(Qt.RichText)
+        eula.setText('開 Minecraft 伺服器前，必須同意 Mojang 的使用者授權合約（EULA）。<br><br>'
+                     f'合約內容：<a href="{server_pack.EULA_URL}">{server_pack.EULA_URL}</a><br><br>'
+                     '按「我同意」表示你本人同意這份合約，程式才會在伺服器資料夾寫入 eula=true。')
+        agree=eula.addButton('我同意',QMessageBox.AcceptRole);eula.addButton('不同意',QMessageBox.RejectRole);eula.exec()
+        return eula.clickedButton() is agree
+
+    def server_built(self,result):
+        self.patch_status.setText('')
+        folder=result['folder'];lines=[]
+        if result['ok']:
+            lines.append('伺服器已建立並試開成功：\n'+folder);self.notify_finished('伺服器已建立',Path(folder).name)
+            lines.append('\n之後雙擊資料夾裡的 run.bat 就能開伺服器；自己連線時在「多人遊戲」輸入 localhost。')
+            if result.get('stop_hung'):
+                lines.append('注意：這個整合包的伺服器存完檔後不會自己結束。關伺服器時輸入 stop，等存檔訊息跑完再關視窗。')
+        else:
+            lines+=['伺服器資料夾已建立，但還沒能成功開啟：\n'+folder,'\n'+result.get('problem','')]
+        lines.append(f"記憶體最多 {result['memory_mb']//1024} GB（可在 user_jvm_args.txt 修改）。")
+        removed=result['removed']
+        if removed:
+            lines.append(f"\n拿掉了 {len(removed)} 個伺服器不能用的模組（放在「{server_pack.REMOVED_DIR}」，沒有刪除）：")
+            lines+=['・'+x['file']+'：'+server_pack.plain_reason(x) for x in removed[:12]]+(['…'] if len(removed)>12 else [])
+        lines.append(f"\n朋友連線方式和完整清單寫在資料夾裡的「{server_pack.NOTE_FILE}」。")
+        box=QMessageBox(self);box.setWindowTitle('建立伺服器');box.setText('\n'.join(lines))
+        box.setIcon(QMessageBox.Information if result['ok'] else QMessageBox.Warning)
+        opener=box.addButton('開啟伺服器資料夾',QMessageBox.ActionRole);box.addButton('關閉',QMessageBox.RejectRole);box.exec()
+        if box.clickedButton() is opener:QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def install_with_curseforge(self,pack):
         if not pack['projectID']:return
@@ -1199,7 +1297,7 @@ class MainWindow(QMainWindow):
         self.started_at=self.last_activity=time.monotonic()
         for b in (self.ai_check_btn,self.confirm_all_btn,self.undo_confirm_btn,self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai,*self.pack_buttons):b.setEnabled(False)
         if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
-        self.patch_cancel.setVisible(mode in ('patch_install','patch_apply'));self.patch_cancel.setEnabled(True)
+        self.patch_cancel.setVisible(mode in ('patch_install','patch_apply','patch_server'));self.patch_cancel.setEnabled(True)
         self.patch_cancel.setText('停止等待' if mode=='patch_install' else '停止')
         self.history.setEnabled(False);self.cancel.setEnabled(mode in ('plan','full_translate','ai_translate','ai_login','ai_install'));self.ai_stop_btn.setEnabled(mode in ('ai_translate','ai_login','ai_install'))
         self.worker=Worker(operation)

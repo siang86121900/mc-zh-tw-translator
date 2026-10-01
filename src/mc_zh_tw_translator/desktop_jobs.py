@@ -982,6 +982,21 @@ def asset_namespaces(z, depth=0):
 MOD_ID = re.compile(r"""(?m)^\s*modId\s*=\s*["']([^"']+)["']""")
 
 
+def declared_mod_ids(toml):
+    """The mod ids a mods.toml declares in its [[mods]] tables. The modId lines under
+    [[dependencies.x]] name other mods it needs (often optional ones that are not installed)."""
+    try:
+        import tomllib
+        return [str(m['modId']) for m in tomllib.loads(toml).get('mods') or [] if isinstance(m,dict) and m.get('modId')]
+    except (ValueError,TypeError,KeyError,AttributeError):
+        ids=[];section=''
+        for line in toml.splitlines():
+            head=re.match(r'\s*\[\[?\s*([^\]]+?)\s*\]\]?',line)
+            if head:section=head[1]
+            elif section=='mods':ids+=MOD_ID.findall(line)
+        return ids
+
+
 def present_mods(z, depth=0):
     """Namespaces whose text the game can show: a mod the jar declares, or one it holds language files
     or world generation for. Textures or recipes added for another mod (compatibility files) do not
@@ -991,7 +1006,7 @@ def present_mods(z, depth=0):
         m=re.match(r'assets/([^/]+)/lang/[^/]+\.(?:json|lang)$|data/([^/]+)/worldgen/',name)
         if m:found.add(m[1] or m[2])
     for meta in ('META-INF/neoforge.mods.toml','META-INF/mods.toml'):
-        if meta in names:found|=set(MOD_ID.findall(z.read(meta).decode('utf-8','replace')))
+        if meta in names:found|=set(declared_mod_ids(z.read(meta).decode('utf-8','replace')))
     if 'fabric.mod.json' in names:
         try:found.add(str(json.loads(z.read('fabric.mod.json').decode('utf-8-sig'))['id']))
         except (ValueError,KeyError,TypeError):pass
@@ -1007,7 +1022,8 @@ def present_mods(z, depth=0):
 # scan-10: lone surrogates mended (v0.17.0 left cached errors in place)
 # scan-11: strings of language-file generators (LanguageProvider) are marked; Mixin targets are kept
 # scan-12: plain Chinese literals (plain_literal) are marked for an in-place Simplified-to-Traditional conversion
-SCAN_CACHE_VERSION = 'scan-12'
+# scan-13: a jar's installed mods are its [[mods]] ids only, not the mods it lists as dependencies
+SCAN_CACHE_VERSION = 'scan-13'
 
 
 def scan_cache(home, instance):

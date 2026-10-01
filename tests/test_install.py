@@ -385,7 +385,7 @@ class InstallTests(unittest.TestCase):
         window=MainWindow(self.home)
         found=[dict(name='Demo Pack',path=self.friend,projectID=123,fileID=456,gameVersion='1.21.1')]
         with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=found):window.catalog_loaded([entry])
-        self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯'])
+        self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯','建立伺服器'])
         # the player deletes the modpack in CurseForge, then presses the stale button
         with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=[]), \
              patch.object(window,'install_pack_and_translation') as install,patch.object(QMessageBox,'information') as told:
@@ -396,7 +396,7 @@ class InstallTests(unittest.TestCase):
         with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=found), \
              patch.object(window,'refresh_catalog') as online:
             window.navigate(6)
-        online.assert_not_called();self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯'])
+        online.assert_not_called();self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯','建立伺服器'])
         window.close()
 
     def test_card_offers_one_button_and_the_result_shows_the_translators_note(self):
