@@ -103,6 +103,23 @@ MC_TERMS = (
     ('凋靈', '凋零'), ('烈焰人', '烈焰使者'), ('烈焰棒', '烈焰桿'), ('熒石粉', '螢石粉'), ('熒石', '螢光石'),
     ('劫掠獸', '劫毀獸'), ('溺屍', '沉屍'), ('刷怪蛋', '生怪蛋'), ('刷怪籠', '生怪磚'),
 )
+# Names of the game's own structures (structure.minecraft.<id>, shown by the compass mods). Minecraft has no language
+# key for them, but its zh_tw names each one in maps and advancements (1.20.1 and 1.21.1): filled_map.village_* (平原村莊地圖…),
+# item.minecraft.desert_pyramid_map, jungle_pyramid_map (叢林遺跡地圖), swamp_hut_map, ocean_monument_map (海底遺跡地圖),
+# warm_ocean_ruins_map (溫暖海底廢墟地圖), woodland_mansion_map (綠林府邸地圖), mineshaft_map, ancient_city_map,
+# trial_explorer_map (試煉密室探險家地圖), advancements find_bastion (堡壘遺蹟), find_fortress (地獄要塞), find_end_city
+# (終末都市), selectWorld.mapFeatures.info (村莊、沉船), and biome.minecraft.badlands / cold_ocean (惡地、寒冷海洋).
+# Structure sets (the compass's 團體) name the same things in the plural. Names zh_tw does not give are left to other sources.
+VANILLA_STRUCTURE_NAMES = {
+    'village': '村莊', 'villages': '村莊', 'village_plains': '平原村莊', 'village_desert': '沙漠村莊', 'village_savanna': '莽原村莊',
+    'village_snowy': '雪原村莊', 'village_taiga': '針葉林村莊', 'desert_pyramid': '沙漠神殿', 'desert_pyramids': '沙漠神殿',
+    'jungle_pyramid': '叢林遺跡', 'jungle_temples': '叢林遺跡', 'swamp_hut': '沼澤小屋', 'swamp_huts': '沼澤小屋',
+    'monument': '海底遺跡', 'ocean_monuments': '海底遺跡', 'ocean_ruin': '海底廢墟', 'ocean_ruins': '海底廢墟',
+    'ocean_ruin_warm': '溫暖海底廢墟', 'ocean_ruin_cold': '寒冷海底廢墟', 'mansion': '綠林府邸', 'woodland_mansions': '綠林府邸',
+    'mineshaft': '礦坑', 'mineshafts': '礦坑', 'mineshaft_mesa': '惡地礦坑', 'ancient_city': '遠古城市', 'ancient_cities': '遠古城市',
+    'trial_chambers': '試煉密室', 'bastion_remnant': '堡壘遺蹟', 'fortress': '地獄要塞', 'end_city': '終末都市', 'endcity': '終末都市',
+    'end_cities': '終末都市', 'shipwreck': '沉船', 'shipwrecks': '沉船',
+}
 MC_TERM = re.compile('|'.join(f'(?P<t{i}>{a})' for i, (a, _) in enumerate(MC_TERMS)))
 # Ordinary words that are Minecraft names only when they are the whole text (a mod's 地牢監守者 stays).
 MC_EXACT = {'監守者': '伏守者', '守衛者': '深海守衛', '遠古守衛者': '遠古深海守衛', '凋靈': '凋零怪', '蠹蟲': '蠹魚'}

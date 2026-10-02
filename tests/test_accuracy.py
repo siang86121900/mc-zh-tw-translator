@@ -81,6 +81,55 @@ class AiReviewTests(Base):
         self.assertEqual((done['ai_review_status'],done['ai_checked']),('completed',1))
         self.assertEqual(ai.doubt_rows(done),[])  # nothing is sent twice
 
+    def test_names_that_kept_an_english_word_are_listed_and_checked_once(self):
+        # VEFV2.7.1: CTOV's own zh_tw names Alpine村莊, and Atmospheric's Kousa Sanctum had become Kousa 聖所 while the
+        # mod's blocks say 棶木. Names written in the mod's own zh_tw are only listed and checked, never sent twice.
+        en={'structure.demo.alpine':'Alpine Village','structure.demo.kousa_sanctum':'Kousa Sanctum','block.demo.kousa_log':'Kousa Log',
+            'structure.demo.plains':'Plains Village','structure.demo.tnt_hut':'TNT Hut'}
+        lang=self.instance/'kubejs/assets/demo/lang'
+        (lang/'en_us.json').write_text(json.dumps(en),encoding='utf-8');(lang/'zh_cn.json').unlink()
+        (lang/'zh_tw.json').write_text(json.dumps({'structure.demo.alpine':'Alpine村莊','structure.demo.kousa_sanctum':'Kousa 聖所',
+            'block.demo.kousa_log':'棶木原木','structure.demo.plains':'平原村莊','structure.demo.tnt_hut':'TNT 小屋'},ensure_ascii=False),encoding='utf-8')
+        session=self.make_plan();rows={r['key']:r for r in session['rows']}
+        self.assertEqual(rows['structure.demo.alpine']['name_doubt'],['名稱留有英文「Alpine」'])
+        self.assertIn('同模組的「Kousa Log」譯為「棶木原木」',rows['structure.demo.kousa_sanctum']['issue'])
+        self.assertTrue(jobs.needs_check(rows['structure.demo.alpine']))
+        # Abbreviations are fine; so is a name with no English left, and names that are not places.
+        for key in ('structure.demo.plains','structure.demo.tnt_hut','block.demo.kousa_log'):
+            self.assertFalse((rows.get(key) or {}).get('name_doubt'),key)
+        self.assertEqual(sorted(r['key'] for _,r in ai.doubt_rows(session)),['structure.demo.alpine','structure.demo.kousa_sanctum'])
+        FakeClient.fixes={'Alpine Village':'高山村莊'}
+        done=self.review(session)
+        alpine={r['key']:r for r in done['rows']}['structure.demo.alpine']
+        self.assertEqual((alpine['proposed'],alpine['origin'],alpine['changed'],alpine.get('name_doubt')),('高山村莊','ai_translation',True,None))
+        self.assertEqual(ai.doubt_rows(done),[])
+        # Kousa 聖所, which AI kept, is not listed or sent again in the next run.
+        again={r['key']:r for r in self.make_plan()['rows']}
+        self.assertFalse((again.get('structure.demo.kousa_sanctum') or {}).get('name_doubt'))
+        self.assertEqual(again['structure.demo.alpine']['proposed'],'高山村莊')  # AI memory, ahead of nothing better
+
+    def test_names_use_the_biome_names_the_map_shows(self):
+        # The minimap says 沼澤 and 莽原; CTOV's own zh_tw said 熱帶草原村莊 (Mojang's zh_cn wording, converted).
+        en={'structure.demo.savanna_village':'Savanna Village','structure.demo.swamp_hut':'Swamp Hut',
+            'structure.demo.quest_grove':'Quest Grove','item.demo.savanna_hat':'Savanna Hat'}
+        lang=self.instance/'kubejs/assets/demo/lang'
+        (lang/'en_us.json').write_text(json.dumps(en),encoding='utf-8');(lang/'zh_cn.json').unlink()
+        (lang/'zh_tw.json').write_text(json.dumps({'structure.demo.savanna_village':'熱帶草原村莊','structure.demo.swamp_hut':'濕地小屋',
+            'structure.demo.quest_grove':'謎題樹叢','item.demo.savanna_hat':'熱帶草原帽'},ensure_ascii=False),encoding='utf-8')
+        vanilla={'minecraft':{'biome.minecraft.savanna':'莽原','biome.minecraft.swamp':'沼澤','biome.minecraft.grove':'雪林'},
+                 '__terms__':{'savanna':'莽原','swamp':'沼澤','grove':'雪林'},'__source__':'test'}
+        session=self.make_plan(references=([{},{},vanilla],{'sources':['tw','cn','vanilla']}))
+        rows={r['key']:r for r in session['rows']}
+        village=rows['structure.demo.savanna_village']
+        self.assertEqual((village['proposed'],village['changed']),('莽原村莊',True))
+        self.assertTrue(jobs.needs_check(village))
+        self.assertEqual(rows['structure.demo.swamp_hut']['name_doubt'],['地圖上的「Swamp」顯示為「沼澤」'])
+        self.assertEqual(sorted(r['key'] for _,r in ai.doubt_rows(session)),['structure.demo.swamp_hut'])
+        self.assertNotIn('structure.demo.quest_grove',{k for k,r in rows.items() if r.get('name_doubt')})  # a grove, not the biome
+        self.assertFalse((rows.get('item.demo.savanna_hat') or {}).get('changed'))  # only place names
+        terms=jobs.load_name_terms(session)
+        self.assertEqual(terms['swamp'],('Swamp','沼澤'))  # AI gets the map's words too
+
     def test_confirmed_rows_are_never_sent(self):
         session=self.make_plan()
         for r in session['rows']:

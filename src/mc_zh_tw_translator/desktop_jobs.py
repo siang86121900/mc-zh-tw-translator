@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from full_translation_audit import (Audit, parse, parse_binary_nbt, rewrite_binary_nbt, placeholders, at, string_literals,
                                     LOOSE_FOLDERS, CONTENT_PACK_FOLDERS, FANCYMENU, plain_text)
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_free
-from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified
+from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified, VANILLA_STRUCTURE_NAMES
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
 from . import quest_lang
 from .verifier import VerifyResult, check_java_zipfs
@@ -34,6 +34,9 @@ SOURCE_NAMES = {'same_source_zh_cn':'同檔簡中', 'instance_zh_cn':'模組包�
                 'cross_version_reference':'跨版本參考','official_vanilla':'官方原版譯名','stale_reference':'參考庫（版本待確認）',
                 'duplicate_copy':'模組內的重複舊版文字（略過）','server_lang':'伺服器用的英文語系檔（遊戲不讀繁中，略過）'}
 HAN = re.compile('[\u3400-\u9fff]')
+FOREIGN_LETTER = re.compile('[\u0370-\u03ff\u0400-\u04ff]')  # Greek and Cyrillic
+# Names the game looks up from a biome, structure or dimension id (see full_translation_audit.REGISTRY_NAME).
+REGISTRY_KEY = re.compile(r'(?:biome|structure|dimension)\.[a-z0-9_.\-]+\.')
 # §-codes, Patchouli macros, {0} arguments, and FTB Quests' page breaks and inline images.
 FORMAT = re.compile(r'§[0-9a-fk-or]|\$\([^)]+\)|\{[\w.]+\}|\{@\w+\}|\{image:[^}]*\}', re.I)
 # FTB Quests and some other mods write colour codes with & (&6&lTitle&r); lower case only, so Q&A is not one.
@@ -113,6 +116,7 @@ def keep_original_reason(text, key='', namespace=''):
     if re.match(r'/[a-z]',stripped):return '指令用法'
     if re.fullmatch(r'(?:config|assets|data|kubejs|mods|saves|defaultconfigs)(?:/[a-z0-9_.\-]+)+|[a-z0-9_.\-]+:[a-z0-9_./\-]+|\w+=\w+(?:,\w+=\w+)*',stripped):return '檔案路徑、ID 或語法範例'
     if stripped=='Boss':return '官方繁中也直接寫 Boss'
+    if REGISTRY_KEY.match(key):namespace=''  # a structure that shares the mod's name ([Let's Do] Bakery's bakery) is a place
     if namespace and key==namespace and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9&+'\- ]{2,39}",stripped):return '模組名稱'
     compact=lambda s:re.sub('[^a-z0-9]','',s.lower().replace('&','and'))
     name=compact(re.sub(r'\s+wiki$','',stripped,flags=re.I));mod=compact(re.sub(r'\d+$','',namespace or ''))
@@ -490,6 +494,18 @@ class AiMemory:
     def lookup(self,namespace,key,original):
         entry=self.entries.get(TranslationMemory.ident(namespace,key,original)) if namespace and original else None
         return entry if isinstance(entry,dict) and isinstance(entry.get('text'),str) else None
+    def checked(self,namespace,key,original):
+        """The name AI read for English left in it (see name_doubts) and kept as it was; None when it has not."""
+        entry=self.entries.get(TranslationMemory.ident(namespace,key,original)+'\nchecked') if namespace and original else None
+        return entry.get('checked') if isinstance(entry,dict) else None
+    def remember_checked(self,rows,model):
+        """Names AI found right in spite of the English in them; kept apart from translations, which they are not."""
+        for r in rows:
+            ns=lang_namespace(r.get('source',''));original=english_of(r)
+            if ns and original:
+                self.entries[TranslationMemory.ident(ns,r['key'],original)+'\nchecked']=dict(
+                    checked=r['proposed'],model=model,made_at=datetime.now().isoformat(timespec='seconds'))
+        if rows:write_json(self.path,dict(format=1,entries=self.entries))
     def remember_many(self,rows,model):
         """Keeps AI's translations, and its "leave as it is" answers (keep=True, with its reason)."""
         for r in rows:
@@ -673,6 +689,7 @@ def needs_check(row):
     if str(row.get('review_method') or '').startswith('user_confirmed'):return False  # the user has looked at it
     if (row.get('ai_review') or {}).get('verdict')=='ok':return False  # AI read it against the English and agreed
     if row.get('supported') and row.get('number_doubt') and row.get('origin') not in ('untranslated','keep_original'):return True
+    if row.get('supported') and (row.get('name_doubt') or '生態域改用地圖上的名稱' in str(row.get('issue') or '')) and row.get('origin') not in ('untranslated','keep_original'):return True
     return bool(row.get('supported') and (row.get('changed') or row.get('recovered')) and (
         row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None
         or str(row.get('issue') or '').startswith('既有繁中') or '大陸用語改為台灣用語' in str(row.get('issue') or '')
@@ -772,7 +789,7 @@ def report_overview(session):
         if needs_check(r):
             check['AI 補譯' if r['origin']=='ai_translation' else '自動統一譯名' if r.get('unified_from') is not None
                   else '版本待確認的參考' if r['origin'] in ('stale_reference','cross_version_reference')
-                  else '數值和原文不同' if r.get('number_doubt') else '修正轉換用字' if '已修正轉換用字' in str(r.get('issue') or '')
+                  else '數值和原文不同' if r.get('number_doubt') else '名稱和地圖或原文不一致' if r.get('name_doubt') or '生態域改用地圖上的名稱' in str(r.get('issue') or '') else '修正轉換用字' if '已修正轉換用字' in str(r.get('issue') or '')
                   else '改成台灣用語']+=1
     after=session.get('after_counts')
     return dict(applied=applied,not_applied=reasons,context=context,held=held,check=sum(check.values()),check_kinds=check.most_common(),
@@ -874,6 +891,115 @@ def unify_same_key(rows):
                 if best.get(field) is not None:r[field]=best[field]
             changed+=1
     return changed
+
+
+def singular_names(rows):
+    """A structure group the scan named from its id (minecraft:pillager_outposts, atmospheric:kousa_sanctums) and found
+    no Chinese for takes the name of the structure it is the plural of; Explorer's Compass shows both, as 名稱 and 團體.
+    Returns how many rows changed."""
+    named={r['key']:r for r in rows if r.get('kind')=='language' and r.get('origin') not in ('untranslated','keep_original')
+           and HAN.search(r.get('proposed') or '')}
+    changed=0
+    for r in rows:
+        if not (r.get('name_from_id') and r.get('origin')=='untranslated' and r['key'].startswith('structure.')):continue
+        key=r['key']
+        twin=next((named[k] for k in (key[:-3]+'y' if key.endswith('ies') else None,key[:-2] if key.endswith('es') else None,
+                                      key[:-1] if key.endswith('s') else None) if k in named),None)
+        if not twin or not validate_text(original_of(r),twin['proposed']):continue
+        r.update(proposed=twin['proposed'],origin=twin['origin'],evidence=twin.get('evidence') or '',
+                 issue=f'結構分組沿用「{english_of(twin) or twin["key"]}」的譯名'+('；'+twin['issue'] if twin.get('issue') else ''),
+                 changed=twin['proposed']!=r.get('current'),plural_of=twin['key'])
+        for field in ('number_doubt','ai_model'):
+            if twin.get(field) is not None:r[field]=twin[field]
+        changed+=1
+    return changed
+
+
+# Biome names whose Mojang zh_cn, converted, differs from the zh_tw the minimap and F3 show (1.20.1 / 1.21.1). A
+# structure or biome name whose English has the biome (Savanna Village) takes the map's word (CTOV's own zh_tw:
+# 熱帶草原村莊 → 莽原村莊). Only inside such names: 熱帶草原 and 溶洞 are ordinary words elsewhere.
+MAP_BIOME_WORDS = (
+    ('savanna', ('熱帶草原', '稀樹草原'), '莽原'), ('windswept', ('風襲',), '風蝕'), ('mushroom fields', ('蘑菇島',), '蘑菇地'),
+    ('dripstone caves', ('溶洞',), '鐘乳石洞窟'), ('deep dark', ('深暗之域',), '深淵'), ('lush caves', ('繁茂洞穴',), '蒼鬱洞窟'),
+    ('warped forest', ('詭異森林',), '扭曲森林'), ('soul sand valley', ('靈魂沙峽谷',), '靈魂砂谷'),
+)
+# Biome names too common as plain words to hold a name to (Quest Grove is a grove, Ocean Ruin is 海底廢墟 in zh_tw).
+PLAIN_BIOME_WORDS = {'grove','ocean','river','the end','the void','forest','beach','meadow','desert','plains','jungle'}
+
+
+def map_biome_names(vanilla):
+    """English biome name (casefolded) -> the zh_tw name the game shows on the map, from Mojang's language files."""
+    if not vanilla:return {}
+    shown={z for k,z in vanilla.get('minecraft',{}).items() if k.startswith('biome.minecraft.')}
+    return {en:zh for en,zh in vanilla.get('__terms__',{}).items() if zh in shown}
+
+
+def has_word(word, text):
+    return bool(re.search(r'(?<![A-Za-z])'+re.escape(word)+r'(?![A-Za-z])',text or '',re.I))
+
+
+def name_doubts(rows, ai_memory=None, biomes=None):
+    """Biome, structure and dimension names (what the compasses and the map waypoints they add show) checked once more:
+
+    - a biome the English names is written the way the map shows it (Savanna → 莽原); a known other wording is replaced;
+    - an English word of the original left in the Chinese (CTOV's own Alpine村莊, an AI's Kousa 聖所 where the same
+      mod's blocks say 棶木) is listed with how the same mod translates that word elsewhere;
+    - a biome the Chinese names differently from the map is listed with the map's word.
+    Listed names are doubts AI may check (codex_bridge.doubt_rows). A name AI already read and kept is not listed again,
+    and one it rewrote takes that answer again. Returns how many rows were marked or corrected."""
+    biomes=biomes or {}
+    by_mod=collections.defaultdict(list)
+    for r in rows:
+        if r.get('kind')=='language' and isinstance(english_of(r),str) and HAN.search(r.get('proposed') or ''):
+            by_mod[lang_namespace(r.get('source',''))].append(r)
+    marked=0
+    for r in rows:
+        en=english_of(r);value=r.get('proposed') or ''
+        if (r.get('kind')!='language' or not REGISTRY_KEY.match(r.get('key','')) or not isinstance(en,str) or not HAN.search(value)
+                or r.get('origin') in USER_ORIGINS+('untranslated','keep_original','official_vanilla')
+                or str(r.get('review_method') or '').startswith('user_confirmed')):continue
+        for word,others,shown in MAP_BIOME_WORDS:
+            if has_word(word,en) and shown not in value and any(o in value for o in others):
+                fixed=value
+                for o in others:fixed=fixed.replace(o,shown)
+                if fits(original_of(r),fixed,r.get('own_lines')):
+                    r.update(proposed=fixed,changed=fixed!=r.get('current'),
+                             issue=(r['issue']+'；' if r.get('issue') else '')+f'生態域改用地圖上的名稱（原為「{value}」），請核對')
+                    if r['changed']:r.pop('installed',None);r.pop('recovered',None)
+                    value=fixed;marked+=1
+        notes=[]
+        words=[w for w in dict.fromkeys(re.findall(r'[A-Za-z]{3,}',value))
+               if not w.isupper() and has_word(w,en) and not keep_original_reason(w)]
+        ns=lang_namespace(r.get('source',''))
+        if words:
+            hints=[]
+            for w in words:
+                other=next((o for o in by_mod[ns] if o is not r and has_word(w,english_of(o)) and not has_word(w,o['proposed'])
+                            and not REGISTRY_KEY.match(o['key'])),None)
+                if other:hints.append(f'同模組的「{english_of(other)}」譯為「{other["proposed"]}」')
+            notes.append('名稱留有英文「'+'、'.join(words)+'」'+('，'+'；'.join(hints) if hints else ''))
+        # Structures only: a mod's own biome is itself what the map shows (Twilight Forest's Dark Forest is 黑暗森林).
+        rest=en.casefold() if r['key'].startswith('structure.') else ''
+        for biome in sorted(biomes,key=len,reverse=True):
+            if biome in PLAIN_BIOME_WORDS or not has_word(biome,rest):continue
+            rest=re.sub(r'(?<![a-z])'+re.escape(biome)+r'(?![a-z])',' ',rest)  # Snowy Taiga is not checked as Taiga too
+            if biomes[biome] not in value:notes.append(f'地圖上的「{biome.title()}」顯示為「{biomes[biome]}」')
+        if not notes:continue
+        if ai_memory is not None and ai_memory.checked(ns,r['key'],en)==value:continue
+        earlier=ai_memory.lookup(ns,r['key'],en) if ai_memory is not None else None
+        fixed=earlier.get('text') if earlier and not earlier.get('keep') else None
+        if (isinstance(fixed,str) and fixed!=value and HAN.search(fixed) and validate_text(en,fixed)
+                and not any(has_word(w,fixed) for w in words)):
+            # AI rewrote this name in an earlier run (see codex_bridge.review); its answer is used again, not asked for again.
+            r.update(previous_origin=r['origin'],previous_proposed=value,proposed=fixed,origin='ai_translation',
+                     evidence='ChatGPT/Codex: '+str(earlier.get('model') or '')+'（沿用先前的核對）',ai_model=earlier.get('model'),
+                     ai_reused=True,issue=f'AI 依疑點改寫（原為「{value}」），尚未人工校對。',changed=fixed!=r.get('current'))
+            r.pop('installed',None);r.pop('recovered',None)
+            marked+=1;continue
+        r['name_doubt']=notes
+        r['issue']=(r['issue']+'；' if r.get('issue') else '')+'；'.join(notes)+'，請核對'
+        marked+=1
+    return marked
 
 
 def usable(original, value):
@@ -1532,6 +1658,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # The pack holds the mod's own Chinese broken into the English line count by an earlier version
             # (魚肉鮮嫩麻 / 辣超入味); the author's line breaks come back.
             existing=own
+        vanilla_name=re.fullmatch(r'structure\.minecraft\.([a-z0-9_]+)',r['key'])
+        if vanilla_name and VANILLA_STRUCTURE_NAMES.get(vanilla_name[1]):
+            # The game's own structures under the official zh_tw names, above a compass mod's own zh_tw (Explorer's
+            # Compass 1.4.0 calls the taiga village 大河村 and the ocean monument 海底廢墟).
+            options.append(('official_vanilla',VANILLA_STRUCTURE_NAMES[vanilla_name[1]],'Minecraft 官方 zh_tw 地圖與進度的結構名稱'))
         options.append(('existing_zh_tw',existing,r['source']))
         if vanilla:
             options.append(('official_vanilla',vanilla['minecraft'].get(r['key']) if ns=='minecraft' else None,'Minecraft 官方 zh_tw'))
@@ -1573,6 +1704,9 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         ready=[];doubt=''
         for name,candidate,source in options:
             if not isinstance(candidate,str) or not HAN.search(candidate):continue
+            # A stray Cyrillic or Greek letter the English does not have is a broken translation (Explorer's
+            # Compass 1.4.0 zh_tw: Д被破壞的傳送門叢林); the next source is used, else AI.
+            if name not in USER_ORIGINS and FOREIGN_LETTER.search(candidate) and not FOREIGN_LETTER.search(original):continue
             text=to_taiwan(candidate) if name in ('same_source_zh_cn','instance_zh_cn') else candidate
             # Chinese often needs fewer lines than the English. Chinese written by people keeps its own line
             # breaks; only AI's are laid out again (they were asked for the English line count).
@@ -1599,6 +1733,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                    else 'AI 補譯（沿用先前翻過的同一句），尚未人工校對。' if reused
                    else '簡中轉繁：需校對台灣用語、版本語意與名稱')
         if origin=='unverified_reference':origin='stale_reference'  # listed with the other references that need a look
+        if origin=='official_vanilla' and vanilla_name and isinstance(r['current'],str) and HAN.search(r['current']) and r['current']!=value:
+            issue=f'模組自帶的繁中「{r["current"]}」不是官方名稱，已改用官方譯名'
         extra=dict(en_ref=borrowed,own_lines=own_lines or None)
         prior=provenance.lookup(r) if origin=='existing_zh_tw' and value==r['current'] else None
         if prior and prior['origin']!='existing_zh_tw':
@@ -1644,7 +1780,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if doubt and not extra.get('recovered') and (changed or origin!='untranslated'):issue=(issue+'；' if issue else '')+doubt
         if '數值和原文不同' in (issue or ''):extra['number_doubt']=True  # also kept by text applied earlier
         if reused:extra.update(ai_model=earlier.get('model'),ai_reused=True)
-        if (NAME_KEY.match(r['key']) and isinstance(r['en'],str) and 2<len(r['en'].strip())<=40 and HAN.search(value)
+        if ((NAME_KEY.match(r['key']) or r['key'].startswith('structure.')) and isinstance(r['en'],str) and 2<len(r['en'].strip())<=40 and HAN.search(value)
                 and origin not in ('untranslated','keep_original','ai_translation')):
             rank=trust_rank(dict(origin=origin,evidence=evidence));en=r['en'].strip()
             if en not in name_terms or rank<name_terms[en][0]:name_terms[en]=(rank,value.strip())
@@ -1652,7 +1788,15 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         decided.append(dict(slim(r),proposed=value,origin=origin,evidence=evidence,issue=issue,
                             supported=supported,reviewed=False,changed=changed,renamed=renamed or None,
                             **{k:v for k,v in extra.items() if v is not None}))
+    special['plural_names']=singular_names(decided)
     special['same_key']=unify_same_key(decided)
+    special['name_doubts']=name_doubts(decided,ai_memory,map_biome_names(vanilla))
+    for r in decided:
+        # Names given to AI as they now read: the map's biome words in, names still in doubt out.
+        en=(r.get('en') or '').strip() if isinstance(r.get('en'),str) else ''
+        if en in name_terms and REGISTRY_KEY.match(r['key']):
+            if r.get('name_doubt'):name_terms.pop(en)
+            elif '生態域改用地圖上的名稱' in str(r.get('issue') or ''):name_terms[en]=(name_terms[en][0],r['proposed'].strip())
     listed=lambda row:bool(row['changed'] or row['issue'] or row['origin']=='keep_original')  # keep rows stay visible under 無需翻譯
     # A file whose text needs no change is listed too when another file's row for the same key is: naming
     # things alike or a correction by the user then reaches every file, and the game shows the result.
@@ -1665,7 +1809,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     result['already_chinese']=already  # for the completion rate: these rows are not kept in the report
     show_language_copies(result['rows'],decided)
     result['rate_before']=coverage(result,before=True)['rate']  # what the game showed before this run
-    try:write_json(report/'name_terms.json',{en:zh for en,(_,zh) in name_terms.items()})
+    # The map's biome names go to AI too (Swamp → 沼澤), below every name this modpack gives itself.
+    known={en.casefold() for en in name_terms}
+    biome_terms={en.title():zh for en,zh in map_biome_names(vanilla).items() if en not in known and en not in PLAIN_BIOME_WORDS}
+    try:write_json(report/'name_terms.json',{**biome_terms,**{en:zh for en,(_,zh) in name_terms.items()}})
     except OSError:pass
     result.update(source_counts=dict(counts),status='needs_review',api=0,ai_translation=0,
                   recovered_count=special['recovered'],renamed_count=special['renamed'],same_key_count=special['same_key'])

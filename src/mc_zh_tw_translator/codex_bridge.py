@@ -515,12 +515,15 @@ def doubt_rows(session):
     """Translations with a concrete doubt that AI has not looked at yet.
 
     Only doubts that can be settled by reading the English are sent: a number that differs from the
-    original, or Chinese taken from another version. Rows the user confirmed are never sent.
+    original, Chinese taken from another version, or a biome or structure name that kept an English word
+    of the original or a name worded differently from the map (name_doubt, see desktop_jobs.name_doubts). Rows the user confirmed are never sent.
     """
-    return [(i, r) for i, r in enumerate(session['rows']) if r.get('supported') and isinstance(r.get('en'), str)
-            and (r.get('number_doubt') or r.get('origin') in ('stale_reference', 'cross_version_reference'))
-            and r.get('origin') not in ('untranslated', 'keep_original', 'ai_translation', 'manual', 'translation_memory', 'user_glossary')
-            and (r.get('changed') or r.get('installed') or r.get('recovered'))
+    def doubt(r):
+        if r.get('name_doubt'): return r.get('origin') not in ('untranslated', 'keep_original', 'manual', 'translation_memory', 'user_glossary')
+        return ((r.get('number_doubt') or r.get('origin') in ('stale_reference', 'cross_version_reference'))
+                and r.get('origin') not in ('untranslated', 'keep_original', 'ai_translation', 'manual', 'translation_memory', 'user_glossary')
+                and bool(r.get('changed') or r.get('installed') or r.get('recovered')))
+    return [(i, r) for i, r in enumerate(session['rows']) if r.get('supported') and isinstance(r.get('en'), str) and doubt(r)
             and not r.get('ai_review') and not str(r.get('review_method') or '').startswith('user_confirmed')]
 
 
@@ -629,7 +632,7 @@ def review(session, home, selected_model, notify, cancelled=lambda: False, clien
     remaining = doubt_rows(session)
     if not remaining: raise BridgeError('沒有需要 AI 核對的疑點。')
     done = dict(confirmed=0, fixed=0); glossary = jobs.UserGlossary(home); memory = jobs.AiMemory(home)
-    names = jobs.load_name_terms(session); learned = []
+    names = jobs.load_name_terms(session); learned = []; kept = []
     session['ai_review_status'] = 'running'; session['ai_notice'] = NOTICE
     jobs.write_json(report, session)
 
@@ -650,14 +653,16 @@ def review(session, home, selected_model, notify, cancelled=lambda: False, clien
             seen = dict(model=selected_model, note=note)
             if value.get('verdict') != 'fix' or text == row['proposed']:
                 # Checked, not rewritten: the source stays what it was and the review is recorded beside it.
-                row['ai_review'] = dict(seen, verdict='ok'); done['confirmed'] += 1; continue
+                row['ai_review'] = dict(seen, verdict='ok'); done['confirmed'] += 1
+                if row.get('name_doubt'): kept.append(row)  # not asked about again in later runs
+                continue
             if (not isinstance(text, str) or not jobs.usable(original, text) or jobs.number_doubt(original, text)):
                 row['ai_review'] = dict(seen, verdict='rejected', note='AI 改寫的格式或數值不符，未採用。' + note); continue
             before = row['proposed']
             row.update(previous_origin=row['origin'], previous_evidence=row.get('evidence'), previous_proposed=before,
                        origin='ai_translation', evidence='ChatGPT/Codex: ' + selected_model, ai_model=selected_model,
                        ai_provider='codex_chatgpt', proposed=text, issue=f'AI 依疑點改寫（原為「{before}」），尚未人工校對。' + note,
-                       ai_review=dict(seen, verdict='fixed'), number_doubt=None, reviewed=False, review_method=None)
+                       ai_review=dict(seen, verdict='fixed'), number_doubt=None, name_doubt=None, reviewed=False, review_method=None)
             if row.get('installed'):
                 # What is in the game now is the text being replaced; the row waits to be applied again.
                 row.update(current=before, installed=False, recovered=None)
@@ -666,6 +671,7 @@ def review(session, home, selected_model, notify, cancelled=lambda: False, clien
 
     def save():
         memory.remember_many(learned, selected_model); learned.clear()
+        memory.remember_checked(kept, selected_model); kept.clear()
         session['ai_translation'] = sum(r.get('origin') == 'ai_translation' for r in session['rows'])
         jobs.write_json(report, session)
         checkpoint(session)

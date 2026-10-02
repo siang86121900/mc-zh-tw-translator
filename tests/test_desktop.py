@@ -109,6 +109,63 @@ class WorkflowTests(unittest.TestCase):
         again=next(r for r in self.make_plan()['rows'] if r['key']=='biome.jf.ghostly_graveyard')
         self.assertEqual((again['current'],again['changed']),('幽靈墓園',False))  # the pack's entry is what the game shows
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_compass_names_of_the_games_own_structures(self,_):
+        # VEFV2.7.1 with Explorer's Compass: Trek's minecraft:pillager_outpost_dark_forest and the game's groups
+        # (Villages, Pillager Outposts) showed in English, the compass's own zh_tw had 大河村 and Д被破壞的傳送門叢林,
+        # and [Let's Do] Bakery's bakery structure was kept in English as the mod's name.
+        import zipfile
+        (self.instance/'mods').mkdir();(self.instance/'options.txt').write_text(OPTIONS,encoding='utf-8')
+        with zipfile.ZipFile(self.instance/'mods/explorerscompass.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="explorerscompass"\n')
+            z.writestr('assets/explorerscompass/lang/en_us.json',json.dumps({
+                'item.explorerscompass.explorerscompass':"Explorer's Compass",'structure.minecraft.village_taiga':'Taiga Village',
+                'structure.minecraft.ruined_portal_jungle':'Ruined Portal Jungle','structure.minecraft.pillager_outpost':'Pillager Outpost'}))
+            z.writestr('assets/explorerscompass/lang/zh_tw.json',json.dumps({
+                'item.explorerscompass.explorerscompass':'探險家指南針','structure.minecraft.village_taiga':'大河村',
+                'structure.minecraft.ruined_portal_jungle':'Д被破壞的傳送門叢林','structure.minecraft.pillager_outpost':'掠奪者前哨站'},ensure_ascii=False))
+        with zipfile.ZipFile(self.instance/'mods/trek.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="trek"\n')
+            for path in ('worldgen/structure/pillager_outpost_dark_forest','worldgen/structure_set/pillager_outposts'):
+                z.writestr(f'data/minecraft/{path}.json','{}')
+        with zipfile.ZipFile(self.instance/'mods/bakery.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="bakery"\n')
+            z.writestr('assets/bakery/lang/en_us.json',json.dumps({'item.bakery.bread':'Bread'}))
+            z.writestr('data/bakery/worldgen/structure/bakery.json','{}')
+        result=self.make_plan()
+        rows={r['key']:r for r in result['rows']}
+        outpost=rows['structure.minecraft.pillager_outpost_dark_forest']
+        self.assertEqual((outpost['en'],outpost['origin'],outpost['source']),
+                         ('Pillager Outpost Dark Forest','untranslated','mods/explorerscompass.jar!/assets/explorerscompass/lang/en_us.json'))
+        self.assertEqual((rows['structure.minecraft.villages']['proposed'],rows['structure.minecraft.villages']['origin']),('村莊','official_vanilla'))
+        group=rows['structure.minecraft.pillager_outposts']  # a group is named like the structure it holds
+        self.assertEqual((group['en'],group['proposed'],group['plural_of']),('Pillager Outposts','掠奪者前哨站','structure.minecraft.pillager_outpost'))
+        taiga=rows['structure.minecraft.village_taiga']
+        self.assertEqual((taiga['proposed'],taiga['origin'],taiga['changed']),('針葉林村莊','official_vanilla',True))
+        self.assertIn('大河村',taiga['issue'])
+        self.assertEqual(rows['structure.minecraft.ruined_portal_jungle']['origin'],'untranslated')  # broken text is no source
+        self.assertEqual((rows['structure.bakery.bakery']['en'],rows['structure.bakery.bakery']['origin']),('Bakery','untranslated'))
+        self.assertNotIn('structure.minecraft.trek',rows)
+        for r in result['rows']:
+            if r['origin']=='untranslated':r.update(proposed='某個名稱',origin='ai_translation',changed=True)
+            r['reviewed']=True
+        apply_session(result,self.home,lambda *_:None)
+        with zipfile.ZipFile(self.instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:
+            pack=json.loads(z.read('assets/explorerscompass/lang/zh_tw.json'))
+        self.assertEqual((pack['structure.minecraft.village_taiga'],pack['structure.minecraft.villages'],pack['item.explorerscompass.explorerscompass']),
+                         ('針葉林村莊','村莊','探險家指南針'))
+        self.assertFalse([r for r in self.make_plan()['rows'] if r.get('changed') and not r.get('installed')])  # a rerun writes nothing
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_without_a_compass_the_games_structures_get_no_rows(self,_):
+        import zipfile
+        (self.instance/'mods').mkdir()
+        with zipfile.ZipFile(self.instance/'mods/trek.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="trek"\n')
+            z.writestr('assets/trek/lang/en_us.json',json.dumps({'item.trek.map':'Map'}))
+            z.writestr('data/minecraft/worldgen/structure/pillager_outpost_forest.json','{}')
+        self.assertFalse([r for r in self.make_plan()['rows'] if r['key'].startswith('structure.minecraft.')])
+
     def test_other_languages_and_model_credits_are_not_book_text(self):
         # Alex's Caves keeps a Toki Pona copy of its book in books/tok/; block models in a books/ folder carry
         # "credit": "Made with Blockbench". Neither is English for the player to read.

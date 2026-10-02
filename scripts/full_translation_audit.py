@@ -320,6 +320,15 @@ DATA_JSON=re.compile(r'^data/([a-z0-9_.\-]+)/([a-z0-9_.\-]+)/.+\.json$')
 # "biome.<mod>.<path>"; Explorer's Compass 1.4.0: "structure.<mod>.<path>" and "dimension.<mod>.<path>", else the
 # id title-cased). A missing key becomes a language row of its own, written into the translation resource pack.
 REGISTRY_NAME=re.compile(r'(?:^|/)data/([a-z0-9_.\-]+)/(?:worldgen/(biome|structure|structure_set)|(dimension))/([a-z0-9_.\-/]+)\.json$')
+# The game's own structures and structure sets (1.20 to 1.21), which the compass mods list by name.
+VANILLA_STRUCTURES=('ancient_city','bastion_remnant','buried_treasure','desert_pyramid','end_city','fortress','igloo','jungle_pyramid',
+                    'mansion','mineshaft','mineshaft_mesa','monument','nether_fossil','ocean_ruin_cold','ocean_ruin_warm','pillager_outpost',
+                    'ruined_portal','ruined_portal_desert','ruined_portal_jungle','ruined_portal_mountain','ruined_portal_nether',
+                    'ruined_portal_ocean','ruined_portal_swamp','shipwreck','shipwreck_beached','stronghold','swamp_hut','trail_ruins',
+                    'trial_chambers','village_desert','village_plains','village_savanna','village_snowy','village_taiga',
+                    'ancient_cities','buried_treasures','desert_pyramids','end_cities','igloos','jungle_temples','mineshafts',
+                    'nether_complexes','nether_fossils','ocean_monuments','ocean_ruins','pillager_outposts','ruined_portals',
+                    'shipwrecks','strongholds','swamp_huts','villages','woodland_mansions')
 LOCALE=re.compile(r'[a-z]{2,3}_[a-z]{2,3}$')
 NOT_READ=('config/ftbquests/quests-backup/',)
 CONFIG_SCREEN=b'net/neoforged/neoforge/client/gui/ConfigurationScreen'
@@ -433,12 +442,24 @@ class Audit:
         for r in self.rows:
             m=re.match(r'(mods/[^!]+)!/assets/([a-z0-9_.\-]+)/lang/',r['source'])
             if m and r['kind']=='language':jars.setdefault(m[2],m[1])
+        # Minecraft itself has no structure names in its language files (the compass mods carry some of them, Explorer's
+        # Compass under structure.minecraft.*). Names under minecraft: (the game's own structures and groups, and those
+        # mods add there: Trek's pillager_outpost_dark_forest) go into the language file of the mod that shows them.
+        host=next((r['source'] for r in self.rows if r['kind']=='language' and r['key'].startswith('structure.minecraft.')
+                   and re.match(r'mods/[^!]+!/assets/[a-z0-9_.\-]+/lang/en_us\.json$',r['source'])),None)
+        wanted=list(self.registry)+([['minecraft','minecraft',f'structure.minecraft.{n}'] for n in VANILLA_STRUCTURES] if host else [])
         done=set()
-        for _,mod,key in self.registry:
-            if key in have or key in done or mod=='minecraft' or mod not in jars or (installed is not None and mod not in installed):continue
+        for _,mod,key in wanted:
+            if key in have or key in done:continue
+            if mod=='minecraft':
+                if not host or not key.startswith('structure.'):continue
+                source=host
+            else:
+                if mod not in jars or (installed is not None and mod not in installed):continue
+                source=f'{jars[mod]}!/assets/{mod}/lang/en_us.json'
             done.add(key)
             words=[w for w in re.split(r'[_.\-]+',key.split('.',2)[2]) if w]
-            self.add(f'{jars[mod]}!/assets/{mod}/lang/en_us.json',key,' '.join(w[:1].upper()+w[1:] for w in words),None,kind='language')
+            self.add(source,key,' '.join(w[:1].upper()+w[1:] for w in words),None,kind='language')
             self.rows[-1]['name_from_id']=True;self.counts['names_from_ids']+=1
     def add(self,source,key,en,current,cn=None,kind='language'):
         if not any(isinstance(v,str) and v.strip() for v in (en,current,cn)):return
