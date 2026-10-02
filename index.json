@@ -126,20 +126,21 @@
     {
       "kind": "full",
       "name": "VEFV2.7.1",
+      "packId": "vefv",
       "version": "",
       "gameVersion": "1.20.1",
       "loader": "forge-47.4.10",
       "translator": "MC Translator",
-      "updated": "2026-10-02",
+      "updated": "2026-10-03",
       "notes": "以料理、農業與探索為主的休閒整合包（Minecraft 1.20.1 Forge，超過 400 個模組）。任務書帶你種田、做料理、釀酒、開店接訂單，也能探索暮色森林、Alex 的洞穴、染夢世界等維度，還有車萬女僕陪你種地。",
       "recommendedRam": 0,
-      "driveId": "1BjoFIkASXoTp6IjhJzuW3I5cIPW2L2C-",
-      "sha256": "c5a56999b6daf652a04641222dc80829060e3b59e5f0623efab1b903a876796b",
-      "size": 2375663538,
-      "totalSize": 2657498934,
+      "driveId": "1EZCmp0zWRbXIE5pYpZz-LIh96WIBgv74",
+      "sha256": "f2dd04192b7210e344d77c38a63462cf8dde668d05e2c95f0f05cbfaf1d41bcc",
+      "size": 2375738524,
+      "totalSize": 2657493673,
       "files": 4201,
-      "revision": 1,
-      "mods": 426
+      "mods": 426,
+      "revision": 2
     }
   ]
 }
