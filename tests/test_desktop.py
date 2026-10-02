@@ -482,6 +482,28 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(write_route(by_hand,is_curseforge(self.instance)),HELD_CURSEFORGE)  # unreadable: hold every file
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_file_names_in_config_are_not_converted_and_broken_ones_are_put_back(self,_):
+        # VEFV2.7.1: Paxi's resourcepack_load_order.json names packs by file name; v0.17-v0.26 converted
+        # 探险者指南针结构汉化 v3.1.zip to Traditional, so the order no longer named the file.
+        import zipfile
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        packs=self.instance/'config/paxi/resourcepacks';packs.mkdir(parents=True)
+        for name in ('探险者指南针结构汉化 v3.1.zip','彩虹像素☆禁用树.zip'):
+            with zipfile.ZipFile(packs/name,'w') as z:z.writestr('pack.mcmeta','{}')
+        order=self.instance/'config/paxi/resourcepack_load_order.json'
+        original='{\n  "loadOrder": [\n    "探險者指南針結構漢化 v3.1.zip",\n    "彩虹像素☆禁用树.zip"\n  ]\n}\n'
+        order.write_text(original,encoding='utf-8')
+        result=self.make_plan()
+        rows={r['current']:r for r in result['rows'] if r['source']=='config/paxi/resourcepack_load_order.json'}
+        broken=rows['探險者指南針結構漢化 v3.1.zip']
+        self.assertEqual((broken['proposed'],broken['changed']),('探险者指南针结构汉化 v3.1.zip',True))
+        self.assertEqual((rows['彩虹像素☆禁用树.zip']['origin'],rows['彩虹像素☆禁用树.zip']['changed']),('not_display',False))
+        jobs.auto_confirm_safe(result)
+        apply_session(result,self.home,lambda *_:None)
+        self.assertEqual(order.read_text(encoding='utf-8'),original.replace('探險者指南針結構漢化','探险者指南针结构汉化'))
+        self.assertFalse([r for r in self.make_plan()['rows'] if r.get('changed') and not r.get('installed')])  # a rerun writes nothing
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_simplified_chinese_in_quest_and_config_files_becomes_taiwan_wording(self,_):
         from mc_zh_tw_translator import desktop_jobs as jobs
         chapters=self.instance/'config/ftbquests/quests/chapters';chapters.mkdir(parents=True)

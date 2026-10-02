@@ -110,25 +110,119 @@ class AiReviewTests(Base):
 
     def test_names_use_the_biome_names_the_map_shows(self):
         # The minimap says 沼澤 and 莽原; CTOV's own zh_tw said 熱帶草原村莊 (Mojang's zh_cn wording, converted).
-        en={'structure.demo.savanna_village':'Savanna Village','structure.demo.swamp_hut':'Swamp Hut',
-            'structure.demo.quest_grove':'Quest Grove','item.demo.savanna_hat':'Savanna Hat'}
+        en={'structure.demo.savanna_village':'Savanna Village','structure.demo.swamp_hut':'Swamp Shack','structure.demo.hut':'Swamp Hut',
+            'structure.demo.quest_grove':'Quest Grove','item.demo.savanna_hat':'Savanna Hat',
+            'biome.demo.dark_forest':'Dark Forest','structure.demo.dark_tower':'Dark Forest Tower'}
         lang=self.instance/'kubejs/assets/demo/lang'
         (lang/'en_us.json').write_text(json.dumps(en),encoding='utf-8');(lang/'zh_cn.json').unlink()
-        (lang/'zh_tw.json').write_text(json.dumps({'structure.demo.savanna_village':'熱帶草原村莊','structure.demo.swamp_hut':'濕地小屋',
-            'structure.demo.quest_grove':'謎題樹叢','item.demo.savanna_hat':'熱帶草原帽'},ensure_ascii=False),encoding='utf-8')
-        vanilla={'minecraft':{'biome.minecraft.savanna':'莽原','biome.minecraft.swamp':'沼澤','biome.minecraft.grove':'雪林'},
-                 '__terms__':{'savanna':'莽原','swamp':'沼澤','grove':'雪林'},'__source__':'test'}
+        (lang/'zh_tw.json').write_text(json.dumps({'structure.demo.savanna_village':'熱帶草原村莊','structure.demo.swamp_hut':'濕地棚屋','structure.demo.hut':'濕地小屋',
+            'structure.demo.quest_grove':'謎題樹叢','item.demo.savanna_hat':'熱帶草原帽',
+            'biome.demo.dark_forest':'黑暗森林','structure.demo.dark_tower':'黑暗森林高塔'},ensure_ascii=False),encoding='utf-8')
+        vanilla={'minecraft':{'biome.minecraft.savanna':'莽原','biome.minecraft.swamp':'沼澤','biome.minecraft.grove':'雪林','biome.minecraft.dark_forest':'黑森林'},
+                 '__terms__':{'savanna':'莽原','swamp':'沼澤','grove':'雪林','dark forest':'黑森林'},'__source__':'test'}
         session=self.make_plan(references=([{},{},vanilla],{'sources':['tw','cn','vanilla']}))
         rows={r['key']:r for r in session['rows']}
         village=rows['structure.demo.savanna_village']
         self.assertEqual((village['proposed'],village['changed']),('莽原村莊',True))
         self.assertTrue(jobs.needs_check(village))
         self.assertEqual(rows['structure.demo.swamp_hut']['name_doubt'],['地圖上的「Swamp」顯示為「沼澤」'])
+        self.assertEqual(rows['structure.demo.hut']['proposed'],'沼澤小屋')  # the game's own structure by the same English
         self.assertEqual(sorted(r['key'] for _,r in ai.doubt_rows(session)),['structure.demo.swamp_hut'])
         self.assertNotIn('structure.demo.quest_grove',{k for k,r in rows.items() if r.get('name_doubt')})  # a grove, not the biome
         self.assertFalse((rows.get('item.demo.savanna_hat') or {}).get('changed'))  # only place names
+        # The mod's own Dark Forest is 黑暗森林 on its map, so its tower keeps that word.
+        self.assertFalse((rows.get('structure.demo.dark_tower') or {}).get('name_doubt'))
         terms=jobs.load_name_terms(session)
         self.assertEqual(terms['swamp'],('Swamp','沼澤'))  # AI gets the map's words too
+
+    def test_two_places_of_one_mod_under_one_name_take_the_mods_simplified_chinese(self):
+        # Nature's Spirit's own zh_tw names Cypress Fields and Tropical Woods both 檜木森林; its zh_cn tells them apart.
+        en={'biome.demo.cypress_fields':'Cypress Fields','biome.demo.tropical_woods':'Tropical Woods','biome.demo.mystery':'Mystery Woods',
+            'structure.demo.arch':'Red Rock Arch','structure.demo.arches':'Red Rock Arches'}
+        lang=self.instance/'kubejs/assets/demo/lang'
+        (lang/'en_us.json').write_text(json.dumps(en),encoding='utf-8')
+        (lang/'zh_cn.json').write_text(json.dumps({'biome.demo.cypress_fields':'柏树原野','biome.demo.tropical_woods':'热带森林'},ensure_ascii=False),encoding='utf-8')
+        (lang/'zh_tw.json').write_text(json.dumps({'biome.demo.cypress_fields':'檜木森林','biome.demo.tropical_woods':'檜木森林','biome.demo.mystery':'檜木森林',
+                                                   'structure.demo.arch':'紅巖拱門','structure.demo.arches':'紅巖拱門'},ensure_ascii=False),encoding='utf-8')
+        rows={r['key']:r for r in self.make_plan()['rows']}
+        self.assertEqual((rows['biome.demo.cypress_fields']['proposed'],rows['biome.demo.tropical_woods']['proposed']),('柏樹原野','熱帶森林'))
+        self.assertIn('檜木森林',rows['biome.demo.cypress_fields']['issue'])
+        self.assertEqual(rows['biome.demo.mystery']['proposed'],'檜木森林')  # no Simplified Chinese of its own: listed for AI
+        self.assertTrue(any('也叫「檜木森林」' in n for n in rows['biome.demo.mystery']['name_doubt']))
+        # An arch and its group are one place; 巖 is written 岩 as in Taiwan's official zh_tw.
+        self.assertEqual((rows['structure.demo.arch']['proposed'],rows['structure.demo.arch'].get('name_doubt')),('紅岩拱門',None))
+
+    def test_the_modpacks_compass_translation_pack_comes_before_earlier_ai_names(self):
+        # VEFV2.7.1 loads 探险者指南针结构汉化 v3.1.zip through Paxi: every mod's structure names, decorated as
+        # [模組]名稱(English), in the compass's own file. It is read, never written, and beats an earlier AI name.
+        import zipfile
+        lang=self.instance/'kubejs/assets/demo/lang'
+        (lang/'en_us.json').write_text(json.dumps({'structure.demo.small_blimp':'Small Blimp','structure.demo.tower':'Tower'}),encoding='utf-8')
+        (lang/'zh_cn.json').unlink()
+        packs=self.instance/'config/paxi/resourcepacks';packs.mkdir(parents=True)
+        pack=packs/'探险者指南针结构汉化 v3.1.zip'
+        with zipfile.ZipFile(pack,'w') as z:
+            z.writestr('pack.mcmeta','{}')
+            z.writestr('assets/explorerscompass/lang/zh_cn.json',json.dumps({'structure.demo.small_blimp':'[地牢浮现之时]飞艇(Small Blimp)'},ensure_ascii=False))
+        FakeClient.translations={'Small Blimp':'小汽艇','Tower':'高塔'}
+        session=self.make_plan()
+        rows={r['key']:r for r in session['rows']}
+        self.assertEqual((rows['structure.demo.small_blimp']['proposed'],rows['structure.demo.small_blimp']['origin']),('飛艇','instance_zh_cn'))
+        self.assertFalse([r for r in session['rows'] if r['source'].startswith('config/paxi/')])  # the author's pack is not a target
+        before=pack.read_bytes()
+        # An AI name written before the pack was read gives way to it in the next run.
+        (lang/'zh_tw.json').write_text(json.dumps({'structure.demo.tower':'高塔'},ensure_ascii=False),encoding='utf-8')
+        jobs.Provenance(self.home,self.instance.resolve()).record([dict(source=rows['structure.demo.tower']['source'],key='structure.demo.tower',
+                                                                        proposed='高塔',en='Tower',origin='ai_translation')])
+        with zipfile.ZipFile(pack,'a') as z:
+            z.writestr('assets/demo/lang/zh_cn.json',json.dumps({'structure.demo.tower':'瞭望塔'},ensure_ascii=False))
+        rows={r['key']:r for r in self.make_plan()['rows']}
+        self.assertEqual((rows['structure.demo.tower']['proposed'],rows['structure.demo.tower']['origin']),('瞭望塔','instance_zh_cn'))
+
+    def test_a_name_whose_zh_tw_and_zh_cn_disagree_is_a_doubt(self):
+        # Nature's Spirit: Arid Highlands is 高嶺土 (kaolin) in its zh_tw and 高原旱地 in its zh_cn.
+        lang=self.instance/'kubejs/assets/demo/lang'
+        (lang/'en_us.json').write_text(json.dumps({'biome.demo.arid':'Arid Highlands','biome.demo.forest':'Redwood Forest'}),encoding='utf-8')
+        (lang/'zh_cn.json').write_text(json.dumps({'biome.demo.arid':'高原旱地','biome.demo.forest':'红杉林'},ensure_ascii=False),encoding='utf-8')
+        (lang/'zh_tw.json').write_text(json.dumps({'biome.demo.arid':'高嶺土','biome.demo.forest':'紅杉樹林'},ensure_ascii=False),encoding='utf-8')
+        session=self.make_plan();rows={r['key']:r for r in session['rows']}
+        self.assertEqual(rows['biome.demo.arid']['name_doubt'],['模組簡中寫作「高原旱地」，和繁中意思不同'])
+        self.assertFalse((rows.get('biome.demo.forest') or {}).get('name_doubt'))  # the same name, written a little differently
+        self.assertEqual([r['key'] for _,r in ai.doubt_rows(session)],['biome.demo.arid'])
+
+    def test_a_compass_mods_names_for_other_mods_come_after_the_modpacks_pack(self):
+        # Explorer's Compass's own zh_tw calls Dungeons Arise's Small Blimp 小汽艇; the modpack's pack says 飛艇.
+        import zipfile
+        jar=self.instance/'mods/compass.jar';jar.parent.mkdir()
+        with zipfile.ZipFile(jar,'w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="explorerscompass"\n')
+            z.writestr('assets/explorerscompass/lang/en_us.json',json.dumps({'structure.arise.small_blimp':'Small Blimp','structure.arise.lich_prison':'Lich Prison'}))
+            z.writestr('assets/explorerscompass/lang/zh_tw.json',json.dumps({'structure.arise.small_blimp':'小汽艇','structure.arise.lich_prison':'英雄監獄'},ensure_ascii=False))
+        with zipfile.ZipFile(self.instance/'mods/arise.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="arise"\n')
+            z.writestr('data/arise/worldgen/structure/small_blimp.json','{}')
+        packs=self.instance/'config/paxi/resourcepacks';packs.mkdir(parents=True)
+        with zipfile.ZipFile(packs/'compass.zip','w') as z:
+            z.writestr('assets/explorerscompass/lang/zh_cn.json',json.dumps({'structure.arise.small_blimp':'[地牢浮现之时]飞艇(Small Blimp)'},ensure_ascii=False))
+        rows={r['key']:r for r in self.make_plan()['rows']}
+        self.assertEqual(rows['structure.arise.small_blimp']['proposed'],'飛艇')
+        self.assertFalse(rows.get('structure.arise.lich_prison',{}).get('changed'))  # nothing better: stays as it is
+
+    def test_names_ai_writes_get_the_same_name_checks(self):
+        en={'structure.demo.outpost':'Pillager Outpost Dark Forest'}
+        lang=self.instance/'kubejs/assets/demo/lang'
+        (lang/'en_us.json').write_text(json.dumps(en),encoding='utf-8');(lang/'zh_cn.json').unlink()
+        vanilla={'minecraft':{'biome.minecraft.dark_forest':'黑森林'},'__terms__':{'dark forest':'黑森林'},'__source__':'test'}
+        session=self.make_plan(references=([{},{},vanilla],{'sources':['tw','cn','vanilla']}))
+        FakeClient.translations={'Pillager Outpost Dark Forest':'黑暗森林掠奪者前哨站'};seen=[]
+        class Seeing(FakeClient):
+            def translate(inner,payload,model,glossary=None):
+                seen.append(glossary);return FakeClient.translate(inner,payload,model,glossary)
+        done=ai.supplement(session,self.home,'account-model',lambda *_:None,client_factory=Seeing)
+        self.assertEqual(seen[0].get('Dark Forest'),'黑森林')  # AI is told the map's word
+        row={r['key']:r for r in done['rows']}['structure.demo.outpost']
+        self.assertEqual(row['name_doubt'],['地圖上的「Dark Forest」顯示為「黑森林」'])
+        self.assertEqual([r['key'] for _,r in ai.doubt_rows(done)],['structure.demo.outpost'])
 
     def test_confirmed_rows_are_never_sent(self):
         session=self.make_plan()

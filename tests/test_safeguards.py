@@ -348,6 +348,13 @@ class QualityTests(Base):
     def test_correct_taiwan_words_are_not_rewritten(self):
         for text in ('感謝所有支持者','質量越大，射程越短'):self.assertEqual(jobs.taiwan_wording(text),text)
         self.assertEqual(jobs.taiwan_wording('默認設置'),'預設設定')
+        self.assertEqual(jobs.taiwan_wording('西蘭花農場'),'青花菜農場')
+        self.assertEqual(jobs.taiwan_wording('疆盜塔樓'),'強盜塔樓')
+        # 终末地 is Arknights: Endfield; 末地 alone is the End. Older versions wrote 終終界: corrected.
+        from mc_zh_tw_translator.desktop_references import to_taiwan
+        self.assertEqual(to_taiwan('终末地管理员'),'終末地管理員')
+        self.assertEqual(to_taiwan('进入末地'),'進入終界')
+        self.assertEqual(jobs.taiwan_wording('終終界管理員'),'終末地管理員')
         # Taiwan wording that only looks like a mainland word stays: 增加 + 載入, 控制代碼, 數據機, 大數據.
         for text in ('略微增加載入時間','請參閱可用的控制代碼','錯誤代碼 404','數據機','大數據分析'):self.assertEqual(jobs.taiwan_wording(text),text)
         self.assertEqual(jobs.taiwan_wording('正在加載數據'),'正在載入資料')

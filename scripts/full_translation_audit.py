@@ -435,7 +435,9 @@ class Audit:
         the compass mods show it (ghostly_graveyard → Ghostly Graveyard). The row belongs to a mod file of that mod,
         so its translation goes into the translation resource pack like the mod's own text."""
         # The translation resource pack this program made holds keys added here earlier: they are not the mod's own.
-        have={r['key'] for r in self.rows if r['kind']=='language' and not r['source'].startswith('resourcepacks/MCTranslator-zh_tw.zip!/')}
+        # Paxi's packs are read as references only (desktop_jobs.PAXI_PACKS): a name only they have still needs its row.
+        have={r['key'] for r in self.rows if r['kind']=='language'
+              and not r['source'].startswith(('resourcepacks/MCTranslator-zh_tw.zip!/','config/paxi/resourcepacks/'))}
         jars={}
         for label,mod,_ in self.registry:
             if label.startswith('mods/') and '!/' not in label:jars.setdefault(mod,label)

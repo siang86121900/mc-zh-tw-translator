@@ -123,6 +123,8 @@ def edit_safe(file: str, old: str, new: str) -> bool:
         try:old,new=json.loads(old,strict=False),json.loads(new,strict=False)
         except ValueError:return False
         if not isinstance(old,str) or not isinstance(new,str):return False
+    # A file name (Paxi's load order lists packs by name) must match its file; converting it breaks the link.
+    if jobs.FILE_NAME.search(old.strip('"\' ')):return False
     return old!=new and CJK_TEXT.sub('',old)==CJK_TEXT.sub('',new) and bool(jobs.HAN.search(new))
 
 

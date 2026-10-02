@@ -749,7 +749,11 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
     if not remaining: raise BridgeError('沒有可安全補翻的缺漏；其他格式需另行確認。')
     done = dict(completed=0, answered=0, kept=0); glossary = jobs.UserGlossary(home); memory = jobs.AiMemory(home)
     names = jobs.load_name_terms(session)  # names this modpack already uses, so sentences stay consistent
-    learned = []; quota = {}
+    learned = []; quota = {}; adopted = []
+    # Biome names as the map shows them, for place names: a mod's own biome of that name, else the game's.
+    map_biomes = {en: zh for en, zh in (session.get('map_biomes') or {}).items() if en not in jobs.PLAIN_BIOME_WORDS}
+    own_biomes = {(r['key'].split('.')[1], r['en'].strip().casefold()): r.get('proposed') for r in session['rows']
+                  if r.get('key', '').startswith('biome.') and isinstance(r.get('en'), str) and jobs.HAN.search(r.get('proposed') or '')}
     session['ai_status'] = 'running'; session['ai_notice'] = NOTICE
     jobs.write_json(report, session)
 
@@ -769,8 +773,12 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
             if rejected.get('text'): item.update(previous=rejected['text'], problem=rejection_problem(original, rejected))
             elif retryable(row): item['problem'] = '上次的譯文沒有通過檢查：' + row.get('issue', '')
         terms = {}
-        for _, _, original in batch:
-            terms.update(jobs.names_in(names, original)); terms.update(glossary.terms_in(original))  # user terms win
+        for _, row, original in batch:
+            terms.update(jobs.names_in(names, original))
+            if jobs.REGISTRY_KEY.match(row.get('key', '')):
+                mod = row['key'].split('.')[1]
+                terms.update({en.title(): own_biomes.get((mod, en)) or zh for en, zh in map_biomes.items() if jobs.has_word(en, original)})
+            terms.update(glossary.terms_in(original))  # user terms win
         return payload, terms
 
     def settle(batch, answers):
@@ -779,7 +787,7 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
             done['answered'] += 1
             for n, r in enumerate([row] + twins.get(i, [])):
                 if adopt(session, r, original, answers[str(i)], selected_model, jobs, '與這個模組裡相同的原文用同一句譯文。' if n else ''):
-                    done['kept' if r.get('ai_keep') else 'completed'] += 1; learned.append(r)
+                    done['kept' if r.get('ai_keep') else 'completed'] += 1; learned.append(r); adopted.append(r)
 
     def save():
         memory.remember_many(learned, selected_model); learned.clear()  # the same sentence in a later modpack is not paid for twice
@@ -813,6 +821,7 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
         session['ai_message'] = (f'{jobs.explain_error(exc)}\n已完成的 AI 譯文和其他所有譯文會照常套用；還有 {left:,} 筆沒有補翻。'
                                  '額度恢復後再按一次「一鍵完整翻譯並套用」，只會補剩下的部分。')
     finally:
+        jobs.check_ai_names(session, adopted, memory)  # the same name checks as other sources; doubts go to the AI check
         jobs.write_json(report, session)
     notify(100, 'AI 補翻已停止' if session['ai_status'] == 'paused' else 'AI 補翻完成', session['ai_message'])
     return session

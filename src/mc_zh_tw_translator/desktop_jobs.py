@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import collections
+import difflib
 import copy
 import gzip
 import hashlib
@@ -689,7 +690,7 @@ def needs_check(row):
     if str(row.get('review_method') or '').startswith('user_confirmed'):return False  # the user has looked at it
     if (row.get('ai_review') or {}).get('verdict')=='ok':return False  # AI read it against the English and agreed
     if row.get('supported') and row.get('number_doubt') and row.get('origin') not in ('untranslated','keep_original'):return True
-    if row.get('supported') and (row.get('name_doubt') or '生態域改用地圖上的名稱' in str(row.get('issue') or '')) and row.get('origin') not in ('untranslated','keep_original'):return True
+    if row.get('supported') and (row.get('name_doubt') or row.get('map_word')) and row.get('origin') not in ('untranslated','keep_original'):return True
     return bool(row.get('supported') and (row.get('changed') or row.get('recovered')) and (
         row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None
         or str(row.get('issue') or '').startswith('既有繁中') or '大陸用語改為台灣用語' in str(row.get('issue') or '')
@@ -707,6 +708,8 @@ TW_WORDING = [(re.compile(a),b) for a,b in (
     ('屏幕','螢幕'),('界面','介面'),('服務器','伺服器'),('(?<!大)數據(?!機)','資料'),('(?<![增附追添外])加載(?!入)','載入'),('兼容','相容'),
     # 質量 (mass) and 支持 (支持者, 感謝支持) are left alone: both are also correct Taiwan wording.
     ('用戶(?!端)','使用者'),('網絡','網路'),('設置','設定'),('緩存','快取'),
+    ('西蘭花','青花菜'),  # SMC's 西蘭花農場 (Broccoli Farm)
+    ('疆盜','強盜'),  # a typo in Explorer's Compass's own zh_tw and the compass translation pack (Bandit Towers)
 )]
 KANA = re.compile('[぀-ヿ]')
 
@@ -789,7 +792,7 @@ def report_overview(session):
         if needs_check(r):
             check['AI 補譯' if r['origin']=='ai_translation' else '自動統一譯名' if r.get('unified_from') is not None
                   else '版本待確認的參考' if r['origin'] in ('stale_reference','cross_version_reference')
-                  else '數值和原文不同' if r.get('number_doubt') else '名稱和地圖或原文不一致' if r.get('name_doubt') or '生態域改用地圖上的名稱' in str(r.get('issue') or '') else '修正轉換用字' if '已修正轉換用字' in str(r.get('issue') or '')
+                  else '數值和原文不同' if r.get('number_doubt') else '名稱和地圖或原文不一致' if r.get('name_doubt') or r.get('map_word') else '修正轉換用字' if '已修正轉換用字' in str(r.get('issue') or '')
                   else '改成台灣用語']+=1
     after=session.get('after_counts')
     return dict(applied=applied,not_applied=reasons,context=context,held=held,check=sum(check.values()),check_kinds=check.most_common(),
@@ -842,6 +845,7 @@ def unify_suggested_terms(session):
 
 
 USER_ORIGINS = ('manual','translation_memory','user_glossary')
+LATE_ORIGINS = ('ai_translation','stale_reference','cross_version_reference','glossary')  # below every other source
 
 
 def shown_first(source):
@@ -927,6 +931,36 @@ MAP_BIOME_WORDS = (
 PLAIN_BIOME_WORDS = {'grove','ocean','river','the end','the void','forest','beach','meadow','desert','plains','jungle'}
 
 
+# The game's own structures inside mods' names, under the zh_tw names the compass shows for the game's own (Repurposed
+# Structures: 林地府邸（白樺）beside 綠林府邸), by the id of the name (its English is often missing).
+VANILLA_WORDS = ((r'mansion',('林地府邸',),'綠林府邸'),(r'mineshaft',('廢棄礦井','廢棄礦坑'),'礦坑'),(r'bastion',('堡壘遺跡',),'堡壘遺蹟'),
+                 (r'jungle_(?:temple|pyramid)',('叢林神廟',),'叢林遺跡'),(r'end_?city',('終界城',),'終末都市'))
+# Character forms Taiwan's official zh_tw does not use (岩, 床; see desktop_references.TAIWAN_FORMS).
+NAME_FORMS = str.maketrans({'巖':'岩','牀':'床'})
+
+
+def map_wording(key, en, value):
+    """(name, why) with the words the map and the compass show for the game's own biomes and structures; the name
+    as it was and '' when nothing applies."""
+    from .desktop_references import VANILLA_STRUCTURE_NAMES
+    path=key.split('.',2)[2] if key.count('.')>=2 else ''
+    # Two words and more: a mod's Monument or Fortress is its own (Meadow's Monument is 紀念碑, not 海底遺跡).
+    same=re.sub(r'[^a-z0-9]+','_',(en or '').casefold()).strip('_')
+    vanilla=VANILLA_STRUCTURE_NAMES.get(same) if key.startswith('structure.') and '_' in same else None
+    if vanilla and value!=vanilla:return vanilla,'和原版同名的結構改用官方名稱'
+    fixed=value.translate(NAME_FORMS);why=[] if fixed==value else ['改用台灣字形']
+    for word,others,shown in MAP_BIOME_WORDS:
+        if isinstance(en,str) and has_word(word,en) and shown not in fixed and any(o in fixed for o in others):
+            for o in others:fixed=fixed.replace(o,shown)
+            why.append('生態域改用地圖上的名稱')
+    if key.startswith('structure.'):
+        for pattern,others,shown in VANILLA_WORDS:
+            if re.search(pattern,path) and shown not in fixed and any(o in fixed for o in others):
+                for o in others:fixed=fixed.replace(o,shown)
+                why.append('原版結構改用官方名稱')
+    return fixed,'、'.join(dict.fromkeys(why))
+
+
 def map_biome_names(vanilla):
     """English biome name (casefolded) -> the zh_tw name the game shows on the map, from Mojang's language files."""
     if not vanilla:return {}
@@ -934,11 +968,50 @@ def map_biome_names(vanilla):
     return {en:zh for en,zh in vanilla.get('__terms__',{}).items() if zh in shown}
 
 
+def same_place(a, b):
+    """Whether two English names are one place written two ways (Arch / Arches, Fortress / Fotress, End City / Endcity)."""
+    def norm(text):
+        words=re.findall(r'[a-z]+',(text or '').lower())
+        return ''.join(w[:-3]+'y' if w.endswith('ies') else w[:-2] if w.endswith(('ches','shes','sses')) else w[:-1] if w.endswith('s') and len(w)>3 else w for w in words)
+    a,b=norm(a),norm(b)
+    return a==b or difflib.SequenceMatcher(None,a,b).ratio()>=0.85
+
+
+def repeated_names(rows, only=None):
+    """Different places of one mod given the same Chinese name (Nature's Spirit's own zh_tw names Cypress Fields, Tropical
+    Woods and Sparse Tropical Woods all 檜木森林, while its zh_cn tells them apart): the compass and the map would show
+    two places as one. Where the mod's own Simplified Chinese differs, that is used (converted); the rest is listed as a
+    doubt (name_doubt) for AI to check. Returns how many rows changed or were marked."""
+    groups=collections.defaultdict(list)
+    for r in rows:
+        if (r.get('kind')=='language' and REGISTRY_KEY.match(r.get('key','')) and isinstance(english_of(r),str)
+                and HAN.search(r.get('proposed') or '') and r.get('origin') not in USER_ORIGINS+('official_vanilla','keep_original','untranslated')
+                and not str(r.get('review_method') or '').startswith('user_confirmed')):
+            groups[(lang_namespace(r['source']),r['key'].split('.')[0],r['proposed'].strip())].append(r)
+    marked=0
+    for (_,_,name),group in groups.items():
+        if len(group)<2:continue
+        for r in group:
+            if only is not None and id(r) not in only:continue
+            if all(same_place(english_of(r),english_of(o)) for o in group if o is not r):continue
+            own=taiwan_wording(to_taiwan(r['zh_cn'])) if isinstance(r.get('zh_cn'),str) and HAN.search(r['zh_cn']) else None
+            if own and own!=name and fits(original_of(r),own,False):
+                r.update(previous_origin=r['origin'],previous_proposed=r['proposed'],proposed=own,origin='same_source_zh_cn',evidence=r['source'],
+                         issue=f'模組繁中把不同的地方都寫成「{name}」，改用模組簡中轉繁，請核對',changed=own!=r.get('current'))
+                if r['changed']:r.pop('installed',None);r.pop('recovered',None)
+            else:
+                others='、'.join(f'「{english_of(o)}」' for o in group if o is not r and not same_place(english_of(r),english_of(o)))
+                r['name_doubt']=(r.get('name_doubt') or [])+[f'同模組的{others}也叫「{name}」']
+                r['issue']=(r['issue']+'；' if r.get('issue') else '')+f'同模組的{others}也叫「{name}」，請核對'
+            marked+=1
+    return marked
+
+
 def has_word(word, text):
     return bool(re.search(r'(?<![A-Za-z])'+re.escape(word)+r'(?![A-Za-z])',text or '',re.I))
 
 
-def name_doubts(rows, ai_memory=None, biomes=None):
+def name_doubts(rows, ai_memory=None, biomes=None, only=None):
     """Biome, structure and dimension names (what the compasses and the map waypoints they add show) checked once more:
 
     - a biome the English names is written the way the map shows it (Savanna → 莽原); a known other wording is replaced;
@@ -948,25 +1021,25 @@ def name_doubts(rows, ai_memory=None, biomes=None):
     Listed names are doubts AI may check (codex_bridge.doubt_rows). A name AI already read and kept is not listed again,
     and one it rewrote takes that answer again. Returns how many rows were marked or corrected."""
     biomes=biomes or {}
-    by_mod=collections.defaultdict(list)
+    by_mod=collections.defaultdict(list);own_biomes={}
     for r in rows:
         if r.get('kind')=='language' and isinstance(english_of(r),str) and HAN.search(r.get('proposed') or ''):
             by_mod[lang_namespace(r.get('source',''))].append(r)
+            if r['key'].startswith('biome.'):own_biomes[(r['key'].split('.')[1],english_of(r).strip().casefold())]=r['proposed'].strip()
     marked=0
     for r in rows:
         en=english_of(r);value=r.get('proposed') or ''
-        if (r.get('kind')!='language' or not REGISTRY_KEY.match(r.get('key','')) or not isinstance(en,str) or not HAN.search(value)
+        if only is not None and id(r) not in only:continue
+        if (r.get('kind')!='language' or not REGISTRY_KEY.match(r.get('key','')) or not HAN.search(value)
                 or r.get('origin') in USER_ORIGINS+('untranslated','keep_original','official_vanilla')
                 or str(r.get('review_method') or '').startswith('user_confirmed')):continue
-        for word,others,shown in MAP_BIOME_WORDS:
-            if has_word(word,en) and shown not in value and any(o in value for o in others):
-                fixed=value
-                for o in others:fixed=fixed.replace(o,shown)
-                if fits(original_of(r),fixed,r.get('own_lines')):
-                    r.update(proposed=fixed,changed=fixed!=r.get('current'),
-                             issue=(r['issue']+'；' if r.get('issue') else '')+f'生態域改用地圖上的名稱（原為「{value}」），請核對')
-                    if r['changed']:r.pop('installed',None);r.pop('recovered',None)
-                    value=fixed;marked+=1
+        fixed,why=map_wording(r['key'],en,value)
+        if fixed!=value and fits(original_of(r),fixed,r.get('own_lines')):
+            r.update(proposed=fixed,changed=fixed!=r.get('current'),map_word=True,
+                     issue=(r['issue']+'；' if r.get('issue') else '')+f'{why}（原為「{value}」），請核對')
+            if r['changed']:r.pop('installed',None);r.pop('recovered',None)
+            value=fixed;marked+=1
+        if not isinstance(en,str):continue
         notes=[]
         words=[w for w in dict.fromkeys(re.findall(r'[A-Za-z]{3,}',value))
                if not w.isupper() and has_word(w,en) and not keep_original_reason(w)]
@@ -978,12 +1051,19 @@ def name_doubts(rows, ai_memory=None, biomes=None):
                             and not REGISTRY_KEY.match(o['key'])),None)
                 if other:hints.append(f'同模組的「{english_of(other)}」譯為「{other["proposed"]}」')
             notes.append('名稱留有英文「'+'、'.join(words)+'」'+('，'+'；'.join(hints) if hints else ''))
+        own=taiwan_wording(to_taiwan(r['zh_cn'])) if isinstance(r.get('zh_cn'),str) and HAN.search(r['zh_cn']) else ''
+        if (own and r.get('origin') not in ('ai_translation','same_source_zh_cn','instance_zh_cn')
+                and difflib.SequenceMatcher(None,own,value).ratio()<0.34):
+            # The mod's zh_tw and zh_cn name two different things (Nature's Spirit: Arid Highlands 高嶺土 / 高原旱地).
+            notes.append(f'模組簡中寫作「{own}」，和繁中意思不同')
         # Structures only: a mod's own biome is itself what the map shows (Twilight Forest's Dark Forest is 黑暗森林).
         rest=en.casefold() if r['key'].startswith('structure.') else ''
         for biome in sorted(biomes,key=len,reverse=True):
             if biome in PLAIN_BIOME_WORDS or not has_word(biome,rest):continue
             rest=re.sub(r'(?<![a-z])'+re.escape(biome)+r'(?![a-z])',' ',rest)  # Snowy Taiga is not checked as Taiga too
-            if biomes[biome] not in value:notes.append(f'地圖上的「{biome.title()}」顯示為「{biomes[biome]}」')
+            # The map shows the biome's own name: a mod's biome of that name (Twilight Forest's Dark Forest, 黑暗森林) or the game's.
+            shown=own_biomes.get((r['key'].split('.')[1],biome)) or biomes[biome]
+            if shown not in value:notes.append(f'地圖上的「{biome.title()}」顯示為「{shown}」')
         if not notes:continue
         if ai_memory is not None and ai_memory.checked(ns,r['key'],en)==value:continue
         earlier=ai_memory.lookup(ns,r['key'],en) if ai_memory is not None else None
@@ -996,10 +1076,21 @@ def name_doubts(rows, ai_memory=None, biomes=None):
                      ai_reused=True,issue=f'AI 依疑點改寫（原為「{value}」），尚未人工校對。',changed=fixed!=r.get('current'))
             r.pop('installed',None);r.pop('recovered',None)
             marked+=1;continue
-        r['name_doubt']=notes
+        r['name_doubt']=(r.get('name_doubt') or [])+notes
         r['issue']=(r['issue']+'；' if r.get('issue') else '')+'；'.join(notes)+'，請核對'
         marked+=1
     return marked
+
+
+def check_ai_names(session, rows, ai_memory=None):
+    """Names AI has just written (codex_bridge.supplement) get the checks names from other sources had in plan: the map's
+    words, two places under one name, English left in. Doubts found go to the AI check that follows."""
+    names=[r for r in rows if REGISTRY_KEY.match(r.get('key','')) and r.get('origin')=='ai_translation']
+    if not names:return 0
+    keys={id(r) for r in names}
+    for r in names:r.pop('name_doubt',None)
+    return (repeated_names(session['rows'],only=keys)
+            +name_doubts(session['rows'],ai_memory,session.get('map_biomes'),only=keys))
 
 
 def usable(original, value):
@@ -1300,11 +1391,31 @@ def generated_copy(path):
     return any(part.startswith('.') for part in PurePosixPath(path).parts[:-1])
 
 
+# Resource packs the Paxi mod loads (VEFV2.7.1 keeps its translation packs there, among them a compass structure
+# translation in Simplified Chinese for 1,901 structures). Read as references only: they are the modpack author's files.
+PAXI_PACKS = 'config/paxi/resourcepacks'
+# "[地牢浮现之时]飞艇(Small Blimp)": a translation pack's mod name in front and the English after; the name is in between.
+DECORATED_NAME = re.compile(r'^\s*(?:\[[^\]]{1,40}\]\s*)?(.+?)\s*(?:[(（]([^()（）]*[A-Za-z][^()（）]*)[)）])?\s*$')
+
+
+def plain_name(key, text, english=None):
+    """A biome, structure or dimension name from a translation pack without the decoration around it ("[模組]名稱(English)"),
+    its number written as the English writes it (縈風教堂_0 → 縈風教堂 0). None when the English it is tagged with is
+    another name: the compass pack translated only the last part of some (Ice Maze Common is tagged (Common), 常見)."""
+    if not REGISTRY_KEY.match(key or '') or not isinstance(text,str):return text
+    m=DECORATED_NAME.match(text)
+    if not m or not HAN.search(m[1]):return text
+    if m[2] and isinstance(english,str):
+        words=lambda s:sorted(re.findall(r'[a-z0-9]+',s.casefold()))
+        if words(m[2])!=words(english) and not same_place(m[2],english):return None
+    return re.sub(r'_(\d+)$',r' \1',m[1])
+
+
 def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
     audit = Audit(report/'audit',{});audit.cache_hits=0;used=set()
     audit.source_hashes={}
     archives=[]
-    for folder in ('mods','resourcepacks','datapacks','config/openloader')+CONTENT_PACK_FOLDERS:
+    for folder in ('mods','resourcepacks','datapacks','config/openloader',PAXI_PACKS)+CONTENT_PACK_FOLDERS:
         for p in (instance/folder).rglob('*'):
             if p.suffix.lower() in ('.jar','.zip') and p.is_file() and not generated_copy(p.relative_to(instance).as_posix()):
                 contained(instance,p.relative_to(instance).as_posix())
@@ -1419,8 +1530,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     for r in audit.rows:
         if r['kind']!='language' or not isinstance(r['zh_cn'],str): continue
         m=re.search(r'assets/([^/]+)/lang/',r['source'])
-        if m and (r['source'].startswith('instance!/kubejs/assets/') or r['source'].startswith('config/openloader/')):
+        if m and (r['source'].startswith('instance!/kubejs/assets/') or r['source'].startswith(('config/openloader/',PAXI_PACKS+'/'))):
             instance_cn.setdefault((m[1],r['key']),[]).append((r['source'],r['zh_cn']))
+            # Language keys are global: a compass translation pack names every mod's structures in its own file.
+            named=REGISTRY_KEY.match(r['key']) and r['key'].split('.')[1]
+            if named and named!=m[1]:instance_cn.setdefault((named,r['key']),[]).append((r['source'],r['zh_cn']))
     # Every row of a key reads this list in the same order (the modpack's own KubeJS text first), its own
     # file included; leaving the own file out made two files each take the other's wording.
     for found in instance_cn.values():found.sort(key=lambda x:not x[0].startswith('instance!/kubejs/'))
@@ -1447,6 +1561,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     mod_en={};main_copy=set();screen_keys=set();lang_text=set()
     # Strings some mod's program holds: a file no reader covers may hold one a mod compares with or looks up.
     program_text={r['current'].strip() for r in audit.rows if r['kind'] in ('class_candidate','class_display') and isinstance(r['current'],str)}
+    file_names={}  # the modpack's file names, read once when a config string names a file (original_file_name)
     for r in audit.rows:
         if r['kind']=='language' and '/lang/' in r['source'] and not SERVER_LANG.search(r['source'].split('!/')[-1]):screen_keys.add(r['key'])
         if r['kind']=='language' and r['source'].startswith('mods/'):
@@ -1560,6 +1675,18 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                                                 else '寫在模組程式裡的文字：CurseForge 啟動遊戲時會把改過的模組檔換回原版，無法保留翻譯' if not writable else ''),
                                 supported=bool(writable),reviewed=False,changed=value!=original,**extra))
             continue
+        if r.get('kind') in LOOSE_TEXT_KINDS and isinstance(r.get('current'),str) and FILE_NAME.search(r['current']):
+            # A file name, not text (Paxi's resourcepack_load_order.json lists packs by name): converting it breaks the
+            # link to the file. v0.17-v0.26 converted such names; one that no file has any more is put back.
+            restored=original_file_name(instance,r['current'],file_names)
+            if restored:
+                result['rows'].append(dict(slim(r),proposed=restored,origin='keep_original',evidence='檔名，不是顯示文字',
+                                           issue=f'先前版本把檔名轉成繁體，和實際的檔案「{restored}」對不上，已改回原本的檔名',
+                                           supported=True,reviewed=False,changed=True))
+                counts['file_name_restored']+=1;continue
+            result['rows'].append(dict(slim(r),proposed=r['current'],origin='not_display',issue='程式內部字串：檔名，不是顯示文字',
+                                       supported=False,reviewed=False,changed=False))
+            counts['not_display']+=1;continue
         if r.get('unverified') and convertible(r) and r['current'].strip() in program_text:
             result['rows'].append(dict(slim(r),proposed=r['current'],origin='untranslated',supported=False,reviewed=False,changed=False,
                                        issue='程式還不認得的檔案；模組程式裡也有同一句，可能拿來比對，改了可能讓模組出錯，所以不改'))
@@ -1605,6 +1732,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 counts['not_display' if hidden else 'context_candidate']+=1
             continue
         ns=memory_scope(r)
+        if r['source'].startswith(PAXI_PACKS+'/'):
+            counts['reference_only']+=1;continue  # read for its translations (instance_cn); the modpack author's file stays as it is
         if r['source'].count('!/')>=2 and (ns,r['key']) in kubejs_tw:r=dict(r,current=kubejs_tw[(ns,r['key'])])
         # Text that exists only in Chinese (a bundled CFPA pack, KubeJS zh_cn) is checked against the
         # installed mod's English for the same key. With no English anywhere, nothing counts as matching.
@@ -1663,14 +1792,22 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # The game's own structures under the official zh_tw names, above a compass mod's own zh_tw (Explorer's
             # Compass 1.4.0 calls the taiga village 大河村 and the ocean monument 海底廢墟).
             options.append(('official_vanilla',VANILLA_STRUCTURE_NAMES[vanilla_name[1]],'Minecraft 官方 zh_tw 地圖與進度的結構名稱'))
-        options.append(('existing_zh_tw',existing,r['source']))
+        # Text this program wrote from an AI answer or a doubtful reference is not the mod's own zh_tw: it keeps that
+        # place in the order, so a source found later (the modpack's compass translation pack) still comes first.
+        ours=provenance.lookup(r) if isinstance(existing,str) and existing==r['current'] else None
+        late=bool(ours and ours.get('origin') in LATE_ORIGINS)
+        # A compass mod's zh_tw also names other mods' structures (Explorer's Compass 1.4.0: 小汽艇 for Small Blimp): that is
+        # not the mod's own translation of itself, and the modpack's own compass translation pack comes first.
+        named=REGISTRY_KEY.match(r['key']) and r['key'].split('.')[1]
+        late=late or bool(named and named not in (ns,'minecraft') and isinstance(existing,str))
+        if not late:options.append(('existing_zh_tw',existing,r['source']))
         if vanilla:
             options.append(('official_vanilla',vanilla['minecraft'].get(r['key']) if ns=='minecraft' else None,'Minecraft 官方 zh_tw'))
             # Whole-text official names only for name keys: a generic word such as "Red" may be a
             # mod's own name (a dragon colour) and must not become the vanilla 紅色.
             if NAME_KEY.match(r['key']):
                 options.append(('official_vanilla',vanilla['__terms__'].get(original.strip().casefold()),'Minecraft 官方 zh_tw 譯名'))
-        options+=[('same_source_zh_cn' if p==r['source'] else 'instance_zh_cn',v,p) for p,v in instance_cn.get((ns,r['key']),[])]
+        options+=[('same_source_zh_cn' if p==r['source'] else 'instance_zh_cn',plain_name(r['key'],v,english),p) for p,v in instance_cn.get((ns,r['key']),[])]
         options+=[('same_source_zh_cn' if p==r['source'] else 'instance_zh_cn',v,p) for p,v in instance_rp_cn.get((ns,r['key']),[])]
         options.append(('same_source_zh_cn',r['zh_cn'],r['source']))
         if isinstance(english,str) and has_simplified(english):
@@ -1687,6 +1824,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             options.append(('existing_zh_tw',to_taiwan(r['current']),r['source']+'（原含簡體，已轉繁）'))
         earlier=ai_memory.lookup(ns,r['key'],original) if isinstance(english,str) else None
         if earlier and not earlier.get('keep'):options.append(('ai_memory',earlier['text'],'ai_memory.json'))
+        if late:options.append(('existing_zh_tw',existing,r['source']))  # what was written before, when nothing else is found
         renamed=(not r['source'].startswith('mods/') and isinstance(r['en'],str)
                  and mod_en.get((ns,r['key'])) not in (None,r['en']))
         if renamed:
@@ -1790,13 +1928,14 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                             **{k:v for k,v in extra.items() if v is not None}))
     special['plural_names']=singular_names(decided)
     special['same_key']=unify_same_key(decided)
+    special['repeated_names']=repeated_names(decided)
     special['name_doubts']=name_doubts(decided,ai_memory,map_biome_names(vanilla))
     for r in decided:
         # Names given to AI as they now read: the map's biome words in, names still in doubt out.
         en=(r.get('en') or '').strip() if isinstance(r.get('en'),str) else ''
         if en in name_terms and REGISTRY_KEY.match(r['key']):
             if r.get('name_doubt'):name_terms.pop(en)
-            elif '生態域改用地圖上的名稱' in str(r.get('issue') or ''):name_terms[en]=(name_terms[en][0],r['proposed'].strip())
+            elif r.get('map_word'):name_terms[en]=(name_terms[en][0],r['proposed'].strip())
     listed=lambda row:bool(row['changed'] or row['issue'] or row['origin']=='keep_original')  # keep rows stay visible under 無需翻譯
     # A file whose text needs no change is listed too when another file's row for the same key is: naming
     # things alike or a correction by the user then reaches every file, and the game shows the result.
@@ -1810,6 +1949,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     show_language_copies(result['rows'],decided)
     result['rate_before']=coverage(result,before=True)['rate']  # what the game showed before this run
     # The map's biome names go to AI too (Swamp → 沼澤), below every name this modpack gives itself.
+    result['map_biomes']=map_biome_names(vanilla)  # names AI writes later are checked against the map too (check_ai_names)
     known={en.casefold() for en in name_terms}
     biome_terms={en.title():zh for en,zh in map_biome_names(vanilla).items() if en not in known and en not in PLAIN_BIOME_WORDS}
     try:write_json(report/'name_terms.json',{**biome_terms,**{en:zh for en,(_,zh) in name_terms.items()}})
@@ -2404,6 +2544,33 @@ def other_language_file(path):
         if part.casefold() in NOT_THIS_LANGUAGE:return True
         if re.fullmatch(r'[a-z]{2,3}[_-][a-z]{2,4}',part,re.I) and part.casefold().replace('-','_')!='zh_tw':return True
     return False
+
+
+FILE_NAME = re.compile(r'\.(?:zip|jar|json5?|png|jpe?g|gif|webp|txt|mcmeta|ogg|wav|mp3|nbt|snbt|toml|js|zs|cfg|properties|dat|lang|ttf|otf'
+                       r'|mcfunction|schem|schematic|litematic|mcpack|mrpack)\s*$',re.I)
+NOT_NAMED_HERE = ('saves','logs','crash-reports','backups','screenshots','.cache','cache','local')
+
+
+def original_file_name(instance, name, cache):
+    """The name of a file in the modpack that `name` is its Taiwan-converted form of, when no file is called `name`
+    itself; '' otherwise. `cache` holds the modpack's file names between calls."""
+    if 'names' not in cache:
+        names=set()
+        for top in Path(instance).iterdir() if Path(instance).is_dir() else ():
+            if top.name.casefold() in NOT_NAMED_HERE:continue
+            names.add(top.name)
+            if top.is_dir():
+                for _,dirs,files in os.walk(top):
+                    names.update(dirs);names.update(files)
+        cache['names']=names
+        cache['converted']={}
+        for n in names:
+            if HAN.search(n) and has_simplified(n):
+                for converted in (to_taiwan(n),taiwan_wording(to_taiwan(n))):cache['converted'].setdefault(converted,n)
+    stripped=name.strip()
+    if stripped in cache['names']:return ''
+    original=cache['converted'].get(stripped)
+    return name.replace(stripped,original) if original else ''
 
 
 def convertible(row):
