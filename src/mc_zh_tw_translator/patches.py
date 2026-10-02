@@ -65,7 +65,7 @@ MAX_ENTRY_SIZE = 64*1024*1024       # one translated file, unpacked
 MAX_UNPACKED_SIZE = 1024*1024*1024  # the whole patch, unpacked
 # Added mods come from CurseForge's own file servers and nowhere else.
 CURSEFORGE_FILES = ('edge.forgecdn.net','mediafilez.forgecdn.net')
-MAX_MOD_SIZE = 300*1024*1024
+MAX_MOD_SIZE = 1024*1024*1024  # Pixelmon 9.4.1 alone is 400 MB
 MAX_ADDED_MODS = 60
 MOD_FILE_NAME = re.compile(r'[^\\/:*?"<>|\x00-\x1f]{1,180}\.jar',re.I)
 ATTEMPTS = 3

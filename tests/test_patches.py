@@ -168,6 +168,20 @@ class PatchTests(unittest.TestCase):
                 z.writestr('manifest.json',json.dumps(dict(format=patches.PATCH_FORMAT,files=[item])));z.writestr(payload,'x')
             with self.assertRaises(ValueError):patches.read_patch(bad)
 
+    def test_translation_pack_for_a_very_large_mod_is_accepted(self,_):
+        # The Pixelmon Modpack: Pixelmon-1.21.1-9.4.1-universal.jar is 400 MB; only absurd sizes are refused.
+        bad=Path(self.temp.name)/'big.zip'
+        for size,ok in ((400*1024*1024,True),(patches.MAX_MOD_SIZE+1,False)):
+            item=dict(file='resourcepacks/MCTranslator-zh_tw.zip',archive=True,before=None,pack=True,
+                      entries={'assets/pixelmon/lang/zh_tw.json':'0'*64},
+                      requires={'assets/pixelmon/lang/zh_tw.json':{'mods/Pixelmon.jar':'1'*64}},sizes={'mods/Pixelmon.jar':size})
+            with zipfile.ZipFile(bad,'w') as z:
+                z.writestr('manifest.json',json.dumps(dict(format=patches.PATCH_FORMAT,files=[item])))
+                z.writestr('payload/resourcepacks/MCTranslator-zh_tw.zip/assets/pixelmon/lang/zh_tw.json','{}')
+            if ok:patches.read_patch(bad)[0].close()
+            else:
+                with self.assertRaises(ValueError):patches.read_patch(bad)
+
     def test_only_the_zh_tw_quest_file_may_be_shared(self,_):
         self.assertTrue(patches.allowed_file('config/ftbquests/quests/lang/zh_tw.snbt',False))
         for other in ('config/ftbquests/quests/lang/en_us.snbt','config/ftbquests/quests/chapters/a.snbt','config/x/lang/zh_tw.snbt'):
