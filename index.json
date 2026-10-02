@@ -1,6 +1,23 @@
 {
   "packs": [
     {
+      "kind": "full",
+      "name": "Chapter of Yuusha v3.13.15",
+      "version": "",
+      "gameVersion": "1.20.1",
+      "loader": "forge-47.4.10",
+      "translator": "MC Translator",
+      "updated": "2026-10-02",
+      "notes": "",
+      "recommendedRam": 0,
+      "driveId": "1bsm-lu__0BQ7Wt6Zej0tiTPQBcsLlDAR",
+      "sha256": "0e8f512edac53852bde18fe1ee8cdd9af01b95b8d1a7a9dd6402b0ca70ff945d",
+      "size": 256252821,
+      "totalSize": 1345717657,
+      "files": 14148,
+      "revision": 1
+    },
+    {
       "name": "Tensura Neo Otherworld",
       "projectID": 1478248,
       "fileID": 8908669,
