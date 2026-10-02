@@ -21,6 +21,23 @@
       "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1478248/8908669-e0d4b9bc.zip",
       "sha256": "e0d4b9bcefc491b65f64d1906fc5a6aee21d05134131274a248de19487144ee7",
       "size": 3563848
+    },
+    {
+      "kind": "full",
+      "name": "The Foll v0.3.0",
+      "version": "",
+      "gameVersion": "1.20.1",
+      "loader": "forge-47.4.23",
+      "translator": "MC Translator",
+      "updated": "2026-10-02",
+      "notes": "",
+      "recommendedRam": 0,
+      "driveId": "1RDH9YRCgZkufBqh1ppTv901c2H0nSOP5",
+      "sha256": "29f15e7f1ff365fa83c2f3e625c4b19c2665b5415223523ba25bde60e4f485d6",
+      "size": 828926477,
+      "totalSize": 2018521556,
+      "files": 1312,
+      "revision": 1
     }
   ]
 }
