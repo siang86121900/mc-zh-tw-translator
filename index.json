@@ -18,6 +18,23 @@
       "revision": 1
     },
     {
+      "kind": "full",
+      "name": "Elemental Awakening v1.4.6",
+      "version": "",
+      "gameVersion": "1.20.1",
+      "loader": "forge-47.4.10",
+      "translator": "MC Translator",
+      "updated": "2026-10-02",
+      "notes": "",
+      "recommendedRam": 0,
+      "driveId": "1TTOqE9OTCtfc0MW8eSPfoKm2juK6jDXG",
+      "sha256": "b552d7b7978ba677d7cf9eb429214d83c492e6b404e52a51417750d4c5d51c5e",
+      "size": 607771157,
+      "totalSize": 1827056855,
+      "files": 8854,
+      "revision": 1
+    },
+    {
       "name": "Tensura Neo Otherworld",
       "projectID": 1478248,
       "fileID": 8908669,
