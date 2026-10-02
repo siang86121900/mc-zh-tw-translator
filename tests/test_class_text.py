@@ -24,6 +24,74 @@ class ClassTextTests(unittest.TestCase):
         cls.config=(root/'ConfigSample.class').read_bytes();cls.main=(root/'ModMain.class').read_bytes()
         cls.dev=(root/'DevSample.class').read_bytes()
         cls.mixin_raw=(root/'SampleMixin.class').read_bytes()
+        cls.help={name:(root/f'{name}.class').read_bytes() for name in ('ItemHelp','ItemHelp$1','ItemHelp$Tip')}
+
+    def help_jar(self, path, extra=None):
+        with zipfile.ZipFile(path,'w') as z:
+            for name,raw in self.help.items():z.writestr(name+'.class',raw)
+            for name,data in (extra or {}).items():z.writestr(name,data)
+
+    def test_text_handed_to_a_helper_or_kept_in_a_field_is_followed(self):
+        # Cobblemon Battle Positions: createBlockItem(block, "Where opponent's Pokemon spawns", ...) keeps the text in
+        # an anonymous class's field that appendHoverText shows; "Required"/"Optional" goes through a jump.
+        with tempfile.TemporaryDirectory() as folder:
+            self.help_jar(Path(folder)/'help.jar')
+            with zipfile.ZipFile(Path(folder)/'help.jar') as z:
+                flow=class_text.JarFlow.of_zip(z)
+                outer=class_text.proven_strings(self.help['ItemHelp'],flow)
+                inner=class_text.proven_strings(self.help['ItemHelp$1'],flow)
+                alone=class_text.proven_strings(self.help['ItemHelp'])  # without the mod file nothing is followed
+        shown={s for s,_ in outer[1].values()}
+        self.assertEqual(shown,{"Where opponent's Pokemon spawns",'Where your Pokemon spawns'})
+        self.assertEqual({s for s,_ in inner[1].values()},{'Required','Optional'})
+        self.assertEqual(alone[1],{})
+        # Kept in a public field, used for a look-up, or shown by a method another mod may override: left alone.
+        for text in ('Kept in a public field','Looked up by this name','Shown by a method others can override'):self.assertNotIn(text,shown)
+        self.assertEqual(outer[0].keys,{'Spawner: %1$s\nOffset: %2$i'})  # handed to Component.translatable as the key
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_keys_the_program_asks_for_get_entries_in_the_pack(self,_):
+        # Cobblemon Additions 4.1.6 registers cobblemon-additions:pokemon_spawner, names it block.bca.pokemon_spawner and
+        # asks for "Spawner: %1$s\nOffset: %2$i" as a key: the game shows both raw, in English too.
+        refs=([{},{}],{'sources':['tw','cn']})
+        fabric='{"schemaVersion":1,"id":"sample-additions","description":"two\nlines"}'  # a raw line break Fabric accepts
+        answers={'Spawner: %1$s\nOffset: %2$s':'生成器：%1$s\n偏移：%2$s',"Where opponent's Pokemon spawns":'對手寶可夢出現的位置',
+                 'Where your Pokemon spawns':'你的寶可夢出現的位置','Required':'必要','Optional':'選用'}
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);instance=root/'instance';home=root/'app';mods=instance/'mods';mods.mkdir(parents=True)
+            jar=mods/'help.jar'
+            self.help_jar(jar,{'fabric.mod.json':fabric,
+                               'assets/bca/lang/en_us.json':json.dumps({'block.bca.pokemon_spawner':'Pokemon Spawner','block.bca.unused':'Unused'}),
+                               'assets/bca/lang/zh_tw.json':json.dumps({'block.bca.pokemon_spawner':'寶可夢生成器'},ensure_ascii=False)})
+            before=jar.read_bytes()
+            session=jobs.plan(instance,home,lambda *_:None,references=refs)
+            rows={r['key']:r for r in session['rows'] if r['kind']=='language'}
+            name=rows['block.sample-additions.pokemon_spawner']
+            self.assertEqual((name['en'],name['proposed'],name['supported']),('Pokemon Spawner','寶可夢生成器',True))  # the name it was written under
+            self.assertNotIn('block.sample-additions.unused',rows)  # no such thing in the mod's program
+            key=rows['Spawner: %1$s\nOffset: %2$i']
+            self.assertEqual((key['en'],key['format_fixed']),('Spawner: %1$s\nOffset: %2$s',['%2$i']))
+            self.assertIn('遊戲看不懂',key['issue'])
+            shown={r['current'] for r in session['rows'] if r['kind']=='class_display' and r['supported']}
+            self.assertTrue({"Where opponent's Pokemon spawns",'Required','Optional'}<=shown)
+            everything={jobs.original_of(r):jobs.original_of(r) for _,r in ai.pending_rows(session)}  # the rest kept as it is
+            ai.supplement(session,home,'test-model',lambda *_:None,client_factory=self.client(dict(everything,**answers)))
+            key=next(r for r in session['rows'] if r['key']=='Spawner: %1$s\nOffset: %2$i')
+            self.assertEqual(key['proposed'],'生成器：%1$s\n偏移：%2$s');self.assertTrue(jobs.needs_check(key))
+            jobs.prepare_to_apply(session)
+            done=jobs.apply_session(session,home,lambda *_:None)
+            with zipfile.ZipFile(instance/jobs.RESOURCE_PACK_FILE) as z:
+                lang=json.loads(z.read('assets/sample-additions/lang/zh_tw.json'))
+            self.assertEqual(lang['block.sample-additions.pokemon_spawner'],'寶可夢生成器')
+            self.assertEqual(lang['Spawner: %1$s\nOffset: %2$i'],'生成器：%1$s\n偏移：%2$s')
+            with zipfile.ZipFile(jar) as z:
+                texts=set(class_text.ClassFile(z.read('ItemHelp.class')).utf.values())|set(class_text.ClassFile(z.read('ItemHelp$1.class')).utf.values())
+            self.assertTrue({'對手寶可夢出現的位置','必要','選用'}<=texts);self.assertNotIn('Required',texts)
+            self.assertEqual(session['shown_mismatch'],0)
+            again=jobs.plan(instance,home,lambda *_:None,references=refs)
+            self.assertEqual(jobs.applicable_count(again),0)  # a rerun writes nothing
+            jobs.restore_backup(Path(done['backup']),instance)
+            self.assertEqual(jar.read_bytes(),before)
 
     def test_log_and_exception_text_is_told_apart_from_player_text(self):
         cf=class_text.ClassFile(self.dev);found={cf.utf[i] for i in class_text.developer_strings(self.dev)}

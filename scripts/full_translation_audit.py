@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
 from mc_zh_tw_translator.translator import CTE2QuestTranslator, PATCHOULI_SKIP_FIELDS
 from opencc import OpenCC
-from mc_zh_tw_translator.class_text import proven_strings, plain_strings, config_tooltips, developer_strings
+from mc_zh_tw_translator.class_text import proven_strings, plain_strings, config_tooltips, developer_strings, JarFlow
 from mc_zh_tw_translator import quest_lang
 
 HAN=re.compile('[\u3400-\u9fff]'); LATIN=re.compile('[A-Za-z]{3,}')
@@ -418,12 +418,37 @@ def exclude_tooltip_conflicts(rows):
         if not kept and any((jar,tip[0],tip[3]) in existing for tip in tips):row['tooltip_in_language']=True
 
 
+# A string of three words or more (an apostrophe inside a word: "Where opponent's Pokemon spawns").
+SENTENCE_LIKE=re.compile(r"\b[A-Za-z][A-Za-z']{2,} [A-Za-z][A-Za-z']{2,} [A-Za-z][A-Za-z']{2,}")
+# Minecraft fills in only %s and %n$s; any other letter (%d, %2$i) makes the game show the whole text as written
+# (TranslatableContents.decomposeTemplate fails and the key itself is shown).
+UNRENDERED=re.compile(r'%(\d+\$)?([A-Za-rt-z])')
+NAME_KINDS=('block','item','entity','effect','fluid')
+
+def mod_ids(z,names):
+    """The mod ids a mod file declares: Forge/NeoForge [[mods]] or Fabric's fabric.mod.json id."""
+    ids=declared_mods(z,names)
+    if not ids and 'fabric.mod.json' in names:
+        # Some fabric.mod.json files hold raw line breaks inside strings (Cobblemon Additions), which Fabric accepts.
+        try:
+            i=json.loads(z.read('fabric.mod.json').decode('utf-8-sig'),strict=False).get('id')
+            if isinstance(i,str) and NAMESPACE.match(i):ids=[i]
+        except (ValueError,UnicodeError,AttributeError):pass
+    return ids
+
+def renderable(text):
+    """`text` with the parameters Minecraft cannot fill in (%2$i) written as ones it can (%2$s), and the changed ones."""
+    changed=[m[0] for m in UNRENDERED.finditer(text)]
+    return UNRENDERED.sub(lambda m:'%'+(m[1] or '')+'s',text),changed
+
+
 class Audit:
     def __init__(self,out,decisions):
         self.out=out;out.mkdir(parents=True,exist_ok=True)
         self.rows=[];self.files=[];self.errors=[];self.repairs=[];self.counts=Counter();self.decisions=decisions
         self.mixin_targets=set()  # classes some Mixin changes when the game starts (see mixin_targets)
         self.registry=[]  # [file, mod, language key] of every biome, structure, structure set and dimension (REGISTRY_NAME)
+        self.extra_keys=[]  # [source, key, English, zh_cn, row fields]: keys a mod's program asks for (unnamed_keys)
     def registry_names(self,label,names):
         for n in sorted(names):
             m=REGISTRY_NAME.search(n)
@@ -463,6 +488,45 @@ class Audit:
             words=[w for w in re.split(r'[_.\-]+',key.split('.',2)[2]) if w]
             self.add(source,key,' '.join(w[:1].upper()+w[1:] for w in words),None,kind='language')
             self.rows[-1]['name_from_id']=True;self.counts['names_from_ids']+=1
+    def unnamed_keys(self,label,z,names,keys,constants):
+        """Language keys a mod's program asks for that its language files miss, so the game shows them raw even in English.
+
+        - The English sentence handed to Component.translatable as the key (Cobblemon Additions 4.1.6:
+          "Spawner: %1$s\nOffset: %2$i"): an entry keyed by that sentence shows the translation. Parameters Minecraft
+          cannot fill in become ones it can (renderable; the owner chose this on 2026-10-03) and are noted for checking.
+        - Names written under another namespace than the one the mod registers its things with (the same mod registers
+          cobblemon-additions:pokemon_spawner and names it block.bca.pokemon_spawner): an entry under the registered
+          namespace with the English of the written one, only when the path is a string of the mod's program.
+        missing_keys adds the rows, only for keys no language file of the modpack has."""
+        ids=mod_ids(z,names)
+        spaces=sorted({m[1] for n in names if (m:=re.match(r'assets/([a-z0-9_.\-]+)/lang/en_us\.json$',n))})
+        home=ids[0] if len(ids)==1 else spaces[0] if len(spaces)==1 else None
+        if not home:return
+        for text in sorted(keys):
+            if HAN.search(text) or len(text)>1200 or not (' ' in text.strip() and re.search(r'[A-Za-z]{3}',text)):continue
+            en,changed=renderable(text);extra=dict(key_sentence=True)
+            if changed:extra['format_fixed']=changed
+            self.extra_keys.append([f'{label}!/assets/{home}/lang/en_us.json',text,en,None,extra])
+        if len(ids)!=1 or ids[0] in spaces:return
+        for space in spaces:
+            try:
+                en=parse(z.read(f'assets/{space}/lang/en_us.json'))
+                cn=parse(z.read(f'assets/{space}/lang/zh_cn.json')) if f'assets/{space}/lang/zh_cn.json' in names else {}
+            except (ValueError,UnicodeError,KeyError):continue
+            for k,v in en.items():
+                m=re.fullmatch(r'([a-z]+)\.'+re.escape(space)+r'\.([a-z0-9_/.\-]+)',k)
+                if m and m[1] in NAME_KINDS and m[2] in constants and isinstance(v,str):
+                    self.extra_keys.append([f'{label}!/assets/{ids[0]}/lang/en_us.json',f'{m[1]}.{ids[0]}.{m[2]}',v,
+                                            cn.get(k) if isinstance(cn.get(k),str) else None,dict(key_from_namespace=[space,k])])
+    def missing_keys(self):
+        """Rows for the keys unnamed_keys found that no language file of the modpack has."""
+        have={r['key'] for r in self.rows if r['kind']=='language'
+              and not r['source'].startswith(('resourcepacks/MCTranslator-zh_tw.zip!/','config/paxi/resourcepacks/'))}
+        for source,key,en,cn,extra in self.extra_keys:
+            if key in have:continue
+            have.add(key)
+            self.add(source,key,en,None,cn,kind='language')
+            self.rows[-1].update(extra);self.counts['keys_from_program']+=1
     def add(self,source,key,en,current,cn=None,kind='language'):
         if not any(isinstance(v,str) and v.strip() for v in (en,current,cn)):return
         row=dict(source=source,key=str(key),en=en,current=current,zh_cn=cn,kind=kind)
@@ -589,7 +653,8 @@ class Audit:
                 self.unsupported_data(label,names,z.read)
                 self.registry_names(label,names)
                 self.nested(z,label,names)
-                screen=False;linked=[];literals=[];compared=set()
+                screen=False;linked=[];literals=[];compared=set();keys=set();constants_seen=set()
+                flow=JarFlow.of_zip(z)  # follows a text a class hands to a helper method or field of this file
                 ships_lang=any(re.match(r'assets/[^/]+/lang/[^/]+\.json$',x) for x in names)
                 for n in names:
                     if not n.endswith('.class'):continue
@@ -601,7 +666,7 @@ class Audit:
                         generator=ships_lang and b'LanguageProvider' in raw
                         if MIXIN in raw:self.mixin_targets|=mixin_targets(raw)
                         try:
-                            cf,safe=proven_strings(raw);constants=cf.utf.items()
+                            cf,safe=proven_strings(raw,flow);constants=cf.utf.items();keys|=cf.keys;constants_seen|=set(cf.utf.values())
                             tips=config_tooltips(raw) if any('設定說明' in use for _,use in safe.values()) else {}
                             developer=developer_strings(raw)
                             _,plain,seen=plain_strings(raw);compared|=seen
@@ -609,7 +674,7 @@ class Audit:
                             # An unsupported class remains visible for inspection; it is never writable.
                             safe={};tips={};developer=set();plain={};constants=enumerate(utf8_constants(raw))
                         for i,s in constants:
-                            if (i in safe and LATIN.search(s)) or HAN.search(s) or (len(s)<1200 and re.search(r'\b[A-Za-z]{3,} [A-Za-z]{3,} [A-Za-z]{3,}\b',s)):
+                            if (i in safe and LATIN.search(s)) or HAN.search(s) or (len(s)<1200 and SENTENCE_LIKE.search(s)):
                                 supported=i in safe and label.startswith('mods/') and label.count('!/')==0
                                 self.add(label+'!/'+n,i,None,s,kind='class_display' if supported else 'class_candidate')
                                 if not supported and i in developer:self.rows[-1]['developer_use']=True
@@ -619,6 +684,7 @@ class Audit:
                                     self.rows[-1]['display_use']=safe[i][1]
                                     if tips.get(i):linked.append((self.rows[-1],tips[i]))
                     except Exception as e:self.errors.append([label,n,'class extraction: '+str(e)])
+                if label.startswith('mods/') and label.count('!/')==0:self.unnamed_keys(label,z,names,keys,constants_seen)
                 # Chinese literals a class of this file compares with keep their characters in every class.
                 for row in literals:
                     if row['current'] not in compared:row['plain_literal']=True
@@ -663,7 +729,7 @@ class Audit:
             if p.suffix=='.class':
                 try:
                     for i,s in enumerate(utf8_constants(p.read_bytes())):
-                        if HAN.search(s) or (len(s)<1200 and re.search(r'\b[A-Za-z]{3,} [A-Za-z]{3,} [A-Za-z]{3,}\b',s)):
+                        if HAN.search(s) or (len(s)<1200 and SENTENCE_LIKE.search(s)):
                             self.add(n,i,None,s,kind='class_candidate')
                 except Exception as e:self.errors.append([n,'loose class extraction: '+str(e)])
                 continue

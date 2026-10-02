@@ -423,6 +423,7 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 archive=file.casefold().endswith(ARCHIVE_SUFFIXES)
                 path=contained(instance,file)
                 if file.casefold()=='options.txt':continue  # personal game setting, never shared
+                if file==jobs.DEFAULT_OPTIONS_FILE:continue  # the pack switched on again; installing redoes it
                 if item['after'] is None:continue  # removed by a whole-modpack update; nothing to share
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
                 if file==jobs.DATA_PACK_FILE:
@@ -753,6 +754,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         try:record=jobs.options_record(instance,staged,set_language,uses_pack)
         except ValueError:record=jobs.options_record(instance,staged,set_language,False)
         if record:records.append(record)
+        if uses_pack and (record:=jobs.default_packs_record(instance,staged)):records.append(record)
         jobs.require_space(instance,home,applied)
         backup=None
         if records:

@@ -434,6 +434,51 @@ class WorkflowTests(unittest.TestCase):
         (self.instance/'options.txt').write_text('resourcePacks:[broken\n',encoding='utf-8')
         with self.assertRaises(ValueError):options_record(self.instance,staged,False,True)
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_server_translations_text_goes_to_the_translation_pack(self,_):
+        import zipfile
+        from mc_zh_tw_translator.desktop_jobs import RESOURCE_PACK_FILE, prepare_to_apply, applicable_count
+        # Lenient Death keeps its text in data/lenientdeath/lang/ (Server Translations API); the game looks the key up
+        # in the resource packs first, so the translation goes to assets/lenientdeath/lang/zh_tw.json in our pack.
+        (self.instance/'mods').mkdir();jar=self.instance/'mods/lenientdeath.jar'
+        (self.instance/'minecraftinstance.json').write_text('{}',encoding='utf-8')  # CurseForge: the mod file stays as it is
+        with zipfile.ZipFile(jar,'w') as z:
+            z.writestr('fabric.mod.json','{"schemaVersion":1,"id":"lenientdeath"}')
+            z.writestr('data/lenientdeath/lang/en_us.json',json.dumps({'lenientdeath.command.done':'Items restored'}))
+            z.writestr('data/lenientdeath/lang/zh_cn.json',json.dumps({'lenientdeath.command.done':'物品已恢复'},ensure_ascii=False))
+        before=jar.read_bytes()
+        session=self.make_plan()
+        row=next(r for r in session['rows'] if r['key']=='lenientdeath.command.done')
+        self.assertEqual((row['proposed'],row['supported']),('物品已恢復',True))
+        prepare_to_apply(session);done=apply_session(session,self.home,lambda *_:None)
+        self.assertEqual(jar.read_bytes(),before)
+        with zipfile.ZipFile(self.instance/RESOURCE_PACK_FILE) as z:
+            self.assertEqual(json.loads(z.read('assets/lenientdeath/lang/zh_tw.json')),{'lenientdeath.command.done':'物品已恢復'})
+        self.assertTrue(next(r for r in session['rows'] if r['key']=='lenientdeath.command.done')['shown'])
+        self.assertEqual(applicable_count(self.make_plan()),0)  # a rerun writes nothing
+        restore_backup(Path(done['backup']),self.instance)
+        self.assertFalse((self.instance/RESOURCE_PACK_FILE).exists())
+
+    def test_default_options_preset_keeps_the_translation_pack(self):
+        import tomllib
+        from mc_zh_tw_translator.desktop_jobs import default_packs_record, DEFAULT_OPTIONS_FILE
+        # COBBLEVERSE: Default Options replaced the pack list on the first start, dropping the translation
+        config=self.instance/DEFAULT_OPTIONS_FILE;config.parent.mkdir(parents=True,exist_ok=True)
+        text=('\n# Resource pack IDs to have enabled by default on the first run.\n'
+              'defaultResourcePacks = [ "vanilla","fabric","file/COBBLEVERSE RP [CF].zip" ]\n\nlockDifficulty = false\n')
+        config.write_text(text,encoding='utf-8')
+        staged=Path(self.temp.name)/'staged';staged.mkdir()
+        record=default_packs_record(self.instance,staged)
+        new=(staged/DEFAULT_OPTIONS_FILE).read_text(encoding='utf-8')
+        self.assertEqual(tomllib.loads(new)['defaultResourcePacks'],['vanilla','fabric','file/COBBLEVERSE RP [CF].zip','file/MCTranslator-zh_tw.zip'])
+        self.assertEqual(new.replace(',"file/MCTranslator-zh_tw.zip"',''),text)  # nothing else changed
+        self.assertEqual(record['file'],DEFAULT_OPTIONS_FILE)
+        config.write_text(new,encoding='utf-8')
+        self.assertIsNone(default_packs_record(self.instance,staged))  # already there: nothing to write
+        for other in ('defaultResourcePacks = []\n','lockDifficulty = false\n','defaultResourcePacks = [ "a",\n'):
+            config.write_text(other,encoding='utf-8')
+            self.assertIsNone(default_packs_record(self.instance,staged))  # no preset or unreadable: left alone
+
     def test_packs_the_game_turns_on_itself_go_below_the_translation(self):
         from mc_zh_tw_translator.desktop_jobs import options_record
         # The Foll: OpenLoader 19 and Fragmentum put their packs above the list when it does not name them

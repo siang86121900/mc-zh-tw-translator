@@ -27,6 +27,10 @@ class ClassFile:
             raise ValueError('不是 Java class')
         self.raw = raw
         self.cp = {}; self.spans = {}; self.utf = {}; self.codes = []; self.metadata = []; self.bootstrap = []
+        # (name, descriptor) -> access flags and the index into codes (None without code), for following a
+        # String handed to a method or stored in a field (JarFlow).
+        self.methods = {}; self.fields = {}
+        self.keys = set()  # texts handed to Component.translatable as the key (filled by proven_strings)
         p = 10; k = 1
         while k < u2(raw, 8):
             start = p; tag = raw[p]; p += 1
@@ -40,18 +44,23 @@ class ClassFile:
             self.cp[k] = (tag, value); self.spans[k] = (start, p)
             k += 2 if tag in (5, 6) else 1
         self.tail = p
+        self.access = u2(raw, p); self.name = self.utf[u2(self.cp[u2(raw, p+2)][1], 0)]
         p += 6
         p += 2 + 2*u2(raw, p)
         for member_kind in range(2):
             count = u2(raw, p); p += 2
             for _ in range(count):
                 flags,name,desc = struct.unpack_from('>HHH',raw,p)
+                if member_kind == 0:self.fields[self.utf[name]] = (flags, self.utf[desc])
+                else:self.methods[(self.utf[name], self.utf[desc])] = (flags, len(self.codes))
                 private_constant = member_kind == 0 and flags & 0x1a == 0x1a and self.utf[desc] == 'Ljava/lang/String;'
                 # A private compile-time constant can accompany inlined ldc uses. Any field access
                 # defeats this proof; public/protected constants remain untouched.
                 private_constant &= not any(t == 9 and u2(self.cp[u2(v,2)][1],0) == name for t,v in self.cp.values())
                 self.metadata.append(raw[p+2:p+6]); p += 6
+                before = len(self.codes)
                 p = self.attributes(p, private_constant)
+                if member_kind == 1 and len(self.codes) == before:self.methods[(self.utf[name], self.utf[desc])] = (flags, None)
         p = self.attributes(p)
         if p != len(raw):raise ValueError('class 長度不符')
 
@@ -129,6 +138,216 @@ def sink(method, array=False):
     return None
 
 
+TRANSLATABLE = {('net/minecraft/network/chat/Component','translatable'),('net/minecraft/network/chat/Component','m_237115_'),
+                ('net/minecraft/network/chat/Component','m_237110_'),('net/minecraft/text/Text','translatable'),
+                ('net/minecraft/class_2561','method_43471'),('net/minecraft/class_2561','method_43469')}
+KEY = '語系鍵'  # handed to Component.translatable: the game looks the text up as a language key
+
+
+def key_sink(method):
+    """Component.translatable(String) or (String, Object...): the String is a language key."""
+    return bool(method) and (method[0],method[1]) in TRANSLATABLE and method[2].startswith('(Ljava/lang/String;')
+
+
+def params(desc):
+    """Slot sizes of a method descriptor's parameters and of its return value (0 for void)."""
+    sizes = []; p = 1
+    while desc[p] != ')':
+        start = p
+        while desc[p] == '[':p += 1
+        p = desc.index(';',p)+1 if desc[p] == 'L' else p+1
+        sizes.append(2 if desc[start:p] in ('J','D') else 1)
+    ret = desc[p+1:]
+    return sizes, 0 if ret == 'V' else 2 if ret in ('J','D') else 1
+
+
+def field_size(desc):
+    return 2 if desc in ('J','D') else 1
+
+
+# Operand stack effect in slots (pops, pushes) of the instructions with a fixed one.
+EFFECT = {0:(0,0),1:(0,1),9:(0,2),10:(0,2),14:(0,2),15:(0,2),16:(0,1),17:(0,1),18:(0,1),19:(0,1),20:(0,2),
+          21:(0,1),22:(0,2),23:(0,1),24:(0,2),25:(0,1),46:(2,1),47:(2,2),48:(2,1),49:(2,2),50:(2,1),51:(2,1),52:(2,1),53:(2,1),
+          54:(1,0),55:(2,0),56:(1,0),57:(2,0),58:(1,0),79:(3,0),80:(4,0),81:(3,0),82:(4,0),83:(3,0),84:(3,0),85:(3,0),86:(3,0),
+          87:(1,0),88:(2,0),116:(1,1),117:(2,2),118:(1,1),119:(2,2),120:(2,1),121:(3,2),122:(2,1),123:(3,2),124:(2,1),125:(3,2),
+          126:(2,1),127:(4,2),128:(2,1),129:(4,2),130:(2,1),131:(4,2),132:(0,0),133:(1,2),134:(1,1),135:(1,2),136:(2,1),137:(2,1),
+          138:(2,2),139:(1,1),140:(1,2),141:(1,2),142:(2,1),143:(2,2),144:(2,1),145:(1,1),146:(1,1),147:(1,1),
+          148:(4,1),149:(2,1),150:(2,1),151:(4,1),152:(4,1),187:(0,1),188:(1,1),189:(1,1),190:(1,1),193:(1,1)}
+for _op in range(2,9):EFFECT[_op] = (0,1)
+for _op in (11,12,13):EFFECT[_op] = (0,1)
+for _op in list(range(26,30))+list(range(34,38))+list(range(42,46)):EFFECT[_op] = (0,1)
+for _op in list(range(30,34))+list(range(38,42)):EFFECT[_op] = (0,2)
+for _op in list(range(59,63))+list(range(67,71))+list(range(75,79)):EFFECT[_op] = (1,0)
+for _op in list(range(63,67))+list(range(71,75)):EFFECT[_op] = (2,0)
+for _op in range(96,116):EFFECT[_op] = (4,2) if _op % 2 else (2,1)  # i/f pop 2 push 1, l/d pop 4 push 2
+DUPS = {89:(1,1),90:(2,1),91:(3,1),92:(2,2),93:(3,2),94:(4,2),95:(2,0)}  # slots touched, slots added
+
+
+class JarFlow:
+    """Where a String a class hands on ends up, across the classes of one mod file.
+
+    A mod often passes its tooltip text to a helper (Cobblemon Battle Positions: createBlockItem(block, "Where your
+    Pokemon spawns", ...)) that keeps it in a field and shows it with Component.literal in appendHoverText. The text
+    counts as shown only when every way it can go ends in a display call: a private, static or final method of this
+    mod file whose parameter is only shown, a private or compiler-made field of it that is only read to be shown.
+    Anything else (a comparison, a map key, a return value, a method another mod could override) leaves it unproven.
+    """
+    def __init__(self, read, names):
+        self.read = read; self.names = set(names); self.classes = {}; self.memo = {}; self.readers = None
+
+    @classmethod
+    def of_zip(cls, z):
+        names = [n[:-6] for n in z.namelist() if n.endswith('.class')]
+        return cls(lambda name:z.read(name+'.class'), names)
+
+    def cls(self, name):
+        if name not in self.names:return None
+        if name not in self.classes:
+            try:self.classes[name] = ClassFile(self.read(name))
+            except (ValueError,KeyError,IndexError,struct.error,UnicodeError):self.classes[name] = None
+        return self.classes[name]
+
+    def ops(self, cf, index):
+        code, handlers = cf.codes[index]
+        return code, list(instructions(code))
+
+    def param(self, owner, name, desc, index, static):
+        """What a String parameter of a method of this mod file is used for: a set of reasons, or None."""
+        key = ('param', owner, name, desc, index)
+        if key in self.memo:return self.memo[key]
+        self.memo[key] = None  # a cycle proves nothing
+        cf = self.cls(owner); found = None
+        if cf and (name, desc) in cf.methods and cf.methods[(name, desc)][1] is not None:
+            sizes, _ = params(desc)
+            slot = (0 if static else 1)+sum(sizes[:index])
+            code, ops = self.ops(cf, cf.methods[(name, desc)][1])
+            found = set()
+            for i, (pos, op, arg) in enumerate(ops):
+                local = arg[-1] if op in (25,58) and len(arg) == 1 else u2(arg,1) if op == 196 and len(arg) >= 3 else None
+                if op == 196:op = arg[0]
+                if op in (58,) and local == slot or op - 75 == slot and 75 <= op <= 78:found = None;break  # reassigned
+                if op == 25 and local == slot or op - 42 == slot and 42 <= op <= 45:
+                    reasons = consumer(cf, code, ops, i, self)
+                    if not reasons:found = None;break
+                    found |= reasons
+            found = found or None
+        self.memo[key] = found
+        return found
+
+    def field(self, owner, name):
+        """What a String field of this mod file is read for: a set of reasons, or None."""
+        key = ('field', owner, name)
+        if key in self.memo:return self.memo[key]
+        self.memo[key] = None
+        cf = self.cls(owner); found = None
+        if cf and name in cf.fields:
+            flags, desc = cf.fields[name]
+            # Private (nestmates included) or compiler-made (an anonymous class's captured val$...): no other mod reads it.
+            if desc == 'Ljava/lang/String;' and flags & 0x1002:
+                found = set()
+                for reader in self.field_readers(owner, name):
+                    rcf = self.cls(reader)
+                    if not rcf:found = None;break
+                    for index in range(len(rcf.codes)):
+                        code, ops = self.ops(rcf, index)
+                        for i, (pos, op, arg) in enumerate(ops):
+                            if op in (178,180) and field_ref(rcf, u2(arg,0)) == (owner, name):
+                                reasons = consumer(rcf, code, ops, i, self)
+                                if not reasons:found = None;break
+                                found |= reasons
+                        if found is None:break
+                    if found is None:break
+                found = found or None
+        self.memo[key] = found
+        return found
+
+    def field_readers(self, owner, name):
+        """Classes of this mod file that name the field (its class and the nestmates that may read it)."""
+        package = owner.rsplit('/',1)[0] if '/' in owner else ''
+        found = []
+        for other in sorted(self.names):
+            if (other.rsplit('/',1)[0] if '/' in other else '') != package:continue  # private/synthetic: same package only
+            cf = self.cls(other)
+            if cf and any(t == 9 and field_ref(cf, k) == (owner, name) for k,(t,_) in cf.cp.items()):found.append(other)
+        return found
+
+
+def field_ref(cf, index):
+    tag, value = cf.cp.get(index, (None, None))
+    if tag != 9:return None
+    owner = cf.utf[u2(cf.cp[u2(value, 0)][1], 0)]
+    return owner, cf.utf[u2(cf.cp[u2(value, 2)][1], 0)]
+
+
+def consumer(cf, code, ops, i, flow=None, limit=400, at=None):
+    """Reasons ({'玩家顯示文字'} / {KEY}) the one-slot value ops[i] pushes is used for, or None when unproven.
+
+    Follows the value along straight code (and unconditional jumps, as in `cond ? "Required" : "Optional"`) to the
+    instruction that takes it off the stack. Branches, returns, copies of the value and unknown calls prove nothing.
+    """
+    at = at if at is not None else {pos:n for n,(pos,_,_) in enumerate(ops)}
+    above = 0; n = i+1; steps = 0
+    while n < len(ops) and steps < limit:
+        steps += 1
+        pos, op, arg = ops[n]
+        if op == 196:
+            op = arg[0]
+            if op == 132:n += 1;continue
+        if op in (167,200):
+            target = pos+(struct.unpack('>h',arg)[0] if op == 167 else struct.unpack('>i',arg)[0])
+            if target not in at:return None
+            n = at[target];continue
+        if op in DUPS:
+            touched, added = DUPS[op]
+            if above < touched:return None
+            above += added;n += 1;continue
+        if op == 192:
+            n += 1;continue  # checkcast keeps the value where it is
+        if op in EFFECT:
+            pops, pushes = EFFECT[op]
+        elif op in (178,179,180,181):
+            ref = cf.cp[u2(arg,0)][1]; desc = cf.utf[u2(cf.cp[u2(ref,2)][1],2)]
+            size = field_size(desc)
+            pops, pushes = {178:(0,size),179:(size,0),180:(1,size),181:(1+size,0)}[op]
+            if op in (179,181) and above < pops:
+                if above != 0 or not flow:return None
+                owner, name = field_ref(cf, u2(arg,0))
+                return flow.field(owner, name)
+        elif op in (182,183,184,185,186):
+            if op == 186:
+                # invokedynamic: string concatenation or a lambda capturing the value; neither is followed.
+                desc = cf.utf[u2(cf.cp[u2(cf.cp[u2(arg,0)][1],2)][1],2)];method = None
+            else:
+                method = cf.method(u2(arg,0))
+                if not method:return None
+                desc = method[2]
+            sizes, ret = params(desc)
+            pops = sum(sizes)+(0 if op in (184,186) else 1); pushes = ret
+            if above < pops:
+                if op == 186:return None
+                # Which parameter the value is: count slots down from the top of the stack.
+                depth = 0; index = None
+                for k in range(len(sizes)-1,-1,-1):
+                    if depth == above and sizes[k] == 1:index = k;break
+                    depth += sizes[k]
+                if index is None:return None  # the value is the receiver of the call
+                if index == 0 and sink(method) and len(sizes) == 1:return {'玩家顯示文字'}
+                if index == 0 and key_sink(method):return {KEY}
+                if not flow:return None
+                owner, name, _ = method
+                target = flow.cls(owner)
+                if not target or (name, desc) not in target.methods:return None
+                flags = target.methods[(name, desc)][0]
+                # Only a call that cannot reach another mod's override of the method.
+                if op in (182,185) and not (flags & 0x0012 or target.access & 0x0010):return None
+                return flow.param(owner, name, desc, index, op == 184)
+        else:
+            return None  # branches, switches, returns, throw, jsr, multianewarray, monitors
+        if above < pops:return None
+        above += pushes-pops;n += 1
+    return None
+
+
 def branch_targets(code, ops, handlers):
     targets = set(handlers)
     for pos, op, arg in ops:
@@ -164,12 +383,17 @@ def comment_loads(cf, ops, i, targets):
     return None
 
 
-def proven_strings(raw):
+def proven_strings(raw, flow=None):
+    """Strings of a class whose every use is shown to the player: {UTF-8 constant index: (text, reason)}.
+
+    `flow` (JarFlow of the mod file) also follows a string handed to a method or stored in a field of that file.
+    """
     cf = ClassFile(raw)
     strings = {k:u2(v,0) for k,(t,v) in cf.cp.items() if t == 8}
     uses = {k:[] for k in strings}
     for code, handlers in cf.codes:
         ops = list(instructions(code)); targets = branch_targets(code, ops, handlers)
+        at = {pos:n for n,(pos,_,_) in enumerate(ops)}
         safe = {}
         for i, (pos,op,arg) in enumerate(ops):
             if op in (182,183,184,185):
@@ -177,6 +401,12 @@ def proven_strings(raw):
                 reason = sink(method)
                 if reason and i and ops[i-1][1] in (18,19) and pos not in targets:safe[i-1] = reason
                 if sink(method,True):safe.update({idx:'設定說明' for idx in comment_loads(cf,ops,i,targets) or []})
+        for i, (pos,op,arg) in enumerate(ops):
+            if op in (18,19) and i not in safe and (arg[0] if op == 18 else u2(arg,0)) in strings:
+                # Through a jump (cond ? "Required" : "Optional") or a helper method and field of the same mod file.
+                reasons = consumer(cf, code, ops, i, flow, at=at)
+                if reasons == {'玩家顯示文字'}:safe[i] = '玩家顯示文字'
+                elif reasons and KEY in reasons:cf.keys.add(cf.utf[strings[arg[0] if op == 18 else u2(arg,0)]])
         for i,(_,op,arg) in enumerate(ops):
             if op in (18,19):
                 index = arg[0] if op == 18 else u2(arg,0)
@@ -191,6 +421,20 @@ def proven_strings(raw):
         if all_uses and all(all_uses) and not protected:
             result[utf] = (cf.utf[utf], '、'.join(sorted(set(all_uses))))
     return cf, result
+
+
+def translation_keys(raw, flow=None):
+    """Texts this class hands to Component.translatable as the language key (directly or through a helper of the
+    same mod file). Some mods pass the English sentence itself (Cobblemon Additions: "Spawner: %1$s\\nOffset: %2$i");
+    a language entry keyed by that sentence shows a translation, the class stays as it is."""
+    cf = ClassFile(raw); found = set()
+    strings = {k:u2(v,0) for k,(t,v) in cf.cp.items() if t == 8}
+    for code, _ in cf.codes:
+        ops = list(instructions(code)); at = {pos:n for n,(pos,_,_) in enumerate(ops)}
+        for i, (_,op,arg) in enumerate(ops):
+            index = (arg[0] if op == 18 else u2(arg,0)) if op in (18,19) else None
+            if index in strings and KEY in (consumer(cf, code, ops, i, flow, at=at) or ()):found.add(cf.utf[strings[index]])
+    return found
 
 
 # Calls that compare or look up text: a literal handed to one of them may be matched against data, so its
@@ -344,8 +588,8 @@ def integer(op):
     return None
 
 
-def rewrite(raw, rows):
-    cf, safe = proven_strings(raw); edits = {}
+def rewrite(raw, rows, flow=None):
+    cf, safe = proven_strings(raw, flow); edits = {}
     plain = plain_strings(raw) if any(row.get('literal') for row in rows) else None
     for row in rows:
         index = int(row['key'])
@@ -363,7 +607,7 @@ def rewrite(raw, rows):
     parts = [raw[:10]]
     for k,(start,end) in cf.spans.items():parts.append(edits.get(k,raw[start:end]))
     parts.append(raw[cf.tail:]); output = b''.join(parts)
-    checked, _ = proven_strings(output)
+    checked, _ = proven_strings(output, flow)
     if output[checked.tail:] != raw[cf.tail:] or any(checked.utf[k] != r['proposed'] for r in rows for k in [int(r['key'])]):raise ValueError('程式文字寫回驗證失敗')
     return output
 

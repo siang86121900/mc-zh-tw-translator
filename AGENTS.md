@@ -81,6 +81,9 @@
 - 模組用自帶字型畫自己的介面、字型裡沒有中文字時（Essential 的 fonts/*.json，掃描時由 own_font_without_chinese 標記 no_chinese_font），中文會變成方框：該模組的語系文字保留英文、不送 AI，先前寫入的中文改回英文一次，報告列在「無需翻譯」並寫出字型檔（使用者 2026-10-02 選擇；按鍵設定等用遊戲字型的少數句子也一起保留英文）。
 - 主選單按鈕是圖片（FancyMenu 版面引用 buttons 圖檔、沒有文字 label）時，圖片上的英文不是文字，報告以灰字說明不是漏翻（desktop_jobs.image_menus），不改圖片。
 - 設定說明、提示與玩家可見句子也是翻譯範圍，不能只因文字存在 class 裡就全部排除 AI。先追查全部使用位置；確認僅用於 Forge／NeoForge 設定 comment 或直接顯示呼叫的文字，納入一般 AI 同意、補翻、格式與數值檢查、備份及套用流程。句子看起來像人話不構成寫入證據；兼用於設定鍵、比較、公開常數或尚未支援的動態組句，明列未送 AI 的具體原因。
+- 用途證明可以跟著文字走：交給同一模組檔裡別人無法覆寫的方法（private、static、final）的參數，或存進 private／編譯器產生的欄位（匿名類別的 val$…），每一處用到都只拿去顯示才算（class_text.JarFlow）；經過無條件跳躍（cond ? "Required" : "Optional"）也算。比對、查表、回傳、公開欄位、可被覆寫的方法一律不算。
+- 模組程式要的語系鍵連英文版都顯示原樣時，在翻譯資源包補上（full_translation_audit.unnamed_keys）：程式拿英文句子當語系鍵（Component.translatable("Spawner: %1$s…")）時以那句為鍵；名稱寫在另一個命名空間（註冊為 cobblemon-additions、語系寫 block.bca.…）時補上遊戲查的鍵並沿用原名稱的譯文。原文有遊戲看不懂的佔位符（%2$i、%d）時，譯文改用 %2$s 才會顯示數值，並列入「建議確認」（使用者 2026-10-03 選擇）。
+- 模組 data/<模組>/lang/ 的語系檔（Lenient Death 內嵌 Server Translations API）寫進翻譯資源包的 assets/<模組>/lang/zh_tw.json（desktop_jobs.pack_resource）：該 API 在玩家端先查資源包語系（SystemDelegatedLanguage），送到玩家端的文字保留語系鍵、伺服器文字只當備用（已查 2.3.1）。Forge 的 data/lang 在 assets 已有同鍵時照舊略過（server_lang）。
 - 硬編碼文字改寫僅改已證明用途的字串常數，保留 Modified UTF-8、控制字元、常數索引與其餘 class 位元組；套用前重新驗證用途、原文、Java class 解析及 ZipFS。這類文字只能改寫原模組，不能假稱加語系檔即可生效；不匯出到翻譯分享補丁。重跑須保留原文與 AI 來源並認出已套用。
 - 例外（使用者 2026-10-01 同意放寬）：用途未證明、但本身是簡體中文的程式字串，在啟動器不會換回的模組檔裡（不在 CurseForge installedAddons、不是內嵌 jar）只在原地轉成台灣繁體，不翻譯、不送 AI。限只被 ldc 載入、不在註解／欄位／其他常數角色的字串（class_text.plain_strings）；同一模組檔任何 class 拿它去比對或查找（equals、switch、Map.get…）就整個模組檔都不轉，Mixin 目標、產生語系檔的工具程式、記錄檔字串照舊不改（desktop_jobs.literal_conversion）。
 - 任何 Mixin（含內嵌在模組裡的小模組）提到的 class 一律不改寫文字、不送 AI：Mixin 可能要找一句指定原文（@ModifyConstant），找不到遊戲就無法啟動（v0.18.0 在 The Foll 把 GoetyRevelation 的設定說明翻掉，RevelationFix 因此讓遊戲停在載入畫面）。先前寫入的改回原文；不知道 Mixin 的舊報告不寫入程式文字（Audit.mixin_targets、session mixin_targets、HELD_MIXIN）。產生語系檔的工具程式（LanguageProvider）在模組附語系檔時列為無需翻譯。
@@ -119,6 +122,7 @@
 - 使用 mc_zh_tw_translator.deployment.apply_reviewed 處理通用備份與寫回；它不能代替翻譯審核、遊戲狀態或資源驗證。來源或候選驗證後變動須停止套用。
 - 翻譯資料包（DATA_PACK_FILE）與翻譯資源包一樣走 apply_reviewed 備份、清冊與還原；裡面的 mctranslator.json 記每個檔案的來源、原檔 SHA-256 與「原句 → 譯文」，重跑以它判斷遊戲目前顯示的文字，內容相同就不重寫。
 - Patchouli 書本設定（data/<ns>/patchouli_books/<書>/book.json）寫死的英文書名與首頁介紹：Patchouli 以 Component.translatable 顯示（GuiBookLanding），所以在翻譯資源包的 assets/<ns>/lang/zh_tw.json 加上「英文原句 → 譯文」，不改模組檔，CurseForge 模組也適用（desktop_jobs.book_title）。
+- 整合包有 Default Options 模組時，第一次開遊戲會把資源包清單換成 config/defaultoptions-common.toml 的 defaultResourcePacks（已查 DefaultResourcePacksHandler），翻譯資源包因此被拿掉（COBBLEVERSE 2026-10-03）：套用時把翻譯資源包加到那份清單最後（desktop_jobs.default_packs_record），一樣備份、可還原、不放進分享補丁。
 - 模組裡的語系檔與書本頁一律寫進程式產生的資源包 resourcepacks/MCTranslator-zh_tw.zip，並在 options.txt 的資源包清單放到最後（最高優先），模組檔本身不修改。資源包內含模組原有的 zh_tw 與本程式的譯文，並以 mctranslator.json 記錄每個檔案對應的模組檔與 SHA-256；重跑時以資源包內容作為遊戲目前顯示的文字，內容相同就不重寫。
 - 遊戲偵測須辨識程序工作資料夾、啟動參數及 Forge／NeoForge 參數檔 server target。已確認不同 instance 的伺服器／Java 工具不應阻擋；未知或同目標程序仍須安全阻擋並說明證據，不自行結束程序。
 - 寫入前後檢查 JAR／ZIP、格式與覆蓋衝突；JAR 必須通過 Java ZipFS，Python zipfile 或 jar tf 不能取代。修改 JAR 移除失效簽章，未改內容的 JAR 保持原樣。

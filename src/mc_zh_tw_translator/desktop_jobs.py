@@ -53,7 +53,9 @@ INLINE_UNVERIFIED = '並列多種語言的文字：還沒確認這個模組會�
 # Mods that draw their own screens with a font holding no Chinese characters (Audit.own_font_without_chinese, e.g.
 # Essential's fonts/Minecraft-Regular.json: 95 glyphs, U+0020-U+007E): Chinese there shows as □, so their text stays
 # English. The font lies outside assets/, so a resource pack cannot replace it (see docs/translation-reference.md).
-NO_CHINESE_FONT = '這個模組用自己的字型顯示介面（{}），字型裡沒有中文字，翻成中文會變成方框（□）'
+# Keys a mod's program asks for with a parameter Minecraft cannot fill in (full_translation_audit.renderable).
+FORMAT_FIXED_NOTE = '原文的 {} 遊戲看不懂，英文版也會照原樣顯示；譯文改用 %s 才會顯示數值'
+NO_CHINESE_FONT ='這個模組用自己的字型顯示介面（{}），字型裡沒有中文字，翻成中文會變成方框（□）'
 
 
 def reads_inline_zh_tw(source):
@@ -69,8 +71,9 @@ def memory_scope(row):
 
 
 def lang_namespace(source):
-    """The mod a language row belongs to (assets/<mod>/lang/...); quest language files form their own."""
-    m=re.search(r'assets/([^/]+)/lang/',source or '')
+    """The mod a language row belongs to (assets/<mod>/lang/..., or a mod's data/<mod>/lang/ that pack_resource puts
+    under assets); quest language files form their own."""
+    m=re.search(r'(?:assets|^[^!]+\.jar!/data)/([^/]+)/lang/',source or '')
     if m:return m[1]
     return QUEST_NAMESPACE if quest_lang.QUEST_LANG.search(source or '') else ''
 TRANSLATION_PACK = re.compile(r'(?:instance!/)?(?:config/openloader/|resourcepacks/)')
@@ -691,6 +694,7 @@ def needs_check(row):
     if (row.get('ai_review') or {}).get('verdict')=='ok':return False  # AI read it against the English and agreed
     if row.get('supported') and row.get('number_doubt') and row.get('origin') not in ('untranslated','keep_original'):return True
     if row.get('supported') and (row.get('name_doubt') or row.get('map_word')) and row.get('origin') not in ('untranslated','keep_original'):return True
+    if row.get('supported') and row.get('format_fixed') and row.get('origin') not in ('untranslated','keep_original'):return True
     return bool(row.get('supported') and (row.get('changed') or row.get('recovered')) and (
         row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None
         or str(row.get('issue') or '').startswith('既有繁中') or '大陸用語改為台灣用語' in str(row.get('issue') or '')
@@ -857,8 +861,11 @@ def same_key_groups(rows):
     """Rows that are the same text of the same mod in different files: (mod, key, English) -> rows."""
     groups=collections.defaultdict(list)
     for r in rows:
-        m=re.search(r'assets/([^/]+)/lang/',r.get('source',''))
-        if m and r.get('kind')=='language' and r.get('supported'):groups[(m[1],r['key'],english_of(r))].append(r)
+        ns=lang_namespace(r.get('source',''))
+        if ns and ns!=QUEST_NAMESPACE and r.get('kind')=='language' and r.get('supported'):
+            # A name the scan added under the namespace the mod registers with shares the name it was written under.
+            twin=r.get('key_from_namespace')
+            groups[(twin[0],twin[1],english_of(r)) if twin else (ns,r['key'],english_of(r))].append(r)
         elif r.get('kind')=='class_display' and r.get('supported'):
             # A config comment written twice in the mod's program (e.g. client and common config classes)
             # becomes one '<key>.tooltip' entry: both copies need the same wording to be written at all.
@@ -1326,7 +1333,8 @@ def present_mods(z, depth=0):
     for meta in ('META-INF/neoforge.mods.toml','META-INF/mods.toml'):
         if meta in names:found|=set(declared_mod_ids(z.read(meta).decode('utf-8','replace')))
     if 'fabric.mod.json' in names:
-        try:found.add(str(json.loads(z.read('fabric.mod.json').decode('utf-8-sig'))['id']))
+        # strict=False: some hold raw line breaks inside strings (Cobblemon Additions), which Fabric accepts.
+        try:found.add(str(json.loads(z.read('fabric.mod.json').decode('utf-8-sig'),strict=False)['id']))
         except (ValueError,KeyError,TypeError):pass
     if depth<2:
         for name in names:
@@ -1342,7 +1350,8 @@ def present_mods(z, depth=0):
 # scan-12: plain Chinese literals (plain_literal) are marked for an in-place Simplified-to-Traditional conversion
 # scan-13: a jar's installed mods are its [[mods]] ids only, not the mods it lists as dependencies
 # scan-14: language rows of a mod drawing with its own font without Chinese glyphs are marked (no_chinese_font)
-SCAN_CACHE_VERSION = 'scan-16'
+# scan-17: program text followed through helper methods and fields (JarFlow); keys a mod's program asks for (extra_keys)
+SCAN_CACHE_VERSION = 'scan-17'
 
 
 def scan_cache(home, instance):
@@ -1360,10 +1369,11 @@ def scan_archive(audit, p, label, digest, cache):
             audit.rows.extend(data['rows']);audit.files.extend(data['files']);audit.errors.extend(data['errors'])
             audit.repairs.extend(data['repairs']);audit.counts.update(data['counts'])
             audit.installed_namespaces|=set(data['namespaces']);audit.present_mods|=set(data['mods']);audit.cache_hits+=1
-            audit.mixin_targets|=set(data['mixin']);audit.registry.extend(data['registry'])
+            audit.mixin_targets|=set(data['mixin']);audit.registry.extend(data['registry']);audit.extra_keys.extend(data['extra_keys'])
             return key
         except (OSError,ValueError,KeyError):path.unlink(missing_ok=True)
-    marks=(len(audit.rows),len(audit.files),len(audit.errors),len(audit.repairs),len(audit.registry));before=collections.Counter(audit.counts)
+    marks=(len(audit.rows),len(audit.files),len(audit.errors),len(audit.repairs),len(audit.registry),len(audit.extra_keys))
+    before=collections.Counter(audit.counts)
     targets=set(audit.mixin_targets);audit.mixin_targets=set()
     audit.archive(p,label)
     mixin=audit.mixin_targets;audit.mixin_targets=targets|mixin
@@ -1379,7 +1389,7 @@ def scan_archive(audit, p, label, digest, cache):
         delta=collections.Counter(audit.counts);delta.subtract(before)
         data=dict(rows=audit.rows[marks[0]:],files=audit.files[marks[1]:],errors=audit.errors[marks[2]:],
                   repairs=audit.repairs[marks[3]:],counts={k:v for k,v in delta.items() if v},namespaces=sorted(namespaces),mods=sorted(mods),
-                  mixin=sorted(mixin),registry=audit.registry[marks[4]:])
+                  mixin=sorted(mixin),registry=audit.registry[marks[4]:],extra_keys=audit.extra_keys[marks[5]:])
         try:path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(gzip.compress(json.dumps(data,ensure_ascii=False).encode('utf-8'),5))
         except OSError:pass
     return key
@@ -1442,6 +1452,7 @@ def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
                 contained(instance,p.relative_to(instance).as_posix())
                 audit.source_hashes[p.relative_to(instance).as_posix()]=file_hash(p)
     audit.loose(instance)
+    audit.missing_keys()  # keys a mod's program asks for that its language files miss
     audit.missing_names(audit.present_mods)  # biome, structure and dimension names no language file has
     for r in audit.rows:
         # Files read outside the folders above (Audit.unscanned) are written too: record them so a change is noticed.
@@ -1600,6 +1611,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if r['kind'] in ('language','book') and r['source'].split('!/')[0] in older:
             counts['older_mod_copy']+=1;continue  # the game loads the newer copy of this mod (older_copies)
         if (r['kind']=='language' and r['source'].startswith('mods/') and not r['source'].split('!/')[-1].startswith('assets/')
+                and not SERVER_LANG.search(r['source'].split('!/')[-1])  # counted as server_lang below
                 and (r['source'].split('!/')[0],lang_namespace(r['source']),r['key']) in main_copy):
             # A second copy inside the mod (e.g. legacy_pack/assets/...) of text its main assets/ also has:
             # the game shows the main copy, and both would go to the same place in the translation pack.
@@ -1917,6 +1929,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         # A number that differs from the English is listed even when the text stays as the mod wrote it.
         if doubt and not extra.get('recovered') and (changed or origin!='untranslated'):issue=(issue+'；' if issue else '')+doubt
         if '數值和原文不同' in (issue or ''):extra['number_doubt']=True  # also kept by text applied earlier
+        if r.get('format_fixed') and '遊戲看不懂' not in (issue or ''):
+            issue=FORMAT_FIXED_NOTE.format('、'.join(r['format_fixed']))+('；'+issue if issue else '')
         if reused:extra.update(ai_model=earlier.get('model'),ai_reused=True)
         if ((NAME_KEY.match(r['key']) or r['key'].startswith('structure.')) and isinstance(r['en'],str) and 2<len(r['en'].strip())<=40 and HAN.search(value)
                 and origin not in ('untranslated','keep_original','ai_translation')):
@@ -2665,10 +2679,17 @@ def pack_resource(entry):
 
     Mods can carry a second copy of their text for older game versions (kaleidoscope_cookery keeps one in
     legacy_pack/assets/...); both are the same resource for the game, so both map to the same pack file.
+
+    A mod's data/<mod>/lang/ file (Lenient Death through the bundled Server Translations API) goes to assets/<mod>/lang/:
+    the game looks the key up in the resource packs' language files first and uses the data copy only when they lack
+    it (Server Translations API 2.3.1 SystemDelegatedLanguage.get, vanilla before server translations), and a key
+    sent to the player keeps its key, the server's text being only a fallback (TranslatableTextContentMixin).
     """
     inner=(entry or '').split('!/')[-1]
     m=re.match(r'(?:[^/]+/)*?(assets/.+)$',inner)
-    return m[1] if m else ''
+    if m:return m[1]
+    m=re.fullmatch(r'data/([a-z0-9_.\-]+)/lang/([a-z]{2,3}_[a-z]{2,3}\.json)',inner)
+    return f'assets/{m[1]}/lang/{m[2]}' if m else ''
 
 
 HELD_CURSEFORGE = '是寫在模組程式裡的文字；CurseForge 啟動遊戲時會把改過的模組檔換回原版，寫入也會被洗掉，所以沒有寫入'
@@ -3048,6 +3069,51 @@ def options_record(instance, staged, set_language=False, enable_pack=False):
     return dict(file='options.txt',before=file_hash(src) if src.exists() else None,after=file_hash(dst),reviewed=True,verified=True)
 
 
+DEFAULT_OPTIONS_FILE = 'config/defaultoptions-common.toml'
+
+
+def toml_array_end(text, start):
+    """Index of the `]` closing the TOML array whose `[` is at `start` (quoted `]` skipped); None if unclosed."""
+    quote=None;i=start+1
+    while i<len(text):
+        c=text[i]
+        if quote:
+            if c=='\\' and quote=='"':i+=1
+            elif c==quote:quote=None
+        elif c in '"\'':quote=c
+        elif c=='#':
+            i=text.find('\n',i)
+            if i<0:return None
+        elif c==']':return i
+        i+=1
+    return None
+
+
+def default_packs_record(instance, staged):
+    """Keep the translation pack on when Default Options applies the pack's preset list.
+
+    Default Options (BlayTheNinth, 21.1 DefaultResourcePacksHandler.loadDefaults) replaces the selected resource
+    packs with defaultResourcePacks the first time the game starts (defaultoptions.journal.json has no
+    "resource-packs" yet), so a translation pack switched on in options.txt before that start is switched off
+    again (seen in COBBLEVERSE). Adding it at the end of the list keeps it on top. None when nothing changes.
+    """
+    import tomllib
+    src=instance/DEFAULT_OPTIONS_FILE
+    try:text=src.read_text(encoding='utf-8');packs=tomllib.loads(text).get('defaultResourcePacks')
+    except (OSError,ValueError):return None
+    if not packs or not isinstance(packs,list) or RESOURCE_PACK_ID in packs:return None
+    m=re.search(r'(?m)^[ \t]*defaultResourcePacks[ \t]*=[ \t]*\[',text)
+    end=toml_array_end(text,m.end()-1) if m else None
+    if end is None:return None
+    head=text[:end].rstrip()
+    new=head+('' if head.endswith((',','[')) else ',')+json.dumps(RESOURCE_PACK_ID)+' '+text[end:]
+    try:
+        if tomllib.loads(new).get('defaultResourcePacks')!=packs+[RESOURCE_PACK_ID]:return None
+    except ValueError:return None
+    dst=staged/DEFAULT_OPTIONS_FILE;dst.parent.mkdir(parents=True,exist_ok=True);dst.write_text(new,encoding='utf-8')
+    return dict(file=DEFAULT_OPTIONS_FILE,before=file_hash(src),after=file_hash(dst),reviewed=True,verified=True)
+
+
 SPACE_MARGIN = 300*1024*1024
 INTERRUPTED = ('backed_up','rollback_incomplete','restoring')
 
@@ -3176,6 +3242,7 @@ def stage_and_apply(session, home, notify, work):
         by_entry=collections.defaultdict(list)
         for entry,row in edits:by_entry[entry].append(row)
         z=zipfile.ZipFile(src) if any(entry is not None for entry in by_entry) else None
+        flow=None
         try:
             modified={}
             for entry,rows in by_entry.items():
@@ -3188,8 +3255,9 @@ def stage_and_apply(session, home, notify, work):
                 if not rows:
                     content=raw
                 elif rows[0]['kind']=='class_display':
-                    from .class_text import rewrite
-                    content=rewrite(raw,rows)
+                    from .class_text import rewrite, JarFlow
+                    if flow is None:flow=JarFlow.of_zip(z)  # the same proof as the scan: helpers and fields of this file
+                    content=rewrite(raw,rows,flow)
                     changed_classes.append(content)
                 elif is_text:
                     content=rows[0]['proposed'].encode('utf-8')
@@ -3251,6 +3319,7 @@ def stage_and_apply(session, home, notify, work):
         # The translations are still written; only switching the pack on is left to the player.
         record=options_record(instance,staged,session.get('set_language'),False);session['errors'].append(['啟用翻譯資源包',str(exc)])
     if record:records.append(record)
+    if uses_pack and (record:=default_packs_record(instance,staged)):records.append(record)
     jars=[staged/r['file'] for r in records if r['file'].endswith('.jar')]
     if jars:
         notify(72,'檢查模組檔完整性',f'用 Java 檢查 {len(jars):,} 個修改過的模組檔，可能需要一兩分鐘')
