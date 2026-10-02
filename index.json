@@ -21,6 +21,7 @@
     {
       "kind": "full",
       "name": "Elemental Awakening v1.4.6",
+      "packId": "elemental awakening",
       "version": "",
       "gameVersion": "1.20.1",
       "loader": "forge-47.4.10",
@@ -28,13 +29,13 @@
       "updated": "2026-10-02",
       "notes": "以元素魔法與職業為主題的 RPG 整合包（Minecraft 1.20.1 Forge，約 280 個模組）。任務書分元素法師、近戰法師、聖騎士、遊俠等路線，搭配天境、暮色森林、Alex 的洞穴、災變等地區與首領、襲擊挑戰，開局可以選擇難度。",
       "recommendedRam": 0,
-      "driveId": "1TTOqE9OTCtfc0MW8eSPfoKm2juK6jDXG",
-      "sha256": "b552d7b7978ba677d7cf9eb429214d83c492e6b404e52a51417750d4c5d51c5e",
-      "size": 607771157,
-      "totalSize": 1827056855,
-      "files": 8854,
-      "revision": 1,
-      "mods": 279
+      "driveId": "1mIFqqKG4ybrNKIJ00oASgT7ffEAoWHjO",
+      "sha256": "ce5fd4a5f9bf17b1a37aa981ad9f0421a5317c9c21275e0be71f02eef7c79a03",
+      "size": 608050524,
+      "totalSize": 1827335939,
+      "files": 8855,
+      "mods": 279,
+      "revision": 2
     },
     {
       "name": "Tensura Neo Otherworld",
