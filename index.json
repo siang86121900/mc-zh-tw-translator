@@ -77,6 +77,28 @@
       "mods": 226
     },
     {
+      "name": "The Pixelmon Modpack",
+      "projectID": 389615,
+      "fileID": 8902290,
+      "version": "9.4.1",
+      "modpackDate": "2026-09-17",
+      "gameVersion": "1.21.1",
+      "translator": "MC Translator",
+      "updated": "2026-10-02",
+      "notes": "以寶可夢為主題的官方 Pixelmon 整合包。在 Minecraft 世界裡捕捉、培育超過一千種寶可夢，挑戰道館與對戰，還能收集卡牌。模組不多、容易上手，適合想輕鬆體驗寶可夢冒險的玩家。主選單按鈕是作者畫好的英文圖片，Essential 選單因字型沒有中文字保留英文。需要 MC Translator v0.24.1 以上才能安裝。",
+      "recommendedRam": 0,
+      "addedMods": [
+        {
+          "name": "IMBlocker",
+          "size": 225646
+        }
+      ],
+      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/389615/8902290-e2497cb5.zip",
+      "sha256": "e2497cb5423fbc05b4d98eba9dfff0c7054ae7b3d35d79864e8cb21c9d927a9b",
+      "size": 1051214,
+      "revision": 1
+    },
+    {
       "kind": "full",
       "name": "VEFV2.7.1",
       "version": "",
