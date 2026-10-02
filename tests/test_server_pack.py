@@ -386,6 +386,36 @@ class WindowTests(unittest.TestCase):
                 self.assertIn('NeoForge', text); self.assertIn('還沒裝好', text)
             self.assertEqual(run.call_args[0][0], 'patch_server')
 
+    def test_whole_modpack_card_builds_from_its_installed_copy(self):
+        # A whole modpack shared from Drive has no CurseForge project number; the card's own install is used.
+        import os
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
+        from mc_zh_tw_translator.desktop import MainWindow
+        app = QApplication.instance() or QApplication([])
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup); root = Path(tmp.name)
+        instance = make_instance(root)
+        entry = dict(kind='full', name='Demo Pack v0.3.0', packId='demo pack', projectID=0, fileID=0, version='', gameVersion='1.21.1',
+                     loader='', translator='我', updated='2026-10-02', modpackDate='', revision=1, notes='', recommendedRam=0,
+                     driveId='x', sha256='a'*64, size=1, totalSize=0, mods=3, url='', addedMods=[])
+        installed = {'k': dict(packId='demo pack', name='Demo Pack v0.3.0', path=str(instance), sha256='a'*64)}
+        window = MainWindow(root/'home'); self.addCleanup(window.deleteLater)
+        buttons = lambda: [b for b in window.pages.widget(6).findChildren(QPushButton) if b.text() == '建立伺服器']
+        with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances', return_value=[]), \
+             patch('mc_zh_tw_translator.full_pack.still_installed', return_value=installed):
+            window.catalog_loaded([entry])
+        self.assertEqual(len(buttons()), 1)
+        window.memory_total = 32*1024
+        with patch.object(window, 'server_parent', return_value=root/'Minecraft server'), \
+             patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes) as asked, \
+             patch.object(QMessageBox, 'information') as told, patch.object(window, 'ask_eula', return_value=True), \
+             patch.object(window, 'run_worker') as run:
+            buttons()[0].click()
+        self.assertFalse(told.called, 'must not say the modpack cannot be found')
+        self.assertTrue(run.called)
+        self.assertIn(instance.name, asked.call_args[0][2])
+
 
 if __name__ == '__main__':
     unittest.main()

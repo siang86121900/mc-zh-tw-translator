@@ -957,7 +957,17 @@ class MainWindow(QMainWindow):
 
     def build_server(self,pack):
         if self.busy:return
-        target=self.choose_patch_target(pack['projectID'],pack['fileID'],'建立伺服器')
+        if pack.get('kind')=='full':
+            # Whole modpacks have no CurseForge project number: the card already knows where each copy is installed.
+            targets=[str(x['path']) for x in pack.get('instances') or []]
+            if not targets:QMessageBox.information(self,'建立伺服器','找不到這個整合包。請先按「安裝」裝好它。');return
+            target=targets[0]
+            if len(targets)>1:
+                from PySide6.QtWidgets import QInputDialog
+                name,ok=QInputDialog.getItem(self,'建立伺服器','要用哪一份整合包建立？',[Path(t).name for t in targets],0,False)
+                if not ok:return
+                target=next(t for t in targets if Path(t).name==name)
+        else:target=self.choose_patch_target(pack['projectID'],pack['fileID'],'建立伺服器')
         if not target:return
         instance=Path(target)
         try:loader=server_pack.loader_of(instance)
