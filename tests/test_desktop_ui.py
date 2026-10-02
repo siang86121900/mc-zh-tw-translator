@@ -292,6 +292,17 @@ class DesktopUiTests(unittest.TestCase):
                 self.assertEqual(window.catalog[0]['status'],'update')
             window.close()
 
+    def test_newer_whole_modpack_is_updated_in_place(self):
+        with tempfile.TemporaryDirectory() as d:
+            pack=patches.full_entry(dict(kind='full',name='Foll v0.4.0',driveId='C'*33,sha256='b'*64,size=10))
+            mine={'x':dict(path=d,name='Foll v0.3.0',sha256='a'*64)}
+            with patch('mc_zh_tw_translator.full_pack.installed',return_value=mine),\
+                 patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=[]):
+                window=MainWindow(Path(d));window.catalog_loaded([pack])
+            self.assertEqual(window.catalog[0]['status'],'full_update')
+            self.assertEqual([b.text() for b in window.pack_buttons][:2],['更新整合包','另外安裝一份'])
+            window.close()
+
     def test_whole_modpack_card_offers_one_install_button(self):
         with tempfile.TemporaryDirectory() as d:
             pack=patches.full_entry(dict(kind='full',name='Foll',version='0.3.0',driveId='C'*33,sha256='b'*64,size=800*1024**2,totalSize=2*1024**3))

@@ -146,7 +146,7 @@ def publish_full(args):
         print('等待 Google 雲端硬碟上傳…', flush=True)
         time.sleep(30)
     print('雲端檔案 ID：', file_id, flush=True)
-    entry = dict(kind='full', name=manifest['name'], version=manifest.get('version') or '', gameVersion=manifest.get('gameVersion') or '',
+    entry = dict(kind='full', name=manifest['name'], packId=full_pack.pack_id(manifest['name']), version=manifest.get('version') or '', gameVersion=manifest.get('gameVersion') or '',
                  loader=manifest['loader'].get('name', ''), translator=args.translator, updated=date.today().isoformat(),
                  notes=args.notes, recommendedRam=args.ram or int(manifest.get('recommendedRam') or 0),
                  driveId=file_id, sha256=digest, size=size, totalSize=manifest['totalSize'], files=len(manifest['files']))
@@ -162,7 +162,8 @@ def publish_full(args):
                 print('Google 還沒開放下載，稍後再試…', flush=True)
                 time.sleep(60)
     print('匿名下載並核對校驗碼成功。', flush=True)
-    update_catalog(entry, lambda p: p.get('kind') == 'full' and p['name'] == entry['name'],
+    # A new version of the same modpack replaces its card; players then update in place.
+    update_catalog(entry, lambda p: p.get('kind') == 'full' and (p.get('packId') or full_pack.pack_id(p['name'])) == entry['packId'],
                    f"整合包：{entry['name']} {entry['version']}", dry_run=args.dry_run)
 
 

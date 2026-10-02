@@ -615,6 +615,8 @@ class MainWindow(QMainWindow):
         self.catalog_box=QVBoxLayout();self.catalog_box.setSpacing(12);box.addLayout(self.catalog_box)
         box.addStretch()
         self.catalog=None;self.catalog_packs=None;self.pack_buttons=[];self.catalog_cards=[];self.memory_total=None
+        # Progress of a whole-modpack install or update also shows on its own card, where the player clicked.
+        self.card_progress={};self.active_card=None;self.curseforge_alerted=False
 
     @staticmethod
     def catalog_key(pack):return f"{pack['projectID'] or pack['name']}:{pack['fileID']}:{pack['sha256'][:12]}"
@@ -658,7 +660,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self,'調整記憶體：'+pack['name'],text)
 
     def clear_catalog(self):
-        self.pack_buttons=[];self.catalog_cards=[]
+        self.pack_buttons=[];self.catalog_cards=[];self.card_progress={}
         while self.catalog_box.count():
             item=self.catalog_box.takeAt(0)
             if item.widget():item.widget().deleteLater()
@@ -704,14 +706,16 @@ class MainWindow(QMainWindow):
                  'applied':[('重新安裝',False,self.apply_catalog_patch)],
                  'other_version':[('仍要安裝',False,self.apply_catalog_patch),('用 CurseForge 更新整合包',False,self.install_with_curseforge)],
                  'not_installed':[('安裝整合包與翻譯',True,self.install_pack_and_translation)],
-                 'full':[('安裝',True,self.install_full_pack)],'full_update':[('安裝新版本',True,self.install_full_pack)],
+                 'full':[('安裝',True,self.install_full_pack)],
+                 'full_update':[('更新整合包',True,self.update_full_pack),('另外安裝一份',False,self.install_full_pack)],
                  'full_installed':[('再裝一份',False,self.install_full_pack)]}
         for pack in self.catalog:
             if pack.get('kind')=='full':
                 size=f"{pack['size']/1024**3:.1f} GB"
                 notes['full']=(f'這個整合包不在 CurseForge 上。按「安裝」會從分享者的雲端下載整個整合包（約 {size}，已含繁體中文翻譯），'
                                '自動在 CurseForge 建立設定檔，裝好就能玩。')
-                notes['full_update']='分享者更新了這個整合包。安裝新版本會另外建立一份，原本的整合包（含存檔）保留不動。'
+                notes['full_update']=('分享者更新了這個整合包。按「更新整合包」會直接更新你原本的設定檔，存檔和遊戲設定都保留；'
+                                      '更新前會先備份，可在「備份與還原」復原。')
             f,b=card();top=QHBoxLayout();name=label(pack['name'],'section');name.setWordWrap(True);top.addWidget(name,1)
             if pack.get('new'):
                 tag=label('','pill');set_pill(tag,'新','progress');top.addWidget(tag,0,Qt.AlignVCenter)
@@ -743,7 +747,11 @@ class MainWindow(QMainWindow):
                 btn=button('建立伺服器',lambda checked=False,p=pack:self.build_server(p));btn.setEnabled(not self.busy)
                 btn.setToolTip('用你電腦上的這個整合包建立一個可以直接雙擊 run.bat 開啟的伺服器資料夾')
                 self.pack_buttons.append(btn);row.addWidget(btn)
-            row.addStretch();b.addLayout(row);self.catalog_box.addWidget(f)
+            row.addStretch();b.addLayout(row)
+            if pack.get('kind')=='full':
+                progress=label('','sub');progress.setWordWrap(True);progress.hide();b.addWidget(progress)
+                self.card_progress[self.catalog_key(pack)]=progress
+            self.catalog_box.addWidget(f)
             self.catalog_cards.append((f,' '.join((pack['name'],pack['version'] or '',pack['gameVersion'] or '',pack['notes'])).casefold()))
         self.catalog_search.setVisible(len(self.catalog)>=self.CATALOG_SEARCH_FROM)
         if self.catalog_search.isVisible():self.filter_catalog()
@@ -821,7 +829,9 @@ class MainWindow(QMainWindow):
               '2. 從 CurseForge 官方下載其餘的模組。\n'
               '3. 逐一核對每個檔案都和分享者的相同，有任何不同就不安裝。\n'
               '4. 在 CurseForge 建立一個新的設定檔，不會動到你其他的整合包和存檔。\n\n'
-              f"需要約 {total/1024**3:.1f} GB 的硬碟空間。最後一步需要 CurseForge 是關閉的，到時會提醒你。\n"
+              f"需要約 {total/1024**3:.1f} GB 的硬碟空間。"
+              +('\n\n你的 CurseForge 現在開著：程式會先下載和核對，最後一步請把 CurseForge 關掉（包含右下角的小圖示），'
+                '關掉後會自動完成；到時也會跳出通知提醒你。\n' if full_pack.curseforge_running() else '最後一步需要 CurseForge 是關閉的，到時會提醒你。\n')+
               '下載可能需要幾分鐘到幾十分鐘，請不要關閉本程式。\n\n是否繼續？')
         if QMessageBox.question(self,'安裝整合包',text)!=QMessageBox.Yes:return
         def operation(w):
@@ -829,7 +839,49 @@ class MainWindow(QMainWindow):
             result=full_pack.install(path,self.home,w.progress.emit,lambda:w.cancelled)
             path.unlink(missing_ok=True)  # the installed modpack is the copy that matters; the download is gigabytes
             return dict(result,notes=pack.get('notes',''))
+        self.active_card=self.catalog_key(pack);self.curseforge_alerted=False
         self.run_worker('patch_full',operation,self.full_pack_installed)
+
+    def update_full_pack(self,pack):
+        """A newer upload of a modpack installed here: the same CurseForge profile is updated in place."""
+        if self.busy:return
+        targets=[x['path'] for x in pack.get('instances') or []]
+        if not targets:self.install_full_pack(pack);return
+        target=targets[0]
+        if len(targets)>1:
+            from PySide6.QtWidgets import QInputDialog
+            name,ok=QInputDialog.getItem(self,'更新整合包','要更新哪一個？',[Path(t).name for t in targets],0,False)
+            if not ok:return
+            target=next(t for t in targets if Path(t).name==name)
+        text=(f"將把「{Path(target).name}」更新成分享者的最新版本（已含繁體中文翻譯）：\n{target}\n\n"
+              f"1. 從分享者的 Google 雲端下載新版本（約 {pack['size']/1024**3:.1f} GB）。\n"
+              '2. 只換掉有變動的檔案，新版本拿掉的模組會移除；存檔、遊戲設定和截圖都不會動。\n'
+              '3. 換掉和移除的檔案會先備份，之後可在「備份與還原」復原。\n\n'
+              '請先關閉這個整合包的遊戲；CurseForge 不必關閉。\n\n是否繼續？')
+        if QMessageBox.question(self,'更新整合包',text)!=QMessageBox.Yes:return
+        def operation(w):
+            path=full_pack.download(pack,self.home,lambda v:w.progress.emit(v,'從雲端下載新版本',pack['name']),cancelled=lambda:w.cancelled)
+            result=full_pack.update(path,self.home,Path(target),w.progress.emit,lambda:w.cancelled)
+            path.unlink(missing_ok=True)
+            return dict(result,notes=pack.get('notes',''))
+        self.active_card=self.catalog_key(pack);self.curseforge_alerted=False
+        self.run_worker('patch_full',operation,self.full_pack_updated)
+
+    def full_pack_updated(self,result):
+        self.refresh_backups();self.refresh_catalog()
+        lines=[f"已更新：{result['name']}",'',
+               f"換上 {result['written']:,} 個新版本的檔案"+(f"，移除 {result['removed']:,} 個新版本拿掉的檔案" if result['removed'] else '')+'。',
+               '存檔和遊戲設定都保留。']
+        if result['replaced']:
+            lines.append(f"其中 {len(result['replaced']):,} 個是你改過的檔案，已換成新版本（舊的有備份）："
+                         +'、'.join(result['replaced'][:5])+('…' if len(result['replaced'])>5 else ''))
+        if result['kept']:
+            lines.append(f"新版本拿掉了 {len(result['kept']):,} 個你改過的檔案，為了不弄丟你的修改沒有刪除："
+                         +'、'.join(result['kept'][:5])+('…' if len(result['kept'])>5 else ''))
+        if result['backup']:lines.append('換掉的檔案已備份，可在「備份與還原」復原。')
+        if result.get('notes'):lines+=['','分享者的說明：',result['notes']]
+        self.patch_status.setText('');self.notify_finished('整合包已更新',lines[0])
+        QMessageBox.information(self,'整合包已更新','\n'.join(lines))
 
     def full_pack_installed(self,result):
         self.refresh_catalog()
@@ -1372,6 +1424,12 @@ class MainWindow(QMainWindow):
             if self.mode.startswith('ai_'):self.ai_status.setText(title+('：'+detail if detail else ''))
             return
         if self.mode.startswith('patch_'):
+            card=self.card_progress.get(self.active_card) if self.mode=='patch_full' else None
+            if card is not None:card.setText(f'{title}：{detail}（{value}%）' if detail else f'{title}（{value}%）');card.show()
+            if self.mode=='patch_full' and title=='請關閉 CurseForge' and not self.curseforge_alerted:
+                # The player is often looking at CurseForge itself; a Windows notice reaches them there.
+                self.curseforge_alerted=True
+                self.notify_finished('請關閉 CurseForge','整合包已下載並核對好，關閉 CurseForge（含右下角的小圖示）後會自動完成安裝。')
             self.patch_status.setText(f'{title}：{detail}（{value}%）' if detail else title);return
         # One-click reports progress for the whole job itself (see jobs.full_translation).
         if title in ('更新參考庫','AI 補翻中'):self.progress.setRange(0,0)
@@ -1466,7 +1524,10 @@ class MainWindow(QMainWindow):
     def on_error(self,text):
         if self.mode in ('check_update','download_update'):self.update_status.setText('更新未完成：'+text)
         elif self.mode.startswith('ai_'):self.ai_status.setText(text)
-        elif self.mode.startswith('patch_'):self.patch_status.setText(text)
+        elif self.mode.startswith('patch_'):
+            self.patch_status.setText(text)
+            card=self.card_progress.get(self.active_card) if self.mode=='patch_full' else None
+            if card is not None:card.setText(text);card.show()
         else:
             set_pill(self.status,'需要處理','blocked');self.detail.setText(text)
             if self.session and self.mode=='apply':

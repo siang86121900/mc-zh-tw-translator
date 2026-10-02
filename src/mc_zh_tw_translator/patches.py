@@ -395,6 +395,7 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 archive=file.casefold().endswith(ARCHIVE_SUFFIXES)
                 path=contained(instance,file)
                 if file.casefold()=='options.txt':continue  # personal game setting, never shared
+                if item['after'] is None:continue  # removed by a whole-modpack update; nothing to share
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
                 if not allowed_file(file,archive) and not archive and literal_file(file) and item['before']:
                     # A config file or script converted in place: the changed strings only, never the file.
@@ -817,10 +818,10 @@ def fetch_catalog(session=None):
 
 def full_entry(x):
     """A whole modpack (one without a CurseForge project) shared on the owner's Google Drive; raises on bad data."""
-    from .full_pack import DRIVE_ID, MAX_PACK_SIZE
+    from .full_pack import DRIVE_ID, MAX_PACK_SIZE, pack_id
     if not DRIVE_ID.fullmatch(str(x['driveId'])) or not re.fullmatch('[0-9a-f]{64}',x['sha256']) or not 0<int(x['size'])<=MAX_PACK_SIZE:
         raise ValueError('bad full pack entry')
-    return dict(kind='full',name=str(x['name'])[:120],projectID=0,fileID=0,version=str(x.get('version') or ''),
+    return dict(kind='full',name=str(x['name'])[:120],packId=str(x.get('packId') or pack_id(x['name']))[:120].casefold(),projectID=0,fileID=0,version=str(x.get('version') or ''),
                 gameVersion=str(x.get('gameVersion') or ''),loader=str(x.get('loader') or '')[:60],
                 translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),modpackDate='',
                 revision=max(1,int(x.get('revision') or 1)),notes=str(x.get('notes') or '')[:600],
@@ -830,9 +831,12 @@ def full_entry(x):
 
 def match_full(packs, installed=None):
     """Rows for whole modpacks: 'full' (not installed), 'full_installed', or 'full_update' (an older upload is installed)."""
+    from .full_pack import pack_id
     rows=[]
     for pack in packs:
-        mine=[r for r in (installed or {}).values() if isinstance(r,dict) and r.get('name')==pack['name'] and Path(str(r.get('path'))).is_dir()]
+        # The same modpack across versions (its name usually carries the version): updated in place, not installed again.
+        mine=[r for r in (installed or {}).values() if isinstance(r,dict) and (r.get('packId') or pack_id(r.get('name','')))==pack['packId']
+              and Path(str(r.get('path'))).is_dir()]
         status='full_installed' if any(r.get('sha256')==pack['sha256'] for r in mine) else 'full_update' if mine else 'full'
         rows.append(dict(pack,status=status,instances=[dict(path=Path(r['path'])) for r in mine],versions=1,latest=True,
                          newest_version=pack['version']))

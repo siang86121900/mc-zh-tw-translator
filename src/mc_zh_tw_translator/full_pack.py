@@ -406,9 +406,32 @@ def register(listing: Path, folder: Path, record: dict, backup_dir: Path):
     return backup
 
 
+def pack_id(name: str) -> str:
+    """Which modpack a name stands for across versions: 'The Foll v0.3.0' and 'The Foll v0.4.0' are one."""
+    base=re.sub(r'(?:[\s_-]+v?|[\s_-]*)\d+(?:\.\d+)+[a-z]?\s*$','',str(name),flags=re.I).strip()
+    return (base or str(name)).casefold()
+
+
 def installed(home: Path) -> dict:
     try:return json.loads((Path(home)/'full_packs.json').read_text(encoding='utf-8'))
     except (OSError,ValueError):return {}
+
+
+def content_file(home: Path, guid: str) -> Path:
+    """The content list (path -> SHA-256) a profile was installed or last updated with; updates compare against it."""
+    if not re.fullmatch(r'[0-9a-f-]{36}',str(guid)):raise ValueError('設定檔編號不正確。')
+    return Path(home)/'full_packs'/f'{guid}.json'
+
+
+def remember(home: Path, folder: Path, manifest, package_sha: str, guid: str):
+    # Keyed by the resolved path: a short 8.3 name (USERNA~1) and the long one must find the same record.
+    home=Path(home);folder=Path(folder).resolve();data=installed(home)
+    data[str(folder).casefold()]=dict(path=str(folder),name=manifest['name'],packId=pack_id(manifest['name']),
+                                      version=manifest.get('version',''),sha256=package_sha,guid=guid,
+                                      installed=datetime.now().isoformat(timespec='seconds'))
+    jobs.write_json(home/'full_packs.json',data)
+    path=content_file(home,guid);path.parent.mkdir(parents=True,exist_ok=True)
+    jobs.write_json(path,{e['path']:e['sha256'] for e in manifest['files']})
 
 
 def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:False, session=None, listing=None,
@@ -468,10 +491,7 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
         register(listing,folder,record,home/'output'/folder.name/'CurseForge紀錄備份'/stamp)
         registered=True
-        data=installed(home)
-        data[str(folder).casefold()]=dict(path=str(folder),name=manifest['name'],version=manifest.get('version',''),
-                                          sha256=file_hash(Path(package)),guid=record['guid'],installed=datetime.now().isoformat(timespec='seconds'))
-        jobs.write_json(home/'full_packs.json',data)
+        remember(home,folder,manifest,file_hash(Path(package)),record['guid'])
         for source in sources:Path(source).unlink(missing_ok=True)
         notify(100,'整合包已安裝',folder.name)
         return dict(folder=str(folder),name=folder.name,files=len(manifest['files']),downloaded=len(linked),
@@ -482,3 +502,73 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
             shutil.rmtree(work,ignore_errors=True)
             if moved:shutil.rmtree(moved,ignore_errors=True)
         raise
+
+
+def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cancelled=lambda:False, session=None, pause=time.sleep) -> dict:
+    """Bring an installed profile to a newer upload in place; saves, game options and screenshots stay.
+
+    Compared with the content list it was installed with: a file the new version changed or added is
+    written, a file it dropped is removed (only when the player did not change it), and options.txt is
+    never touched. Every write and removal is one restorable batch, so 「備份與還原」 can undo the update.
+    CurseForge's own records are not touched, so CurseForge may stay open; the game must be closed.
+    """
+    import requests
+    from .deployment import apply_reviewed
+    from .verifier import VerifyResult, check_java_zipfs
+    home=Path(home);folder=Path(folder).resolve();session=session or requests.Session()
+    if not jobs.is_instance(folder):raise ValueError('找不到要更新的整合包資料夾，可能已在 CurseForge 刪除。請改按「安裝」。')
+    manifest=read(package)
+    record=installed(home).get(str(folder).casefold()) or {}
+    try:old=json.loads(content_file(home,record.get('guid','')).read_text(encoding='utf-8'))
+    except (OSError,ValueError):old={}  # installed by an older version: nothing is removed, changed files are replaced
+    jobs.ensure_game_closed(folder)
+    staged=home/'tmp'/('fullupdate-'+uuid.uuid4().hex[:8]);staged.mkdir(parents=True)
+    records=[];replaced=[];kept=[];sources=[]
+    try:
+        todo=[];new_paths=set()
+        for e in manifest['files']:
+            new_paths.add(e['path'].casefold())
+            if e['path'].casefold()=='options.txt':continue  # the player's own settings
+            current=file_hash(contained(folder,e['path']))
+            if current!=e['sha256']:todo.append((e,current))
+        bundled=[(e,c) for e,c in todo if e['source']=='zip'];linked=[(e,c) for e,c in todo if e['source']=='curseforge']
+        with zipfile.ZipFile(package) as z:
+            for i,(e,_) in enumerate(bundled):
+                if cancelled():raise InterruptedError('已停止，整合包沒有更新。')
+                target=contained(staged,e['path']);target.parent.mkdir(parents=True,exist_ok=True)
+                with z.open(PAYLOAD+e['path']) as src,target.open('xb') as dst:shutil.copyfileobj(src,dst,1024*1024)
+                if i%100==0:notify(int(40*i/max(1,len(bundled))),'準備更新的檔案',e['path'])
+        for i,(e,_) in enumerate(linked):
+            if cancelled():raise InterruptedError('已停止，整合包沒有更新。')
+            title=f'從 CurseForge 下載模組（{i+1}／{len(linked)}）'
+            source=patches.download_mod(e,home,lambda v,n=i:notify(40+int(30*(n+v/100)/max(1,len(linked))),title,e['name']),session,cancelled,pause)
+            target=contained(staged,e['path']);target.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(source,target);sources.append(source)
+        for e,current in todo:
+            if file_hash(contained(staged,e['path']))!=e['sha256']:raise ValueError('有檔案和分享者的不同（'+e['path']+'），整合包沒有更新。')
+            if current is not None and old and current!=old.get(e['path']):replaced.append(e['path'])  # the player had changed it
+            records.append(dict(file=e['path'],before=current,after=e['sha256'],reviewed=True,verified=True))
+        for path,sha in sorted(old.items()):
+            if path.casefold() in new_paths or path.casefold()=='options.txt':continue
+            current=file_hash(contained(folder,path))
+            if current is None:continue
+            if current==sha:records.append(dict(file=path,before=current,after=None,reviewed=True,verified=True))
+            else:kept.append(path)  # dropped by the sharer but changed by the player: left alone
+        jars=[contained(staged,r['file']) for r in records if r['after'] and r['file'].casefold().endswith('.jar')]
+        if jars:
+            vr=VerifyResult();check_java_zipfs(jars,vr)
+            if not vr.ok:raise ValueError('更新的模組檔沒有通過檢查：'+'; '.join(vr.errors))
+        jobs.require_space(folder,home,[r['file'] for r in records])
+        backup=None
+        if records:
+            notify(85,'備份與更新','先保存要換掉的檔案，再寫入新版本')
+            jobs.ensure_game_closed(folder)
+            backup=str(apply_reviewed(folder,staged,records,home/'output',jobs.waiting_note(notify,85,'備份與更新')))
+        remember(home,folder,manifest,file_hash(Path(package)),record.get('guid') or str(uuid.uuid4()))
+        for source in sources:Path(source).unlink(missing_ok=True)
+        notify(100,'整合包已更新',folder.name)
+        return dict(folder=str(folder),name=folder.name,written=sum(r['after'] is not None for r in records),
+                    removed=sum(r['after'] is None for r in records),replaced=replaced,kept=kept,backup=backup,
+                    recommendedRam=manifest.get('recommendedRam') or 0)
+    finally:
+        shutil.rmtree(staged,ignore_errors=True)

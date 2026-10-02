@@ -101,9 +101,10 @@ def atomic_copy(source: Path, destination: Path, on_wait=None) -> None:
 def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_root: Path, on_wait=None) -> Path:
     """Apply exact reviewed files; all originals are backed up before any write.
 
-    Each record requires file, before (SHA-256 or null), after (SHA-256),
-    reviewed=True and verified=True. The caller supplies actual review and
-    verification evidence and must check game state before deploying JARs.
+    Each record requires file, before (SHA-256 or null), after (SHA-256, or null
+    to remove a file that is backed up first), reviewed=True and verified=True.
+    The caller supplies actual review and verification evidence and must check
+    game state before deploying JARs.
     """
     instance, staged, output_root = (p.resolve() for p in (instance, staged, output_root))
     if not instance.is_dir() or not staged.is_dir() or not records:
@@ -121,7 +122,10 @@ def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_roo
         if key in seen:
             raise ValueError(f'同一個檔案被排了兩次寫入，已停止，沒有修改任何檔案：{row["file"]}')
         seen.add(key)
-        if not source.is_file() or file_hash(source) != row['after']:
+        if row.get('after') is None:
+            if row.get('before') is None:
+                raise ValueError(f'要移除的檔案沒有校驗碼，已停止：{row["file"]}')
+        elif not source.is_file() or file_hash(source) != row['after']:
             raise ValueError(f'準備寫入的內容在檢查後被改動，已停止：{row["file"]}')
         if 'before' not in row or file_hash(target) != row['before']:
             raise ValueError(f'整合包裡的檔案在翻譯後被改動（可能是遊戲或啟動器更新），已停止，請重新翻譯：{row["file"]}')
@@ -158,9 +162,12 @@ def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_roo
     applied = []
     try:
         for row, source, target in paths:
-            if file_hash(source) != row['after'] or file_hash(target) != row['before']:
+            if (row['after'] is not None and file_hash(source) != row['after']) or file_hash(target) != row['before']:
                 raise RuntimeError(f'寫入途中檔案被其他程式改動，已還原本批修改：{row["file"]}')
-            atomic_copy(source, target, on_wait)
+            if row['after'] is None:
+                when_free(target.unlink, target.name, on_wait)
+            else:
+                atomic_copy(source, target, on_wait)
             applied.append((row, target))
             if when_free(lambda: file_hash(target), target.name, on_wait) != row['after']:
                 raise RuntimeError(f'寫入後檢查不符，已還原本批修改：{row["file"]}')

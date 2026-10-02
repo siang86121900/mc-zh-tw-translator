@@ -122,7 +122,7 @@ class FullPackTests(unittest.TestCase):
         self.assertFalse(entry['isMemoryOverride'])
         self.assertEqual(json.loads((folder/'minecraftinstance.json').read_text(encoding='utf-8'))['guid'],entry['guid'])
         self.assertEqual(len(list(self.home.glob('output/My Pack/CurseForge紀錄備份/*/MinecraftGameInstance.json'))),1)
-        self.assertIn(str(folder).casefold(),full_pack.installed(self.home))
+        self.assertIn(str(folder.resolve()).casefold(),full_pack.installed(self.home))
         self.assertFalse(list(self.instances.glob('.mctranslator-*')))
         # A second install never touches the first one.
         second=Path(self.install()['folder'])
@@ -197,6 +197,53 @@ class FullPackTests(unittest.TestCase):
         self.server.html=False
         with self.assertRaisesRegex(ValueError,'校驗不符'):
             full_pack.download(dict(pack,sha256='0'*64),self.home,session=self.server,pause=lambda _:None)
+
+    def test_update_changes_only_what_the_sharer_changed_and_can_be_restored(self):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        folder=Path(self.install()['folder'])
+        before={p.relative_to(folder).as_posix():p.read_bytes() for p in folder.rglob('*') if p.is_file()}
+        # The player plays: a world, own settings, a tweaked config, a note in a file the sharer will drop.
+        (folder/'saves/World').mkdir(parents=True);(folder/'saves/World/level.dat').write_bytes(b'my world')
+        (folder/'options.txt').write_text('lang:zh_tw\nkey_key.jump:key.keyboard.j\n',encoding='utf-8')
+        (folder/'config/b.toml').write_text('x=player\n',encoding='utf-8')
+        # The sharer's next version: a changed config, a dropped jar, a new file, a dropped config the player edited.
+        owner=self.owner
+        (owner/'config/a.toml').write_text('# 設定\nx=2\n',encoding='utf-8')
+        (owner/'mods/handmade.jar').unlink();(owner/'kubejs').mkdir();(owner/'kubejs/new.js').write_text('// new\n')
+        next_version=self.root/'pack2.zip'
+        full_pack.build(owner,next_version,session=self.server,workers=1)
+        # b.toml only existed in the first upload in this story: pretend the first content list had it.
+        content=full_pack.content_file(self.home,full_pack.installed(self.home)[str(folder.resolve()).casefold()]['guid'])
+        listed=json.loads(content.read_text(encoding='utf-8'));listed['config/b.toml']=sha(b'x=1\n')
+        content.write_text(json.dumps(listed),encoding='utf-8')
+        listing=self.listing.read_bytes()
+        result=full_pack.update(next_version,self.home,folder,session=self.server,pause=lambda _:None)
+        self.assertEqual(self.listing.read_bytes(),listing)  # CurseForge's records are not touched
+        self.assertEqual((folder/'config/a.toml').read_text(encoding='utf-8'),'# 設定\nx=2\n')
+        self.assertFalse((folder/'mods/handmade.jar').exists())
+        self.assertEqual((folder/'kubejs/new.js').read_text(),'// new\n')
+        self.assertEqual((folder/'saves/World/level.dat').read_bytes(),b'my world')
+        self.assertIn('key.keyboard.j',(folder/'options.txt').read_text(encoding='utf-8'))
+        self.assertEqual((folder/'config/b.toml').read_text(encoding='utf-8'),'x=player\n')
+        self.assertEqual(result['kept'],['config/b.toml']);self.assertEqual(result['removed'],1)
+        # The update is one batch: restoring it brings back exactly the first version's files.
+        jobs.restore_backup(Path(result['backup']),folder)
+        for rel,data in before.items():
+            if rel!='options.txt':self.assertEqual((folder/rel).read_bytes(),data,rel)
+        self.assertFalse((folder/'kubejs/new.js').exists())
+
+    def test_update_refuses_a_missing_folder(self):
+        with self.assertRaisesRegex(ValueError,'找不到要更新'):
+            full_pack.update(self.package,self.home,self.root/'gone',session=self.server)
+
+    def test_same_modpack_across_versions_is_one_card(self):
+        for a,b in (('The Foll v0.3.0','The Foll v0.4.0'),('VEFV2.7.1','VEFV2.8.0'),('Chapter of Yuusha v3.13.15','Chapter of Yuusha v3.14')):
+            self.assertEqual(full_pack.pack_id(a),full_pack.pack_id(b))
+        self.assertNotEqual(full_pack.pack_id('VEFV2.7.1'),full_pack.pack_id('VEF 2.7.1'.replace(' ','X')))
+        self.install()
+        newer=patches.full_entry(dict(kind='full',name='My Pack v2.8',driveId='D'*33,sha256='c'*64,size=10))
+        row=patches.match_catalog([newer],[],{},full_pack.installed(self.home))[0]
+        self.assertEqual(row['status'],'full_update');self.assertEqual(len(row['instances']),1)
 
     def test_catalog_lists_full_packs_and_old_entries_still_work(self):
         entry=dict(kind='full',name='My Pack',version='2.7',driveId='B'*33,sha256='a'*64,size=1000,totalSize=5000,revision=2)
