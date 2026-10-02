@@ -43,6 +43,10 @@ MAX_TRIES = 40
 START_TIMEOUT = 20*60          # a first start of a large modpack also builds the world
 INSTALL_TIMEOUT = 20*60
 STOP_TIMEOUT = 3*60
+# Forge 1.20.1 writes its crash report when mods fail to load and may then never exit (The Foll, 2026-10-02:
+# java still running 8 minutes after "Crash report saved to"). After the report it gets this long to end by itself.
+CRASH_GRACE = 30
+CRASHED = re.compile(r'Crash report saved to|LoadingFailedException|Failed to start the minecraft server')
 GAME_PORT = 25565
 EULA_URL = 'https://aka.ms/MinecraftEULA'
 TRIAL_WORLD = 'mctranslator-trial-world'
@@ -495,7 +499,7 @@ def try_start(server: Path, java: Path, args: str, notify=lambda *_: None, cance
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     flag = threading.Event(); deadline = [time.monotonic()+timeout]
     watch(process, deadline, cancelled, flag)
-    output = []; ok = False
+    output = []; ok = False; crashed = False
     # The output is read to the end, also after "stop": a server whose output nobody reads blocks on
     # writing it and never gets to saving the world and stopping.
     for line in process.stdout:
@@ -507,6 +511,9 @@ def try_start(server: Path, java: Path, args: str, notify=lambda *_: None, cance
                 process.stdin.write('stop\n'); process.stdin.flush()
             except OSError:
                 pass
+        elif not ok and not crashed and CRASHED.search(line):
+            crashed = True; deadline[0] = min(deadline[0], time.monotonic()+CRASH_GRACE)
+            notify(0, '試開伺服器', '開啟失敗，正在讀取當機紀錄')
         elif not ok and ('Loading' in line or 'Preparing' in line):
             notify(0, '試開伺服器', line.strip()[-90:])
     process.wait()
@@ -520,7 +527,8 @@ def try_start(server: Path, java: Path, args: str, notify=lambda *_: None, cance
         except OSError:
             pass
     # stop_hung: it started, but did not end by itself after "stop" (a mod holding it open) and was closed.
-    return dict(ok=ok, text=text, timed_out=flag.is_set() and not ok, stop_hung=flag.is_set() and ok, tail=output[-12:])
+    # A start that failed and was closed after its crash report is a failure to read, not a time-out.
+    return dict(ok=ok, text=text, timed_out=flag.is_set() and not ok and not crashed, stop_hung=flag.is_set() and ok, tail=output[-12:])
 
 
 def move_mod(server: Path, name: str) -> None:

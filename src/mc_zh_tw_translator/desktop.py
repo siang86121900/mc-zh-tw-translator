@@ -617,7 +617,7 @@ class MainWindow(QMainWindow):
         box.addStretch()
         self.catalog=None;self.catalog_packs=None;self.pack_buttons=[];self.catalog_cards=[];self.memory_total=None
         # Progress of a whole-modpack install or update also shows on its own card, where the player clicked.
-        self.card_progress={};self.active_card=None;self.curseforge_alerted=False
+        self.card_progress={};self.card_stop={};self.active_card=None;self.curseforge_alerted=False;self.card_failed=False
 
     @staticmethod
     def catalog_key(pack):return f"{pack['projectID'] or pack['name']}:{pack['fileID']}:{pack['sha256'][:12]}"
@@ -666,7 +666,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self,'調整記憶體：'+pack['name'],text)
 
     def clear_catalog(self):
-        self.pack_buttons=[];self.catalog_cards=[];self.card_progress={}
+        self.pack_buttons=[];self.catalog_cards=[];self.card_progress={};self.card_stop={}
         while self.catalog_box.count():
             item=self.catalog_box.takeAt(0)
             if item.widget():item.widget().deleteLater()
@@ -753,10 +753,12 @@ class MainWindow(QMainWindow):
                 btn=button('建立伺服器',lambda checked=False,p=pack:self.build_server(p));btn.setEnabled(not self.busy)
                 btn.setToolTip('用你電腦上的這個整合包建立一個可以直接雙擊 run.bat 開啟的伺服器資料夾')
                 self.pack_buttons.append(btn);row.addWidget(btn)
-            row.addStretch();b.addLayout(row)
-            if pack.get('kind')=='full':
-                progress=label('','sub');progress.setWordWrap(True);progress.hide();b.addWidget(progress)
-                self.card_progress[self.catalog_key(pack)]=progress
+            row.addStretch()
+            # Every job started from this card (install, translation, server) shows its progress here, where the
+            # player clicked: the page's own status line is out of sight once the list is scrolled.
+            stop=button('停止',self.cancel_install);stop.hide();row.addWidget(stop);b.addLayout(row)
+            progress=label('','sub');progress.setWordWrap(True);progress.hide();b.addWidget(progress)
+            self.card_progress[self.catalog_key(pack)]=progress;self.card_stop[self.catalog_key(pack)]=stop
             self.catalog_box.addWidget(f)
             self.catalog_cards.append((f,' '.join((pack['name'],pack['version'] or '',pack['gameVersion'] or '',pack['notes'])).casefold()))
         self.catalog_search.setVisible(len(self.catalog)>=self.CATALOG_SEARCH_FROM)
@@ -805,6 +807,7 @@ class MainWindow(QMainWindow):
             path=patches.download_patch(pack,self.home,lambda v:w.progress.emit(v,'下載翻譯',pack['name']))
             return dict(patches.apply_patch(Path(target),path,self.home,w.progress.emit,set_language=language,add_mods=add,cancelled=lambda:w.cancelled),
                         notes=pack.get('notes',''))
+        self.active_card=self.catalog_key(pack)
         self.run_worker('patch_apply',operation,self.patch_applied)
 
     def install_pack_and_translation(self,pack):
@@ -824,6 +827,7 @@ class MainWindow(QMainWindow):
             instance=patches.wait_for_modpack(pack,manifest,w.progress.emit,lambda:w.cancelled)
             result=patches.apply_patch(instance,path,self.home,w.progress.emit,set_language=True,add_mods=add,cancelled=lambda:w.cancelled)
             return dict(result,installed_modpack=True,notes=pack.get('notes',''))
+        self.active_card=self.catalog_key(pack)
         self.run_worker('patch_install',operation,self.patch_applied)
 
     def install_full_pack(self,pack):
@@ -905,6 +909,8 @@ class MainWindow(QMainWindow):
     def cancel_install(self):
         if self.worker and self.mode in ('patch_install','patch_apply','patch_server','patch_full'):
             self.worker.cancelled=True;self.patch_cancel.setEnabled(False);self.patch_status.setText('正在停止…')
+            if self.card_stop.get(self.active_card) is not None:self.card_stop[self.active_card].setEnabled(False)
+            if self.card_progress.get(self.active_card) is not None:self.card_progress[self.active_card].setText('正在停止…')
 
     def patch_applied(self,result):
         self.refresh_backups();self.refresh_catalog();self.check_outdated()
@@ -999,6 +1005,7 @@ class MainWindow(QMainWindow):
             java,_=server_pack.find_java(loader['mc'])
             return server_pack.build_server(instance,parent,self.home,w.progress.emit,lambda:w.cancelled,
                                             java=java,memory_mb=memory['mb'],name=pack['name'])
+        self.active_card=self.catalog_key(pack)
         self.run_worker('patch_server',operation,self.server_built)
 
     def ask_eula(self):
@@ -1434,6 +1441,13 @@ class MainWindow(QMainWindow):
         for nav in self.navs:nav.setEnabled(True)
         self.install_btn.setEnabled(bool(self.update_info and self.update_info.get('status')=='available'))
         self.ai_progress.hide();self.patch_cancel.hide();self.update_ai_controls();self.update_ai_button()
+        if self.mode.startswith('patch_') and self.active_card is not None:
+            # The result is shown in a window; a failure stays on the card so the player can read it there.
+            if self.card_stop.get(self.active_card) is not None:self.card_stop[self.active_card].hide()
+            card=self.card_progress.get(self.active_card)
+            if card is not None and not self.card_failed:card.hide()
+            self.active_card=None
+        self.card_failed=False
 
     def on_progress(self,value,title,detail):
         self.last_activity=time.monotonic()
@@ -1443,8 +1457,11 @@ class MainWindow(QMainWindow):
             if self.mode.startswith('ai_'):self.ai_status.setText(title+('：'+detail if detail else ''))
             return
         if self.mode.startswith('patch_'):
-            card=self.card_progress.get(self.active_card) if self.mode=='patch_full' else None
-            if card is not None:card.setText(f'{title}：{detail}（{value}%）' if detail else f'{title}（{value}%）');card.show()
+            card=self.card_progress.get(self.active_card)
+            if card is not None:
+                card.setText(f'{title}：{detail}（{value}%）' if detail else f'{title}（{value}%）');card.show()
+                stop=self.card_stop.get(self.active_card)
+                if stop is not None:stop.setVisible(True);stop.setEnabled(self.patch_cancel.isEnabled())
             if self.mode=='patch_full' and title=='請關閉 CurseForge' and not self.curseforge_alerted:
                 # The player is often looking at CurseForge itself; a Windows notice reaches them there.
                 self.curseforge_alerted=True
@@ -1545,8 +1562,8 @@ class MainWindow(QMainWindow):
         elif self.mode.startswith('ai_'):self.ai_status.setText(text)
         elif self.mode.startswith('patch_'):
             self.patch_status.setText(text)
-            card=self.card_progress.get(self.active_card) if self.mode=='patch_full' else None
-            if card is not None:card.setText(text);card.show()
+            card=self.card_progress.get(self.active_card)
+            if card is not None:card.setText(text);card.show();self.card_failed=True
         else:
             set_pill(self.status,'需要處理','blocked');self.detail.setText(text)
             if self.session and self.mode=='apply':

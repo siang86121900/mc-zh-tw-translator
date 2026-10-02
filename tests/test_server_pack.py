@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -305,6 +306,27 @@ class StartTests(unittest.TestCase):
             out = sp.try_start(server, Path('java.exe'), 'a.txt', popen=popen)
         self.assertFalse(out['ok']); self.assertIn('imblocker', out['text'])
 
+    def test_a_server_that_stays_open_after_its_crash_report_is_closed(self):
+        # Forge 1.20.1 in The Foll wrote its crash report and kept running; the trial waited for it forever.
+        import threading
+        from unittest.mock import patch
+        class Hanging(FakeProcess):
+            def __init__(self):
+                super().__init__([]); self.killed = threading.Event()
+                def lines():
+                    yield '[main/FATAL] [net.minecraftforge.server.loading.ServerModLoader/]: Crash report saved to .\\crash-reports\\crash.txt\n'
+                    self.killed.wait(20)  # the real process only ends when it is killed
+                self.stdout = lines()
+            def kill(self):
+                self.returncode = -9; self.killed.set()
+        procs = []
+        with tempfile.TemporaryDirectory() as tmp, patch.object(sp, 'CRASH_GRACE', 0.5):
+            started = time.monotonic()
+            out = sp.try_start(Path(tmp), Path('java.exe'), 'a.txt', popen=lambda *a, **k: procs.append(Hanging()) or procs[-1])
+        self.assertLess(time.monotonic()-started, 10)
+        self.assertTrue(procs[0].killed.is_set())
+        self.assertFalse(out['ok']); self.assertFalse(out['timed_out'])  # read as a failed start: the next try follows
+
 
 class Response:
     def __init__(self, body, url, status=200):
@@ -415,6 +437,17 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(told.called, 'must not say the modpack cannot be found')
         self.assertTrue(run.called)
         self.assertIn(instance.name, asked.call_args[0][2])
+        # The progress shows on the card that was clicked, with a stop button: the page's status line is out of
+        # sight once the list is scrolled down (reported 2026-10-02: "按了建立伺服器但沒有進度").
+        key = window.catalog_key(window.catalog[0])
+        self.assertEqual(window.active_card, key)
+        window.mode = 'patch_server'; window.worker = None
+        window.on_progress(40, '試開伺服器', '第 1 次')
+        card, stop = window.card_progress[key], window.card_stop[key]
+        self.assertFalse(card.isHidden()); self.assertIn('試開伺服器：第 1 次（40%）', card.text())
+        self.assertFalse(stop.isHidden())
+        window.finish_worker()
+        self.assertTrue(card.isHidden()); self.assertTrue(stop.isHidden()); self.assertIsNone(window.active_card)
 
 
 if __name__ == '__main__':
