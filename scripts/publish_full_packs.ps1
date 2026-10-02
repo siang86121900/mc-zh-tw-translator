@@ -1,4 +1,4 @@
-# 一次上架多個不在 CurseForge 上的整合包（整包分享）。由擁有者本人執行：上架是公開動作。
+﻿# 一次上架多個不在 CurseForge 上的整合包（整包分享）。由擁有者本人執行：上架是公開動作。
 # 用法（在專案資料夾的 PowerShell）：.\scripts\publish_full_packs.ps1
 $ErrorActionPreference = 'Stop'
 $env:PYTHONPATH = 'src;scripts'
