@@ -43,10 +43,9 @@
       "fileID": 8908669,
       "version": "1.1.1a",
       "modpackDate": "2026-09-18",
-      "revision": 2,
       "gameVersion": "1.21.1",
       "translator": "MC Translator",
-      "updated": "2026-10-02",
+      "updated": "2026-10-03",
       "notes": "以《關於我轉生變成史萊姆這檔事》為主題的魔法冒險整合包。轉生到異世界後選擇種族、學習數百種技能，探索各地、建立自己的城鎮，最終目標是登上魔王之位。收錄超過 200 個模組，並附任務書一步步帶你上手。",
       "recommendedRam": 12128,
       "addedMods": [
@@ -55,9 +54,10 @@
           "size": 225648
         }
       ],
-      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1478248/8908669-e0d4b9bc.zip",
-      "sha256": "e0d4b9bcefc491b65f64d1906fc5a6aee21d05134131274a248de19487144ee7",
-      "size": 3563848
+      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1478248/8908669-72a49ca2.zip",
+      "sha256": "72a49ca296cbc9c96d1efcc4ec010e73ed9bdd5c2ee53924a82292536518183c",
+      "size": 3543691,
+      "revision": 3
     },
     {
       "kind": "full",
