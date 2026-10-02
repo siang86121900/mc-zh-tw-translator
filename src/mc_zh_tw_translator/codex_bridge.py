@@ -766,6 +766,10 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
         for item,(_,row,original) in zip(payload,batch):
             if row.get('kind')=='class_display':item['context']=row.get('display_use','玩家顯示文字')
             if row.get('kind')=='data_text':item['context']='任務模組顯示的任務文字（'+str(json.loads(row['key'])[-1])+' 欄位）'
+            if row.get('kind')=='embedded_text':
+                item['context']='資料包裡照字面顯示的文字（NPC 名稱、商店分類、告示牌、書本、聊天訊息或物品名稱）'
+                if jobs.embedded_text.text_spans(original) is not None and original.lstrip()[:1] in ('[','{'):
+                    item['context']+='；這是 JSON 文字元件：只翻譯 text 的值與陣列裡的文字，其餘欄位、順序與標點符號原樣保留'
             if '\n' in original: item['lines'] = str(original.count('\n'))
             codes = jobs.required_codes(original)
             if codes: item['codes'] = codes

@@ -24,6 +24,7 @@ from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_
 from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified, VANILLA_STRUCTURE_NAMES
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
 from . import quest_lang
+from . import embedded_text
 from .verifier import VerifyResult, check_java_zipfs
 
 SOURCE_NAMES = {'same_source_zh_cn':'同檔簡中', 'instance_zh_cn':'模組包中文',
@@ -67,7 +68,7 @@ def memory_scope(row):
     """What confirmed and AI translations are remembered under: the mod for language files, the file itself
     for text that lives in one file only (program text, several-language config text)."""
     ns=lang_namespace(row.get('source',''))
-    return ns or (row.get('source','') if row.get('kind') in ('class_display','inline_lang','data_text') else '')
+    return ns or (row.get('source','') if row.get('kind') in ('class_display','inline_lang','data_text','embedded_text') else '')
 
 
 def lang_namespace(source):
@@ -320,6 +321,8 @@ def same_format(original, value):
     if not original:return True
     shape=json_text_shape(original)
     if shape is not None and json_text_shape(value)!=shape:return False
+    words=embedded_text.blank_words(original) if original.lstrip()[:1] in ('[','{') else None
+    if words is not None and embedded_text.blank_words(value)!=words:return False  # a whole text component's shape
     return (placeholders(original)==placeholders(value)
             and re.findall(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',original)==re.findall(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',value)
             and code_signature(original)==code_signature(value))
@@ -680,7 +683,7 @@ class Provenance:
         for r in rows:
             self.entries[self.key(r)]=dict(text=r['proposed'],en=r.get('en'),origin=r['origin'],evidence=r.get('evidence') or '',
                                            issue=r.get('issue') or '',unified_from=r.get('unified_from'),model=r.get('ai_model'),
-                                           original=original_of(r) if r.get('kind')=='class_display' else None)
+                                           original=original_of(r) if r.get('kind') in ('class_display','embedded_text') else None)
         self.path.parent.mkdir(parents=True,exist_ok=True);write_json(self.path,self.entries)
 
 
@@ -1350,8 +1353,9 @@ def present_mods(z, depth=0):
 # scan-12: plain Chinese literals (plain_literal) are marked for an in-place Simplified-to-Traditional conversion
 # scan-13: a jar's installed mods are its [[mods]] ids only, not the mods it lists as dependencies
 # scan-14: language rows of a mod drawing with its own font without Chinese glyphs are marked (no_chinese_font)
+# scan-18: words data packs show as written (structures, functions, loot tables: embedded_text)
 # scan-17: program text followed through helper methods and fields (JarFlow); keys a mod's program asks for (extra_keys)
-SCAN_CACHE_VERSION = 'scan-17'
+SCAN_CACHE_VERSION = 'scan-18'
 
 
 def scan_cache(home, instance):
@@ -1630,6 +1634,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # The config screen shows the mod's language entry for this comment, which is a row of its own;
             # counting the class copy too would list text the game already shows from the language file.
             counts['tooltip_in_language']+=1;continue
+        if r['kind']=='embedded_text':
+            decided.append(embedded_row(r,curseforge,provenance,memory,ai_memory));counts['embedded_text']+=1;continue
         if literal_conversion(r,curseforge,provenance,lang_text):
             # Simplified Chinese written straight into a mod's program (Age of Mythology's 巫法师): where the
             # launcher does not put the original back, its characters are converted in place. Only the
@@ -1979,6 +1985,43 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     return result
 
 
+# Rows whose text sits in a mod file this modpack cannot write when CurseForge puts the file back.
+HELD_KINDS = ('class_display','embedded_text')
+
+
+def embedded_row(r, curseforge, provenance, memory, ai_memory):
+    """The report row for words a data pack shows as written (embedded_text): an NPC's name or shop categories, a
+    sign, a book, a function's chat message. They are changed in the file itself, string by string. Text written by
+    an earlier run is recognised by its provenance (the original English is kept there, en_ref)."""
+    route=write_route(r,curseforge);writable=route=='file'
+    current=r['current'];previous=provenance.lookup(r)
+    if previous:
+        original=previous.get('original') or current
+        worded=taiwan_wording(current) if previous['origin'] not in USER_ORIGINS else current
+        changed=worded!=current and validate_text(original,worded)
+        return dict(slim(r),en_ref=original,proposed=worded if changed else current,origin=previous['origin'],
+                    evidence=previous.get('evidence',''),issue=(previous.get('issue','')+'；已修正轉換用字，請核對' if changed else previous.get('issue','')),
+                    supported=writable,reviewed=False,changed=changed,installed=not changed,recovered=True,ai_model=previous.get('model'))
+    scope=memory_scope(r);mine=memory.lookup(scope,r['key'],current);extra={}
+    value=current;origin='untranslated';evidence='';issue=''
+    if mine and fits(current,mine,True):value=mine;origin='translation_memory';evidence='translation_memory.json'
+    elif HAN.search(current):
+        converted=taiwan_wording(to_taiwan(current))
+        if has_simplified(current) and validate_text(current,converted):value=converted;origin='same_source_zh_cn';evidence='data_s2t'
+        else:origin='existing_zh_tw'
+    else:
+        reason=keep_original_reason(current,r['key'],'') if not embedded_text.text_spans(current) else ''
+        earlier=ai_memory.lookup(scope,r['key'],current)
+        if reason or (earlier and earlier.get('keep')):origin='keep_original';evidence=reason or earlier.get('reason') or 'AI 判斷保留原文'
+        elif earlier and validate_text(current,earlier['text']) and not number_doubt(current,earlier['text']):
+            value=earlier['text'];origin='ai_translation';evidence='ChatGPT/Codex: '+str(earlier.get('model') or '')+'（沿用先前的補譯）'
+            issue='AI 補譯（沿用先前翻過的同一句），尚未人工校對。';extra.update(ai_reused=True,ai_model=earlier.get('model'))
+        else:issue='缺少可用中文來源'
+    if not writable and origin!='keep_original':issue=route
+    return dict(slim(r),proposed=value,origin=origin,evidence=evidence,issue=issue,supported=writable,reviewed=False,
+                changed=value!=current and origin!='untranslated',**extra)
+
+
 def data_text_row(r, shown, loader, provenance, memory, ai_memory):
     """The report row for one string of a data file a mod shows as written (DATA_TEXT).
 
@@ -2174,7 +2217,7 @@ def still_english(r):
 def held_english(r):
     """Player text inside a mod's program that this modpack cannot write: the game shows it in English.
     Text the program already holds in Chinese is shown in Chinese and is not counted here."""
-    if r.get('kind')!='class_display' or r.get('supported'):return False
+    if r.get('kind') not in HELD_KINDS or r.get('supported'):return False
     return still_english(r) or bool(r.get('changed')) or not HAN.search(r.get('current') or '')
 
 
@@ -2188,7 +2231,7 @@ def row_state(r, curseforge=False):
     """
     if r.get('origin') in ('keep_original','not_display','pending'):return None
     if r.get('unverified'):return 'candidate'  # written where no mod was checked to read it: not counted either way
-    held=r.get('kind')=='class_display' and not r.get('supported')
+    held=r.get('kind') in HELD_KINDS and not r.get('supported')
     if held:return 'unwritable' if held_english(r) else 'done'  # else the program already shows it in Chinese
     if not r.get('supported'):return 'candidate'
     if still_english(r):return 'missing'
@@ -2209,7 +2252,7 @@ def row_category(r, curseforge=False):
     if state=='unwritable':return 'held'
     if state=='missing':return 'missing'
     if state=='unconfirmed':return 'unshown'
-    if r.get('kind')=='class_display' and not r.get('supported'):return 'mod_tw'  # already Chinese in the program
+    if r.get('kind') in HELD_KINDS and not r.get('supported'):return 'mod_tw'  # already Chinese in the program
     if o in ('translation_memory','user_glossary','manual'):return 'mine'
     if o=='reference_pack_or_cfpa':return 'tw_ref' if r.get('evidence') in ('reference:tw','reference:para') else 's2t'
     if o in ('existing_zh_tw','instance_resourcepack'):return 'mod_tw'
@@ -2286,6 +2329,15 @@ def check_shown(instance, rows):
                 found.append(isinstance(data,dict) and tooltip_part(data.get(key),part,parts)==r['proposed'])
             r['shown']=any(found);missing+=not r['shown'];continue
         if r.get('kind')=='class_display':r['shown']=True;continue
+        if r.get('kind')=='embedded_text':
+            # Written into the data-pack file itself: that file's unit at this place now reads so.
+            path,entry=target_for(r);where=('embedded',path,entry)
+            if where not in files:
+                try:
+                    raw=read_archive_entry(instance,path,entry) if entry else contained(instance,path).read_bytes()
+                    files[where]=dict(embedded_text.units(entry or path,raw)) if raw is not None else {}
+                except (OSError,ValueError,KeyError,zipfile.BadZipFile):files[where]={}
+            r['shown']=files[where].get(r['key'])==r['proposed'];missing+=not r['shown'];continue
         if r.get('kind')=='data_text':
             # Shown when the translation data pack holds it and OpenLoader loads that pack (see DATA_PACK_FILE).
             if 'datapack' not in files:files['datapack']=read_data_pack(instance)[0] if reads_data_packs(instance) else {}
@@ -3254,6 +3306,8 @@ def stage_and_apply(session, home, notify, work):
                 is_text=bool(rows) and rows[0]['kind']=='book' and rows[0]['key']=='text'
                 if not rows:
                     content=raw
+                elif rows[0]['kind']=='embedded_text':
+                    content=embedded_text.rewrite(name,raw,{r['key']:(r['current'],r['proposed']) for r in rows})
                 elif rows[0]['kind']=='class_display':
                     from .class_text import rewrite, JarFlow
                     if flow is None:flow=JarFlow.of_zip(z)  # the same proof as the scan: helpers and fields of this file

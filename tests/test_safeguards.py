@@ -318,6 +318,22 @@ class QualityTests(Base):
             self.assertEqual(references.to_taiwan(cn),tw,cn)
         for text in ('剝皮松木原木','最多只能','按鍵綁定','乾草塊'):self.assertFalse(references.has_simplified(text),text)
 
+    def test_one_to_many_slips_found_in_cobbleverse(self):
+        # COBBLEVERSE: the Pokémon names with 后 / 仆 were taken for simplified and converted to 後 / 僕;
+        # audit_conversion.py found the same kind of slip with 托, 栗, 荧, 赞 in five modpacks.
+        for cn,tw in (('尼多后','尼多后'),('焰后蜥','焰后蜥'),('甜冷美后','甜冷美后'),('仆刀将军','仆刀將軍'),
+                      ('克拉门托绿色陶瓦','克拉門托綠色陶瓦'),('伊格纳托斯','伊格納托斯'),('洛托姆','洛托姆'),
+                      ('栗木木板','栗木木板'),('栗树树叶','栗樹樹葉'),('哈力栗','哈力栗'),('荧光蘑菇','螢光蘑菇'),
+                      ('够赞狗','夠讚狗'),('振翼发','振翼髮'),
+                      # the other reading, where it is the right one
+                      ('完成委托。','完成委託。'),('拜托你了','拜託你了'),('线而战栗。','線而戰慄。'),('不寒而栗','不寒而慄'),
+                      ('赞助者','贊助者'),('赞成','贊成'),('女仆','女僕'),('之后','之後'),('蜂后','蜂后'),('头发','頭髮'),
+                      ('寒栗石','寒慄石'),('萨拉托加','薩拉托加'),('荧石','螢光石'),('荧石粉','螢石粉')):
+            self.assertEqual(references.to_taiwan(cn),tw,cn)
+        for name in ('尼多后','焰后蜥','甜冷美后','仆斬將軍','仆刀將軍','委託','戰慄'):
+            self.assertFalse(references.has_simplified(name),name)
+            self.assertEqual(references.fix_slips(name),name,name)  # right Taiwan text is never changed
+
     def test_characters_the_converter_kept_simplified_are_corrected(self):
         # The Foll quests and books: the converter's word list saw a queen (蜂后, 妖后), a name (于禁, 子云)
         # or a word split by a line break, and left simplified characters in the Taiwan text.

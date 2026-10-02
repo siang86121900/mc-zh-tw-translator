@@ -19,7 +19,8 @@ TAIWAN_FORMS = str.maketrans({'臺':'台','巖':'岩','牀':'床','羣':'群','�
 S2TWP = OpenCC('s2twp')
 S2T = OpenCC('s2t')
 # Correct Traditional Chinese words that a character-by-character conversion would take for simplified.
-KEPT_WORDS = re.compile('干擾|干涉|干預|若干|相干|皇后|王后|天后|太后|母后|蟻后|蜂后|蛛后|后羿|后土|人云亦云|云云|拮据|前仆後繼|仆倒')
+KEPT_WORDS = re.compile('干擾|干涉|干預|若干|相干|皇后|王后|天后|太后|母后|蟻后|蜂后|蛛后|后羿|后土|人云亦云|云云|拮据|前仆後繼|仆倒'
+                        '|尼多后|焰后蜥|甜冷美后|仆刀|仆斬')  # Pokémon names: Nidoqueen, Salazzle, Tsareena, Kingambit
 # Simplified forms that Big5 also holds as old or rare characters (云 for 說, 后 for queen…) but that in
 # today's Taiwan text are simplified. 伙, 准, 凶, 划, 占, 斗, 皂, 栗, 里 and the like are ordinary Taiwan
 # characters and are not listed.
@@ -63,6 +64,16 @@ SLIPS = [(re.compile(a), b) for a, b in (
     # 回复 that restores HP, hunger or mana is 回復 (Taiwan's Pokémon wording); 回覆 is replying to someone.
     (r'回覆(?=[自對生血飢飽法魔所全滿少量一速能行藥道\d%＋+ＨH]|得|[，。]|$)', '回復'),
     ('(?<=[力命值以會能後時可緩並給來秒每級])回覆', '回復'),
+    # Found by scripts/audit_conversion.py over 291,275 strings of five modpacks (2026-10-03, COBBLEVERSE report).
+    # 托 is 託 only in 委託 / 拜託 / 託付…; names and objects keep 托 (克拉門托, 伊格納托斯, 洛托姆, 托架).
+    ('(?<![委拜寄信推請受囑付假依])託(?![付管運夢福辭詞言兒人育])', '托'),
+    # 栗 is the chestnut (栗木, 栗樹, 栗色, 哈力栗); 慄 is trembling (戰慄, 不寒而慄).
+    ('(?<![戰顫而寒])慄(?!慄)', '栗'),
+    ('熒(?![惑熒石])', '螢'),  # 螢光 in Taiwan (螢光蘑菇, 螢光楓木)
+    ('(?<=[夠點超好按很真])贊', '讚'),  # 夠讚狗 (Okidogi), 點讚; 贊助, 贊成 stay
+    ('振翼發', '振翼髮'),  # Flutter Mane: hair, not 發
+    # Pokémon whose official names hold 后 (queen) and 仆: the converter makes them 後 and 僕.
+    ('尼多後', '尼多后'), ('焰後蜥', '焰后蜥'), ('甜冷美後', '甜冷美后'), ('僕(?=[刀斬]將軍)', '仆'),
 )]
 # 输出端口 is mainland players' slang for what deals the damage; the converter's word list makes it a computer
 # port (輸出埠). In a fight it is 輸出手段; next to machines, the output side of a block is 輸出端.

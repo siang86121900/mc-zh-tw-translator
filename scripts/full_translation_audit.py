@@ -5,6 +5,7 @@ from pathlib import Path, PurePosixPath
 from mc_zh_tw_translator.translator import CTE2QuestTranslator, PATCHOULI_SKIP_FIELDS
 from opencc import OpenCC
 from mc_zh_tw_translator.class_text import proven_strings, plain_strings, config_tooltips, developer_strings, JarFlow
+from mc_zh_tw_translator import embedded_text
 from mc_zh_tw_translator import quest_lang
 
 HAN=re.compile('[\u3400-\u9fff]'); LATIN=re.compile('[A-Za-z]{3,}')
@@ -420,6 +421,8 @@ def exclude_tooltip_conflicts(rows):
 
 # A string of three words or more (an apostrophe inside a word: "Where opponent's Pokemon spawns").
 SENTENCE_LIKE=re.compile(r"\b[A-Za-z][A-Za-z']{2,} [A-Za-z][A-Za-z']{2,} [A-Za-z][A-Za-z']{2,}")
+# Three English words or more in a row, short ones included ("Welcome to my shop"): words a player reads.
+ENGLISH_WORDS=re.compile(r"\b[A-Za-z][A-Za-z']+(?:[ ,]+[A-Za-z][A-Za-z']*){2,}")
 # Minecraft fills in only %s and %n$s; any other letter (%d, %2$i) makes the game show the whole text as written
 # (TranslatableContents.decomposeTemplate fails and the key itself is shown).
 UNRENDERED=re.compile(r'%(\d+\$)?([A-Za-rt-z])')
@@ -613,6 +616,14 @@ class Audit:
                         self.add(label+'!/'+n,json.dumps(path),value,at(tw,path),at(cn,path),'book')
             except Exception as e:self.errors.append([label,n,str(e)])
         for n in sorted(names):
+            # Words a data pack shows as written: structures (NPC names, shop categories, signs, books), functions
+            # (tellraw, books it gives), loot tables and advancements, RCT trainer names; see embedded_text.
+            if not embedded_text.is_file('/'+n):continue
+            try:
+                for key,text in embedded_text.units(n,read(n)):self.add(label+'!/'+n,key,None,text,kind='embedded_text')
+                self.counts['embedded_text_files']+=1
+            except Exception as e:self.errors.append([label,n,'embedded text: '+str(e)])
+        for n in sorted(names):
             if not DATA_TEXT.search('/'+n):continue
             try:
                 for path,field,value in leaves(parse(read(n))):
@@ -623,23 +634,25 @@ class Audit:
                 self.counts['data_text_files']+=1
             except Exception as e:self.errors.append([label,n,str(e)])
     def unsupported_data(self,label,names,read):
-        """A mod's data-pack JSON whose display fields hold Chinese, in a format no reader covers: listed once per
-        folder (data/<mod>/<kind>/) so a whole kind of text (quests, dialogue) is never silently left out.
-        Fields other than display ones (a tag file's "__comment") are a developer's notes and are not listed."""
+        """A mod's data-pack JSON whose display fields hold a sentence (Chinese, or three English words or more), in a
+        format no reader covers: listed once per folder (data/<mod>/<kind>/) so a whole kind of text (quests,
+        dialogue, NPC names) is never silently left out. Fields other than display ones (a tag file's "__comment")
+        are a developer's notes and are not listed."""
         found=defaultdict(list)
         for n in sorted(names):
             m=DATA_JSON.match(n)
-            if not m or DATA_TEXT.search('/'+n) or BOOK.search('/'+n) or m[2] in ('lang','patchouli_books'):continue
+            if (not m or DATA_TEXT.search('/'+n) or BOOK.search('/'+n) or embedded_text.is_file('/'+n)
+                    or m[2] in ('lang','patchouli_books','tags','recipe','recipes','worldgen')):continue
             try:
                 raw=read(n)
-                if raw.isascii():continue
                 for _,field,value in leaves(parse(raw)):
-                    if field in DISPLAY and HAN.search(value) and SENTENCE.search(value):
+                    if field in DISPLAY and ((HAN.search(value) and SENTENCE.search(value))
+                                             or (not HAN.search(value) and ENGLISH_WORDS.search(value))):
                         found[f'data/{m[1]}/{m[2]}/'].append((n,value));break
             except Exception:continue
         for folder,files in found.items():
             n,value=files[0]
-            self.add(label+'!/'+folder,'folder',None,f'{len(files)} 個資料檔含中文顯示文字，例如 {n}：{value[:200]}',kind='unsupported_config_text')
+            self.add(label+'!/'+folder,'folder',None,f'{len(files)} 個資料檔含顯示文字，例如 {n}：{value[:200]}',kind='unsupported_config_text')
             self.counts['unsupported_data_text_files']+=len(files)
     def archive(self,p,label):
         self.counts['archives']+=1
