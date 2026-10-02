@@ -717,7 +717,10 @@ class MainWindow(QMainWindow):
                 tag=label('','pill');set_pill(tag,'新','progress');top.addWidget(tag,0,Qt.AlignVCenter)
             pill=label('','pill');set_pill(pill,*states[pack['status']]);top.addWidget(pill,0,Qt.AlignVCenter);b.addLayout(top)
             # The modpack's own version and the translation's revision are different things.
-            modpack='　·　'.join(x for x in ('整合包版本 '+(pack['version'] or '未標示')+(f"（{pack['modpackDate']} 發布）" if pack['modpackDate'] else ''),
+            # A whole modpack from another launcher often has its version only in its name; say nothing then.
+            version=('' if pack.get('kind')=='full' and not pack['version'] else
+                     '整合包版本 '+(pack['version'] or '未標示')+(f"（{pack['modpackDate']} 發布）" if pack['modpackDate'] else ''))
+            modpack='　·　'.join(x for x in (version,
                                               pack['gameVersion'] and 'Minecraft '+pack['gameVersion']) if x)
             translation='　·　'.join(x for x in (f"翻譯第 {pack['revision']} 版",pack['updated'] and pack['updated'][:10]+' 更新',
                                                   pack['translator'] and '翻譯：'+pack['translator']) if x)

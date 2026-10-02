@@ -305,6 +305,7 @@ class DesktopUiTests(unittest.TestCase):
             self.assertEqual([b.text() for b in window.pack_buttons],['安裝'])
             texts=' '.join(w.text() for w in window.catalog_box.itemAt(0).widget().findChildren(QLabel))
             self.assertIn('不在 CurseForge 上',texts);self.assertIn('0.8 GB',texts)
+            self.assertNotIn('未標示',texts)
             window.close()
 
 if __name__=='__main__':unittest.main()

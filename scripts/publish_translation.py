@@ -71,6 +71,8 @@ def update_catalog(entry, same, message, files=(), dry_run=False):
                     git('rm', '--quiet', url[len(RAW):], cwd=work)
             # revision counts re-publishes of the same modpack version.
             entry = dict(entry, revision=max([int(p.get('revision') or 1) for p in replaced] or [0])+1)
+            if not entry.get('notes') and replaced:  # a re-publish without new notes keeps the card's introduction
+                entry['notes'] = replaced[-1].get('notes', '')
             index['packs'].append(entry)
             index['packs'].sort(key=lambda p: (p['name'].casefold(), p['updated']))
             for source, relative in files:
