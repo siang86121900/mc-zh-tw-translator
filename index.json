@@ -3,20 +3,21 @@
     {
       "kind": "full",
       "name": "Chapter of Yuusha v3.13.15",
+      "packId": "chapter of yuusha",
       "version": "",
       "gameVersion": "1.20.1",
       "loader": "forge-47.4.10",
       "translator": "MC Translator",
-      "updated": "2026-10-02",
+      "updated": "2026-10-03",
       "notes": "以勇者冒險為主題的魔法戰鬥整合包（Minecraft 1.20.1 Forge，約 370 個模組）。拔刀劍、鐵魔法、詭厄巫法、災變、天境、TaCZ 槍械與車萬女僕都在裡面，任務書帶你一路打開天境、地獄、終界等各個世界之門，挑戰各地首領。",
       "recommendedRam": 0,
-      "driveId": "1bsm-lu__0BQ7Wt6Zej0tiTPQBcsLlDAR",
-      "sha256": "0e8f512edac53852bde18fe1ee8cdd9af01b95b8d1a7a9dd6402b0ca70ff945d",
-      "size": 256252821,
-      "totalSize": 1345717657,
+      "driveId": "1AMuSwJ2XWO3z0s4EF634PeesEAxTk-MX",
+      "sha256": "34ac24af8d047cd028c4e617f44d172be86235f038bc68288f2e5674c00930be",
+      "size": 256515803,
+      "totalSize": 1345733086,
       "files": 14148,
-      "revision": 1,
-      "mods": 376
+      "mods": 376,
+      "revision": 2
     },
     {
       "name": "COBBLEVERSE",
