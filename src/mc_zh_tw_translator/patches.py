@@ -800,6 +800,8 @@ def fetch_catalog(session=None):
     packs=[]
     for x in (r.json() or {}).get('packs',[]):
         try:
+            if x.get('kind')=='full':
+                packs.append(full_entry(x));continue
             patch_url(x['url'])
             if not re.fullmatch('[0-9a-f]{64}',x['sha256']) or not 0<int(x['size'])<=MAX_PATCH_SIZE:continue
             packs.append(dict(name=str(x['name']),projectID=int(x.get('projectID') or 0),fileID=int(x.get('fileID') or 0),
@@ -813,13 +815,38 @@ def fetch_catalog(session=None):
     return packs
 
 
-def match_catalog(packs, instances, applied=None):
+def full_entry(x):
+    """A whole modpack (one without a CurseForge project) shared on the owner's Google Drive; raises on bad data."""
+    from .full_pack import DRIVE_ID, MAX_PACK_SIZE
+    if not DRIVE_ID.fullmatch(str(x['driveId'])) or not re.fullmatch('[0-9a-f]{64}',x['sha256']) or not 0<int(x['size'])<=MAX_PACK_SIZE:
+        raise ValueError('bad full pack entry')
+    return dict(kind='full',name=str(x['name'])[:120],projectID=0,fileID=0,version=str(x.get('version') or ''),
+                gameVersion=str(x.get('gameVersion') or ''),loader=str(x.get('loader') or '')[:60],
+                translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),modpackDate='',
+                revision=max(1,int(x.get('revision') or 1)),notes=str(x.get('notes') or '')[:600],
+                recommendedRam=ram_mb(x.get('recommendedRam')),driveId=str(x['driveId']),sha256=x['sha256'],size=int(x['size']),
+                totalSize=max(int(x.get('totalSize') or 0),0),url='',addedMods=[])
+
+
+def match_full(packs, installed=None):
+    """Rows for whole modpacks: 'full' (not installed), 'full_installed', or 'full_update' (an older upload is installed)."""
+    rows=[]
+    for pack in packs:
+        mine=[r for r in (installed or {}).values() if isinstance(r,dict) and r.get('name')==pack['name'] and Path(str(r.get('path'))).is_dir()]
+        status='full_installed' if any(r.get('sha256')==pack['sha256'] for r in mine) else 'full_update' if mine else 'full'
+        rows.append(dict(pack,status=status,instances=[dict(path=Path(r['path'])) for r in mine],versions=1,latest=True,
+                         newest_version=pack['version']))
+    return rows
+
+
+def match_catalog(packs, instances, applied=None, installed_full=None):
     """One row per modpack: the translation for the version the user has installed, else the newest.
 
     The catalog keeps every published version, so players on an older modpack version still get the
-    translation made for it.
+    translation made for it. Whole modpacks shared without CurseForge are listed after them.
     """
     groups={}
+    full=[p for p in packs if p.get('kind')=='full'];packs=[p for p in packs if p.get('kind')!='full']
     for pack in packs:groups.setdefault(pack['projectID'] or pack['name'].casefold(),[]).append(pack)
     rows=[]
     for versions in groups.values():
@@ -840,7 +867,7 @@ def match_catalog(packs, instances, applied=None):
         rows.append(dict(pack,status=status,instances=targets,versions=len(versions),latest=pack is versions[0],
                          newest_version=versions[0]['version'],recommendedRam=ram))
     rows.sort(key=lambda r:({'update':0,'exact':1,'applied':2,'other_version':3}.get(r['status'],4),r['name'].casefold()))
-    return rows
+    return rows+sorted(match_full(full,installed_full),key=lambda r:r['name'].casefold())
 
 
 def modpack_files_ready(instance: Path, manifest):

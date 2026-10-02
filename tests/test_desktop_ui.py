@@ -8,9 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
 from PySide6.QtTest import QTest
 from mc_zh_tw_translator.desktop import MainWindow
+from mc_zh_tw_translator import patches
 
 
 class DesktopUiTests(unittest.TestCase):
@@ -271,6 +272,39 @@ class DesktopUiTests(unittest.TestCase):
             self.assertTrue(window.navs[6].isChecked())
             self.assertEqual(window.catalog[0]['status'],'exact')
             self.assertEqual(window.catalog_box.count(),1);self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯','建立伺服器'])
+            window.close()
+
+    def test_updated_translation_number_goes_once_the_page_is_seen(self):
+        with tempfile.TemporaryDirectory() as d:
+            pack=dict(name='Demo',projectID=7,fileID=8,version='1.0',gameVersion='1.21.1',translator='我',updated='2026-09-29',
+                      notes='',url='https://github.com/x',sha256='a'*64,size=1,modpackDate='2026-09-18',revision=2)
+            mine=[dict(name='Demo',path=Path(d),projectID=7,fileID=8,gameVersion='1.21.1')]
+            applied={str(Path(d).resolve()).casefold():dict(sha256='b'*64,fileID=8)}
+            with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=mine),\
+                 patch('mc_zh_tw_translator.patches.applied_patches',return_value=applied):
+                window=MainWindow(Path(d));window.catalog_loaded([pack])
+                self.assertEqual(window.catalog[0]['status'],'update')
+                self.assertEqual(window.navs[6].text(),'已翻譯整合包（1）')
+                window.navigate(6)
+                self.assertEqual(window.navs[6].text(),'已翻譯整合包')
+                window.catalog_loaded([pack])  # read again later: still seen
+                self.assertEqual(window.navs[6].text(),'已翻譯整合包')
+                self.assertEqual(window.catalog[0]['status'],'update')
+            window.close()
+
+    def test_whole_modpack_card_offers_one_install_button(self):
+        with tempfile.TemporaryDirectory() as d:
+            pack=patches.full_entry(dict(kind='full',name='Foll',version='0.3.0',driveId='C'*33,sha256='b'*64,size=800*1024**2,totalSize=2*1024**3))
+            with patch('mc_zh_tw_translator.patches.fetch_catalog',return_value=[pack]),\
+                 patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=[]):
+                window=MainWindow(Path(d));window.navigate(6)
+                for _ in range(200):
+                    self.app.processEvents();time.sleep(.01)
+                    if window.catalog:break
+            self.assertEqual(window.catalog[0]['status'],'full')
+            self.assertEqual([b.text() for b in window.pack_buttons],['安裝'])
+            texts=' '.join(w.text() for w in window.catalog_box.itemAt(0).widget().findChildren(QLabel))
+            self.assertIn('不在 CurseForge 上',texts);self.assertIn('0.8 GB',texts)
             window.close()
 
 if __name__=='__main__':unittest.main()

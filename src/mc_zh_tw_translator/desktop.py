@@ -23,6 +23,7 @@ from . import desktop_jobs as jobs
 from . import updater
 from . import codex_bridge as ai
 from . import patches
+from . import full_pack
 from . import server_pack
 
 # Tokens follow ai-agent-team DESIGN.md: one primary blue, neutrals derived from #363533,
@@ -602,7 +603,8 @@ class MainWindow(QMainWindow):
             self.mark_catalog_seen()
 
     def make_shared(self):
-        box=self.page('已翻譯整合包','已經翻好的整合包，按一個按鈕就裝好。整合包和翻譯者加裝的模組都從 CurseForge 官方下載，這裡只提供翻譯文字；安裝前會先備份。')
+        box=self.page('已翻譯整合包','已經翻好的整合包，按一個按鈕就裝好。CurseForge 上有的整合包從 CurseForge 官方下載，這裡只提供翻譯文字，安裝前會先備份；'
+                      '不在 CurseForge 上的整合包由分享者的雲端提供整包，裝成新的 CurseForge 設定檔。')
         head=QHBoxLayout();self.patch_status=label('','sub');head.addWidget(self.patch_status,1)
         self.patch_cancel=button('停止等待',self.cancel_install);self.patch_cancel.hide();head.addWidget(self.patch_cancel,0,Qt.AlignTop)
         self.catalog_refresh=button('重新整理',self.refresh_catalog);head.addWidget(self.catalog_refresh,0,Qt.AlignTop);box.addLayout(head)
@@ -627,8 +629,9 @@ class MainWindow(QMainWindow):
         self.update_catalog_badge(include_new=False)
 
     def update_catalog_badge(self,include_new=True):
-        updates=sum(p['status']=='update' for p in self.catalog or [])
-        fresh=sum(bool(p.get('new')) and p['status']!='applied' for p in self.catalog or []) if include_new else 0
+        # Both counts go once the page has been seen; the card itself keeps saying the translation was updated.
+        updates=sum(p['status']=='update' and bool(p.get('new')) for p in self.catalog or []) if include_new else 0
+        fresh=sum(bool(p.get('new')) and p['status'] not in ('applied','update','full_installed') for p in self.catalog or []) if include_new else 0
         parts=([f'{fresh} 個新上架'] if fresh else [])+([f'{updates} 個有更新'] if updates else [])
         # The sidebar is narrow: one number there, what it counts in the tooltip and on the page itself.
         self.navs[6].setText('已翻譯整合包'+(f'（{fresh+updates}）' if parts else ''))
@@ -678,11 +681,11 @@ class MainWindow(QMainWindow):
 
     def catalog_loaded(self,packs):
         self.catalog_packs=packs
-        self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home))
+        self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home),full_pack.installed(self.home))
         # New = published translations this user has not seen yet; shown until the page is opened.
         seen=self.seen_catalog()
         for pack in self.catalog:pack['new']=self.catalog_key(pack) not in seen
-        fresh=[p for p in self.catalog if p['new'] and p['status']!='applied']
+        fresh=[p for p in self.catalog if p['new'] and p['status'] not in ('applied','full_installed')]
         mine=[p for p in fresh if p['status'] in ('exact','update')]
         if mine and self.pages.currentIndex()!=6:
             self.notify_finished('有新的整合包翻譯',f"你電腦上的「{mine[0]['name']}」有可以安裝的翻譯"+(f"，另有 {len(mine)-1} 個" if len(mine)>1 else '')+'。')
@@ -692,15 +695,23 @@ class MainWindow(QMainWindow):
             self.catalog_search.hide();self.catalog_message('目前還沒有已翻譯整合包','有新的整合包翻譯發布時，會出現在這裡。');return
         self.clear_catalog()
         states={'update':('翻譯有更新','progress'),'exact':('可安裝','progress'),'applied':('已是最新','done'),
-                'other_version':('整合包版本不同','todo'),'not_installed':('未安裝整合包','todo')}
+                'other_version':('整合包版本不同','todo'),'not_installed':('未安裝整合包','todo'),
+                'full':('可安裝','progress'),'full_update':('有新版本','progress'),'full_installed':('已安裝','done')}
         notes={'update':'你安裝後這份翻譯又更新了。',
                'other_version':'你的整合包版本和這份翻譯不同，只會翻譯相同的模組；建議先在 CurseForge 更新整合包。',
                'not_installed':'你的電腦還沒有這個整合包。按下面的按鈕，CurseForge 會下載整合包，裝好後這裡自動裝上翻譯並把語言設成繁體中文。'}
         actions={'update':[('更新翻譯',True,self.apply_catalog_patch)],'exact':[('安裝翻譯',True,self.apply_catalog_patch)],
                  'applied':[('重新安裝',False,self.apply_catalog_patch)],
                  'other_version':[('仍要安裝',False,self.apply_catalog_patch),('用 CurseForge 更新整合包',False,self.install_with_curseforge)],
-                 'not_installed':[('安裝整合包與翻譯',True,self.install_pack_and_translation)]}
+                 'not_installed':[('安裝整合包與翻譯',True,self.install_pack_and_translation)],
+                 'full':[('安裝',True,self.install_full_pack)],'full_update':[('安裝新版本',True,self.install_full_pack)],
+                 'full_installed':[('再裝一份',False,self.install_full_pack)]}
         for pack in self.catalog:
+            if pack.get('kind')=='full':
+                size=f"{pack['size']/1024**3:.1f} GB"
+                notes['full']=(f'這個整合包不在 CurseForge 上。按「安裝」會從分享者的雲端下載整個整合包（約 {size}，已含繁體中文翻譯），'
+                               '自動在 CurseForge 建立設定檔，裝好就能玩。')
+                notes['full_update']='分享者更新了這個整合包。安裝新版本會另外建立一份，原本的整合包（含存檔）保留不動。'
             f,b=card();top=QHBoxLayout();name=label(pack['name'],'section');name.setWordWrap(True);top.addWidget(name,1)
             if pack.get('new'):
                 tag=label('','pill');set_pill(tag,'新','progress');top.addWidget(tag,0,Qt.AlignVCenter)
@@ -798,8 +809,40 @@ class MainWindow(QMainWindow):
             return dict(result,installed_modpack=True,notes=pack.get('notes',''))
         self.run_worker('patch_install',operation,self.patch_applied)
 
+    def install_full_pack(self,pack):
+        """A whole modpack from the sharer's Google Drive, made into a CurseForge profile; one confirmation."""
+        if self.busy:return
+        total=pack.get('totalSize') or pack['size']
+        text=(f"將安裝「{pack['name']}」整合包{('版本 '+pack['version']) if pack['version'] else ''}，已含繁體中文翻譯：\n\n"
+              f"1. 從分享者的 Google 雲端下載整合包（約 {pack['size']/1024**3:.1f} GB）。\n"
+              '2. 從 CurseForge 官方下載其餘的模組。\n'
+              '3. 逐一核對每個檔案都和分享者的相同，有任何不同就不安裝。\n'
+              '4. 在 CurseForge 建立一個新的設定檔，不會動到你其他的整合包和存檔。\n\n'
+              f"需要約 {total/1024**3:.1f} GB 的硬碟空間。最後一步需要 CurseForge 是關閉的，到時會提醒你。\n"
+              '下載可能需要幾分鐘到幾十分鐘，請不要關閉本程式。\n\n是否繼續？')
+        if QMessageBox.question(self,'安裝整合包',text)!=QMessageBox.Yes:return
+        def operation(w):
+            path=full_pack.download(pack,self.home,lambda v:w.progress.emit(v,'從雲端下載整合包',pack['name']),cancelled=lambda:w.cancelled)
+            result=full_pack.install(path,self.home,w.progress.emit,lambda:w.cancelled)
+            path.unlink(missing_ok=True)  # the installed modpack is the copy that matters; the download is gigabytes
+            return dict(result,notes=pack.get('notes',''))
+        self.run_worker('patch_full',operation,self.full_pack_installed)
+
+    def full_pack_installed(self,result):
+        self.refresh_catalog()
+        lines=[f"整合包已加入 CurseForge：{result['name']}",'',
+               f"共 {result['files']:,} 個檔案，都已核對和分享者的相同（其中 {result['downloaded']:,} 個模組從 CurseForge 官方下載）。",
+               '打開 CurseForge，在「我的建立」找到它，按「開始」就能玩，遊戲語言已設為繁體中文。',
+               '如果你沒裝過 '+(result.get('loader') or 'Forge')+'，第一次開啟時 CurseForge 會先下載它，需要等一下。']
+        if result.get('notes'):lines+=['','分享者的說明：',result['notes']]
+        memory=self.memory_advice(dict(recommendedRam=result.get('recommendedRam') or 0,instances=[dict(path=result['folder'])]))
+        if memory:lines+=['',memory['line']]+[memory[k] for k in ('now','warning') if memory[k]]+['（在「已翻譯整合包」按「怎麼調整記憶體」看步驟）']
+        lines+=['','不想要時，在 CurseForge 對它按右鍵刪除即可。']
+        self.patch_status.setText('');self.notify_finished('整合包已安裝',lines[0])
+        QMessageBox.information(self,'整合包已安裝','\n'.join(lines))
+
     def cancel_install(self):
-        if self.worker and self.mode in ('patch_install','patch_apply','patch_server'):
+        if self.worker and self.mode in ('patch_install','patch_apply','patch_server','patch_full'):
             self.worker.cancelled=True;self.patch_cancel.setEnabled(False);self.patch_status.setText('正在停止…')
 
     def patch_applied(self,result):
@@ -1297,7 +1340,7 @@ class MainWindow(QMainWindow):
         self.started_at=self.last_activity=time.monotonic()
         for b in (self.ai_check_btn,self.confirm_all_btn,self.undo_confirm_btn,self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai,*self.pack_buttons):b.setEnabled(False)
         if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
-        self.patch_cancel.setVisible(mode in ('patch_install','patch_apply','patch_server'));self.patch_cancel.setEnabled(True)
+        self.patch_cancel.setVisible(mode in ('patch_install','patch_apply','patch_server','patch_full'));self.patch_cancel.setEnabled(True)
         self.patch_cancel.setText('停止等待' if mode=='patch_install' else '停止')
         self.history.setEnabled(False);self.cancel.setEnabled(mode in ('plan','full_translate','ai_translate','ai_login','ai_install'));self.ai_stop_btn.setEnabled(mode in ('ai_translate','ai_login','ai_install'))
         self.worker=Worker(operation)
