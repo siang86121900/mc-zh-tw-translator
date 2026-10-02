@@ -122,7 +122,12 @@ def publish_full(args):
         sys.exit('請用 --drive-folder 指定 Google 雲端硬碟電腦版裡要放整合包的資料夾。')
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         out = Path(tmp)/'pack.zip'
-        manifest = full_pack.build(instance, out, notify=lambda v, t, d='': print(f'{v:3d}% {t} {d}', flush=True))
+        shown = [0.0]
+        def notify(value, title, detail=''):
+            if time.monotonic()-shown[0] >= 10 or value >= 100:
+                shown[0] = time.monotonic()
+                print(f'{value:3d}% {title} {detail}', flush=True)
+        manifest = full_pack.build(instance, out, notify=notify)
         size = out.stat().st_size
         digest = full_pack.file_hash(out)
         linked = sum(e['source'] == 'curseforge' for e in manifest['files'])

@@ -44,7 +44,7 @@ jobs:
           $env:PYTHONPATH = "src;scripts"
           $env:QT_QPA_PLATFORM = "offscreen"
           $env:PYTHONIOENCODING = "utf-8"
-          python -m unittest discover -s tests -q
+          python scripts/ci_tests.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build EXE and checksums
