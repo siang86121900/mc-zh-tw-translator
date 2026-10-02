@@ -84,20 +84,21 @@
     {
       "kind": "full",
       "name": "The Foll v0.3.0",
+      "packId": "the foll",
       "version": "",
       "gameVersion": "1.20.1",
       "loader": "forge-47.4.23",
       "translator": "MC Translator",
-      "updated": "2026-10-02",
+      "updated": "2026-10-03",
       "notes": "以塔羅與秘聞為主題的魔法冒險整合包（Minecraft 1.20.1 Forge，約 230 個模組）。巫法、血肉、變身、機械等多種流派可以選，搭配詭厄巫法、鐵魔法、災變、暮色森林與 Alex 的洞穴，任務書附模組教學與塔羅儀式章節。",
       "recommendedRam": 0,
-      "driveId": "1RDH9YRCgZkufBqh1ppTv901c2H0nSOP5",
-      "sha256": "29f15e7f1ff365fa83c2f3e625c4b19c2665b5415223523ba25bde60e4f485d6",
-      "size": 828926477,
-      "totalSize": 2018521556,
+      "driveId": "1ba1P8CF1uNstR3hQNqowdscqvyeIVB9W",
+      "sha256": "42fa7514df1bc4f3700f2fc296c4e7acd2c3cb830d10111453263ba053b1a7ed",
+      "size": 1016502449,
+      "totalSize": 2017449628,
       "files": 1312,
-      "revision": 1,
-      "mods": 226
+      "mods": 226,
+      "revision": 2
     },
     {
       "name": "The Pixelmon Modpack",
