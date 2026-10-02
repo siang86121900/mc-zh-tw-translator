@@ -19,6 +19,28 @@
       "mods": 376
     },
     {
+      "name": "COBBLEVERSE",
+      "projectID": 1210677,
+      "fileID": 8488030,
+      "version": "1.7.42-CF",
+      "modpackDate": "2026-07-22",
+      "gameVersion": "1.21.1",
+      "translator": "MC Translator",
+      "updated": "2026-10-03",
+      "notes": "以寶可夢為主題的 Cobblemon 冒險整合包（Minecraft 1.21.1 Fabric，約 140 個模組）。在方塊世界裡捕捉、培育寶可夢，和各地訓練家對戰、挑戰道館，用寶可幣在商店買賣，探索各種寶可夢主題的建築與傳說地點。CobbleDollars 商店畫面的按鈕與 RCT 模組自帶的訓練家名稱仍是英文。需要 MC Translator v0.29.0 以上。",
+      "recommendedRam": 6144,
+      "addedMods": [
+        {
+          "name": "IMBlocker",
+          "size": 229044
+        }
+      ],
+      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1210677/8488030-515f0e7e.zip",
+      "sha256": "515f0e7e0ec2f88b8c9e2693dadb39b1dfde3cc35940cc93d8973c43375fbc47",
+      "size": 2224198,
+      "revision": 1
+    },
+    {
       "kind": "full",
       "name": "Elemental Awakening v1.4.6",
       "packId": "elemental awakening",
