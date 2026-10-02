@@ -46,6 +46,10 @@ QUEST_NAMESPACE = 'ftbquests_quests'
 # Ponderer (com.nododiiiii.ponderer.ponder.LocalizedText reads LanguageManager.getSelected()).
 INLINE_ZH_TW = ('config/ponderer/scripts/',)
 INLINE_UNVERIFIED = '並列多種語言的文字：還沒確認這個模組會讀繁中（zh_tw），暫不寫入'
+# Mods that draw their own screens with a font holding no Chinese characters (Audit.own_font_without_chinese, e.g.
+# Essential's fonts/Minecraft-Regular.json: 95 glyphs, U+0020-U+007E): Chinese there shows as □, so their text stays
+# English. The font lies outside assets/, so a resource pack cannot replace it (see docs/translation-reference.md).
+NO_CHINESE_FONT = '這個模組用自己的字型顯示介面（{}），字型裡沒有中文字，翻成中文會變成方框（□）'
 
 
 def reads_inline_zh_tw(source):
@@ -709,6 +713,35 @@ def unsupported_note(session):
             f'（例如 {shown}）。完整清單在下方明細的「無法確定是否顯示」分類；請把截圖或檔案名稱回報給開發者。')
 
 
+IMAGE_BUTTON = re.compile(r'^\s*(?:source|backgroundnormal)\s*=\s*\[source:local\][^\n]*button[^\n]*\.(?:png|gif|apng|jpe?g)\s*$',re.M|re.I)
+BUTTON_LABEL = re.compile(r'^\s*label\s*=\s*\S',re.M)
+
+
+def image_menus(instance):
+    """FancyMenu layouts that draw buttons with pictures and no text label (The Pixelmon Modpack: buttons/main_single.png).
+    English painted in a picture is not text, so the report says so instead of leaving it to look like a gap."""
+    found=[]
+    for p in sorted((Path(instance)/'config/fancymenu/customization').glob('*.txt')):
+        try:text=p.read_text(encoding='utf-8',errors='replace')
+        except OSError:continue
+        if any(IMAGE_BUTTON.search(block) and not BUTTON_LABEL.search(block) for block in text.split('element {')[1:]):
+            found.append(p.name)
+    return found
+
+
+def mod_count(instance) -> int:
+    """How many mod files a modpack folder holds (mods/*.jar); 0 when it cannot be read."""
+    try:return sum(1 for _ in (Path(instance)/'mods').glob('*.jar'))
+    except OSError:return 0
+
+
+def image_text_note(session):
+    """A grey report line: menu buttons that are pictures keep the English painted on them."""
+    if not session.get('image_menus'):return ''
+    return ('主選單由 FancyMenu 自訂，部分按鈕和說明是整合包作者畫好的圖片；圖片上的英文不是文字，程式無法翻譯，'
+            '不算漏翻（例如 Pixelmon 主選單的 singleplayer、quit）。')
+
+
 def unverified_note(session):
     """A grey report line for text written into files no reader covers (Audit.unverified_literals/unscanned):
     done, restorable, but no mod's code was checked to read them, so it is not counted in the completion rate."""
@@ -1088,7 +1121,8 @@ def present_mods(z, depth=0):
 # scan-11: strings of language-file generators (LanguageProvider) are marked; Mixin targets are kept
 # scan-12: plain Chinese literals (plain_literal) are marked for an in-place Simplified-to-Traditional conversion
 # scan-13: a jar's installed mods are its [[mods]] ids only, not the mods it lists as dependencies
-SCAN_CACHE_VERSION = 'scan-13'
+# scan-14: language rows of a mod drawing with its own font without Chinese glyphs are marked (no_chinese_font)
+SCAN_CACHE_VERSION = 'scan-14'
 
 
 def scan_cache(home, instance):
@@ -1232,6 +1266,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     curseforge=is_curseforge(instance);mixin=getattr(audit,'mixin_targets',set())
     # Kept in the report so a later 'retry apply' still knows which program text must not be rewritten.
     result['mixin_targets']=sorted({class_name(r) for r in audit.rows if r['kind']=='class_display' or r.get('plain_literal')}&mixin)
+    result['image_menus']=image_menus(instance)
     instance_cn={}
     for r in audit.rows:
         if r['kind']!='language' or not isinstance(r['zh_cn'],str): continue
@@ -1425,6 +1460,14 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if installed is not None and ref and ref not in (ns,'minecraft') and ref not in installed:
             # e.g. Traveler's Titles names for biomes of mods that are not installed.
             counts['not_installed']+=1;continue
+        if r.get('no_chinese_font') and isinstance(english,str):
+            # Readable English beats a row of boxes; Chinese an earlier run wrote goes back to the English once.
+            back=isinstance(r['current'],str) and bool(HAN.search(r['current']))
+            why=NO_CHINESE_FONT.format(r['no_chinese_font'].split('!/')[-1])
+            decided.append(dict(slim(r),proposed=english,origin='keep_original',evidence=why,
+                                issue='先前寫入的中文已改回英文：'+why if back else '',
+                                supported=True,reviewed=False,changed=back))
+            counts['no_chinese_font']+=1;continue
         # Source order: most accurate Taiwan wording first (see README 翻譯邏輯 / AGENTS.md).
         # Decisions the user made → people-written zh_tw (reference packs whose English matches this
         # version, the modpack's zh_tw packs, the mod's own zh_tw) → Mojang's official names →

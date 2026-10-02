@@ -417,6 +417,16 @@ def installed(home: Path) -> dict:
     except (OSError,ValueError):return {}
 
 
+def still_installed(home: Path, listing: Path | None = None) -> dict:
+    """The installed records CurseForge still lists: deleting a profile there may leave its folder behind.
+    When the list cannot be read, the folder alone decides (match_full)."""
+    data=installed(home)
+    try:text=Path(listing or curseforge_list()).read_text(encoding='utf-8-sig').casefold()
+    except OSError:return data
+    if not text.lstrip().startswith('['):return data
+    return {k:r for k,r in data.items() if not isinstance(r,dict) or not r.get('guid') or str(r['guid']).casefold() in text}
+
+
 def content_file(home: Path, guid: str) -> Path:
     """The content list (path -> SHA-256) a profile was installed or last updated with; updates compare against it."""
     if not re.fullmatch(r'[0-9a-f-]{36}',str(guid)):raise ValueError('設定檔編號不正確。')

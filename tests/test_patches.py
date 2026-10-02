@@ -236,6 +236,16 @@ class PatchTests(unittest.TestCase):
         self.assertIn('設定為 6 GB，比建議少',patches.memory_advice(12128,32768,{'isMemoryOverride':True,'allocatedMemory':6144})['now'])
         self.assertEqual(patches.memory_advice(12128,32768,{'isMemoryOverride':False,'allocatedMemory':6144})['now'],'')
         self.assertIn('設定為 12 GB。',patches.memory_advice(12128,32768,{'isMemoryOverride':True,'allocatedMemory':12288})['now'])
+        # Without the author's figure the estimate from the number of mods is named as the program's own.
+        self.assertEqual([patches.memory_estimate(n) for n in (0,50,150,250,376)],[0,4096,6144,8192,10240])
+        guess=patches.memory_advice(patches.memory_estimate(376),32768,estimated_from=376)
+        self.assertIn('程式估計，不是作者建議',guess['line']);self.assertIn('376 個模組',guess['line'])
+        self.assertNotIn('作者推薦',guess['steps']);self.assertIn('約 10 GB',guess['steps'])
+        # With no number of mods either, the steps only.
+        steps=patches.memory_steps()
+        self.assertEqual((steps['line'],steps['warning'],steps['now']),('','',''))
+        self.assertIn('自訂記憶體分配',steps['steps']);self.assertNotIn('作者推薦',steps['steps']);self.assertNotRegex(steps['steps'],r'\d+ GB')
+        self.assertIn('設定為 4 GB。',patches.memory_steps({'isMemoryOverride':True,'allocatedMemory':4096})['now'])
 
 
     def test_catalog_offers_update_after_translation_is_republished(self,_):

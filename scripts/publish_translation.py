@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -45,7 +46,7 @@ def git(*args, cwd):
     return subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True, encoding='utf-8').stdout
 
 
-def update_catalog(entry, same, message, files=(), dry_run=False):
+def update_catalog(entry, same, message, files=(), dry_run=False, revise=True):
     """Replace the catalog entries `same` picks with `entry` (revision counted on) and push.
 
     `files` are (source, relative path) pairs added to the branch; files of replaced entries are removed.
@@ -70,7 +71,8 @@ def update_catalog(entry, same, message, files=(), dry_run=False):
                 if url.startswith(RAW) and (work/url[len(RAW):]).exists():
                     git('rm', '--quiet', url[len(RAW):], cwd=work)
             # revision counts re-publishes of the same modpack version.
-            entry = dict(entry, revision=max([int(p.get('revision') or 1) for p in replaced] or [0])+1)
+            # revise=False corrects a card's details only (same upload): its revision stays.
+            entry = dict(entry, revision=max([int(p.get('revision') or 1) for p in replaced] or [0])+(1 if revise or not replaced else 0))
             if not entry.get('notes') and replaced:  # a re-publish without new notes keeps the card's introduction
                 entry['notes'] = replaced[-1].get('notes', '')
             index['packs'].append(entry)
@@ -117,6 +119,22 @@ def drive_file_id(name: str, size: int):
     return None
 
 
+def refresh_full_card(args):
+    """Add what a card published by an older version lacks (the number of mods, for the memory estimate) without
+    packing or uploading again: the card must already list this modpack, and its upload stays the same."""
+    instance = args.patch.resolve()
+    pid = full_pack.pack_id(instance.name)
+    exists = subprocess.run(['git', 'fetch', 'origin', BRANCH], cwd=ROOT, capture_output=True).returncode == 0
+    index = json.loads(subprocess.run(['git', 'show', f'origin/{BRANCH}:index.json'], cwd=ROOT, capture_output=True, check=True).stdout.decode('utf-8')) if exists else {'packs': []}
+    cards = [p for p in index['packs'] if p.get('kind') == 'full' and (p.get('packId') or full_pack.pack_id(p['name'])) == pid]
+    if len(cards) != 1:
+        sys.exit(f'目錄裡找不到（或不只一張）「{instance.name}」的整包卡片，沒有修改。')
+    entry = dict(cards[0], mods=sum(1 for _ in (instance/'mods').glob('*.jar')))
+    if args.ram:entry['recommendedRam'] = args.ram
+    print(f"{entry['name']}：{entry['mods']} 個模組", flush=True)
+    update_catalog(entry, lambda p: p is cards[0] or p == cards[0], f"整合包卡片資料：{entry['name']}", dry_run=args.dry_run, revise=False)
+
+
 def publish_full(args):
     instance = args.patch.resolve()
     folder = args.drive_folder
@@ -149,7 +167,8 @@ def publish_full(args):
     entry = dict(kind='full', name=manifest['name'], packId=full_pack.pack_id(manifest['name']), version=manifest.get('version') or '', gameVersion=manifest.get('gameVersion') or '',
                  loader=manifest['loader'].get('name', ''), translator=args.translator, updated=date.today().isoformat(),
                  notes=args.notes, recommendedRam=args.ram or int(manifest.get('recommendedRam') or 0),
-                 driveId=file_id, sha256=digest, size=size, totalSize=manifest['totalSize'], files=len(manifest['files']))
+                 driveId=file_id, sha256=digest, size=size, totalSize=manifest['totalSize'], files=len(manifest['files']),
+                 mods=sum(1 for e in manifest['files'] if re.fullmatch(r'mods/[^/]+\.jar', e['path'])))
     # Players download anonymously; prove that works (and that the bytes are the same) before listing it.
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         for attempt in range(20):
@@ -178,8 +197,12 @@ def main():
     parser.add_argument('--drive-folder', type=Path, help='--full：Google 雲端硬碟電腦版裡的資料夾')
     parser.add_argument('--work', type=Path, help='--full：打包用的暫存資料夾（預設系統暫存）')
     parser.add_argument('--upload-wait', type=int, default=6*3600, help='--full：等待上傳完成的秒數')
+    parser.add_argument('--card-only', action='store_true', help='--full：只補卡片資料（模組數），不重新打包上傳')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
+    if args.full and args.card_only:
+        refresh_full_card(args)
+        return
     if args.full:
         publish_full(args)
         return

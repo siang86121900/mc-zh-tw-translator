@@ -48,6 +48,7 @@
 - 整合包根目錄的 `data/` 是模組執行時寫的資料：Collective 每次啟動重建 `data/serilum/translations`，寫入會被蓋掉，不處理。
 - 同一模組的兩個版本同時放在 mods（Elemental Awakening 的 IMBlocker 5.5.4 與 5.6.2）：Forge／NeoForge 的 UniqueModListBuilder 只載入版本最新的一份，所以只採用那份的語系檔（desktop_jobs.older_copies），否則兩份的譯文會在每次重跑時互相覆蓋。
 - Sinytra Connector 會在每台電腦把 Fabric 模組轉成 `mods/.connector/*_mapped_*.jar`，內容與雜湊因電腦而異；原本的模組檔就在 `mods`，所以掃描與分享補丁都只認原檔（desktop_jobs.generated_copy）。v0.21.0 以前的補丁把轉換檔列為必要檔案，Tensura 的 Mebahel 矮人模組在別人電腦會被略過。
+- Essential 1.4.1.1（NeoForge 1.21.1，The Pixelmon Modpack）的介面用模組自帶字型畫字：內層 jar 的 `fonts/Minecraft-Regular.json` 只有 95 個字元（U+0020～U+007E），沒有中文也不改用遊戲的備用字型，中文顯示成「□」。字型不在 `assets/` 裡，資源包無法替換；整合包由 CurseForge 管理，改模組檔也會被換回。掃描時 `full_translation_audit.own_font_without_chinese` 讀模組自帶的 `fonts/*.json`（字元清單＋atlas），全部沒有中文字時標記 no_chinese_font（scan-14），讓這類模組的語系文字保留英文、不送 AI，先前寫入的中文改回英文一次（2026-10-02 使用者選擇）。代價是按鍵設定等用遊戲字型顯示的少數 Essential 文字也是英文。主選單上的 singleplayer、quit 等字是 FancyMenu 版面引用的 PNG 圖片，不是文字。
 
 ## 硬編碼文字（修改 class 前必讀）
 

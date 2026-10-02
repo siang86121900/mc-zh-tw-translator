@@ -40,6 +40,8 @@ class DesktopUiTests(unittest.TestCase):
                 self.assertFalse(window.choose.isEnabled())
                 # A greyed-out button shows the plain arrow, not the hand, so it does not look clickable.
                 self.assertEqual(window.choose.cursor().shape(),Qt.ArrowCursor)
+                # Only the page showing the job can be chosen in the sidebar meanwhile.
+                self.assertEqual([n.isEnabled() for n in window.navs],[i==window.pages.currentIndex() for i in range(len(window.navs))])
                 for _ in range(500):
                     self.app.processEvents();time.sleep(.02)
                     if not window.busy:break
@@ -52,6 +54,7 @@ class DesktopUiTests(unittest.TestCase):
             self.assertEqual([n.text() for n in window.stats],['0.0%','1'])
             self.assertIn('還沒寫入',window.stat_notes[1].text())
             self.assertTrue(window.choose.isEnabled());self.assertEqual(window.choose.cursor().shape(),Qt.PointingHandCursor)
+            self.assertTrue(all(n.isEnabled() for n in window.navs))
             window.navigate(1);self.assertEqual(window.table.rowCount(),1)
             self.assertFalse((lang/'zh_tw.json').exists())
             window.close()

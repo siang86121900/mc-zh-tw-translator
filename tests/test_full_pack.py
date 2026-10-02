@@ -161,6 +161,18 @@ class FullPackTests(unittest.TestCase):
         self.listing.write_bytes(self.before)
         self.assertEqual(full_pack.curseforge_root(self.listing),self.instances)
 
+    def test_profile_deleted_in_curseforge_is_not_installed_even_if_its_folder_stays(self):
+        with tempfile.TemporaryDirectory() as d:
+            home=Path(d)/'home';home.mkdir();kept=Path(d)/'Kept';kept.mkdir();gone=Path(d)/'Gone';gone.mkdir()
+            records={str(p).casefold():dict(path=str(p),name='Pack v1.0',sha256='s',guid=g) for p,g in ((kept,'aaaa-1'),(gone,'bbbb-2'))}
+            (home/'full_packs.json').write_text(json.dumps(records),encoding='utf-8')
+            listing=Path(d)/'list.json';listing.write_text('[{"name":"Kept","guid":"AAAA-1"}]',encoding='utf-8')
+            self.assertEqual([r['guid'] for r in full_pack.still_installed(home,listing).values()],['aaaa-1'])
+            # An unreadable list proves nothing: the folders decide, as before.
+            listing.write_text('{"not":"a list"}',encoding='utf-8')
+            self.assertEqual(len(full_pack.still_installed(home,listing)),2)
+            self.assertEqual(len(full_pack.still_installed(home,Path(d)/'missing.json')),2)
+
     def test_no_curseforge(self):
         with self.assertRaisesRegex(ValueError,'沒有 CurseForge'):
             full_pack.install(self.package,self.home,session=self.server,listing=self.root/'missing.json',running=lambda:False)

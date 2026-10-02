@@ -193,14 +193,38 @@ def gb(mb: int) -> str:
     return f'{mb/1024:.0f}' if mb>=10*1024 or mb%1024==0 else f'{mb/1024:.1f}'
 
 
-def memory_advice(recommended: int, total: int = 0, record: dict | None = None) -> dict:
+def memory_steps(record: dict | None = None) -> dict:
+    """How to set memory when the modpack names no figure (a whole modpack copied from another launcher has no
+    manifest.json): only the steps, never a number this program made up."""
+    record=record or {}
+    try:current=int(record.get('allocatedMemory') or 0) if record.get('isMemoryOverride') else 0
+    except (TypeError,ValueError):current=0
+    steps=('整合包作者沒有寫建議的記憶體。模組多的整合包常需要更多記憶體，遊戲很卡或開不起來時可以調高。\n\n'
+           '調整方式：\n'
+           '1. 在 CurseForge 的「我的模組包（My Modpacks）」對這個整合包按右鍵，選「設定檔選項（Profile Options）」。\n'
+           '2. 找到「記憶體設定（Memory Settings）」，選「自訂記憶體分配（Custom RAM Allocation）」，把記憶體往右拉。'
+           'CurseForge 超過電腦記憶體的 75% 會提醒，請留一些給 Windows 和其他程式。\n'
+           '3. 關掉視窗後重新開遊戲就會生效。\n\n'
+           '本程式不會修改 CurseForge 的設定，需要你自己調整。')
+    return dict(line='',warning='',now=f'這個整合包目前在 CurseForge 設定為 {gb(current)} GB。' if current else '',steps=steps)
+
+
+def memory_estimate(mod_count: int) -> int:
+    """Memory for the game when the modpack author named none (owner's choice 2026-10-02): sized by the number of
+    mods, like server_pack.server_memory, and always shown as this program's estimate, never as the author's."""
+    if mod_count<=0:return 0
+    return 4096 if mod_count<100 else 6144 if mod_count<200 else 8192 if mod_count<300 else 10240
+
+
+def memory_advice(recommended: int, total: int = 0, record: dict | None = None, estimated_from: int = 0) -> dict:
     """What to tell a player about memory: the modpack author's figure, whether this computer has room, how to set it.
 
     The program only explains; CurseForge's own settings are never changed (the player sets them there).
     Labels are CurseForge's own English ones (its app has no Chinese), checked in its app.asar.
     """
     if not recommended:return {}
-    line=f'建議分給遊戲約 {gb(recommended)} GB 記憶體（整合包作者建議 {recommended:,} MB）。'
+    line=(f'整合包作者沒有提供建議記憶體；依 {estimated_from:,} 個模組估計，建議分給遊戲約 {gb(recommended)} GB（程式估計，不是作者建議）。'
+          if estimated_from else f'建議分給遊戲約 {gb(recommended)} GB 記憶體（整合包作者建議 {recommended:,} MB）。')
     warning=''
     if total and recommended>=total:
         warning=f'你的電腦只有約 {gb(total)} GB 記憶體，比建議的還少，這個整合包可能開不起來或很卡。'
@@ -216,8 +240,10 @@ def memory_advice(recommended: int, total: int = 0, record: dict | None = None) 
     # CurseForge's Traditional Chinese wording first, its English in brackets for an English CurseForge.
     steps=('調整方式：\n'
            '1. 在 CurseForge 的「我的模組包（My Modpacks）」對這個整合包按右鍵，選「設定檔選項（Profile Options）」。\n'
-           '2. 找到「記憶體設定（Memory Settings）」，選「作者推薦（Recommended by Author）」，就會照整合包作者的建議；'
-           f'或選「自訂記憶體分配（Custom RAM Allocation）」，把記憶體拉到約 {gb(recommended)} GB。\n'
+           +('2. 找到「記憶體設定（Memory Settings）」，選「自訂記憶體分配（Custom RAM Allocation）」，' if estimated_from else
+             '2. 找到「記憶體設定（Memory Settings）」，選「作者推薦（Recommended by Author）」，就會照整合包作者的建議；'
+             '或選「自訂記憶體分配（Custom RAM Allocation）」，')+
+           f'把記憶體拉到約 {gb(recommended)} GB。\n'
            '3. 關掉視窗後重新開遊戲就會生效。\n\n'
            '本程式不會修改 CurseForge 的設定，需要你自己調整。')
     return dict(line=line,warning=warning,now=now,steps=steps)
@@ -826,7 +852,7 @@ def full_entry(x):
                 translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),modpackDate='',
                 revision=max(1,int(x.get('revision') or 1)),notes=str(x.get('notes') or '')[:600],
                 recommendedRam=ram_mb(x.get('recommendedRam')),driveId=str(x['driveId']),sha256=x['sha256'],size=int(x['size']),
-                totalSize=max(int(x.get('totalSize') or 0),0),url='',addedMods=[])
+                totalSize=max(int(x.get('totalSize') or 0),0),mods=min(max(int(x.get('mods') or 0),0),5000),url='',addedMods=[])
 
 
 def match_full(packs, installed=None):

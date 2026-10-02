@@ -777,6 +777,44 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(json.loads(self.pack()['assets/lights/lang/zh_tw.json']),{'a.mode':'模式'})
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_mod_font_without_chinese_keeps_english(self,_):
+        # Essential draws its screens with a font of English characters only; Chinese shows as boxes.
+        import zipfile
+        mods=self.instance/'mods';mods.mkdir()
+        with zipfile.ZipFile(mods/'essential.jar','w') as z:
+            z.writestr('assets/essential/lang/en_us.json',json.dumps({'e.friends':'Friends','e.group':'Group Created'}))
+            z.writestr('assets/essential/lang/zh_cn.json',json.dumps({'e.friends':'好友'}))
+            z.writestr('assets/essential/lang/zh_tw.json',json.dumps({'e.group':'已建立群組'}))  # e.g. written by an earlier run
+            ascii_font={'atlas':{'width':1},'glyphs':[{'unicode':c} for c in range(32,127)]}
+            z.writestr('fonts/Minecraft-Regular.json',json.dumps(ascii_font))
+        with zipfile.ZipFile(mods/'lights.jar','w') as z:  # a font with Chinese glyphs changes nothing
+            z.writestr('assets/lights/lang/en_us.json',json.dumps({'l.on':'On'}))
+            z.writestr('assets/lights/lang/zh_cn.json',json.dumps({'l.on':'开'}))
+            z.writestr('fonts/Round.json',json.dumps({'atlas':{},'glyphs':[{'unicode':65},{'unicode':0x958B}]}))
+        result=self.make_plan()
+        rows={r['key']:r for r in result['rows'] if r['source'].startswith('mods/')}
+        self.assertEqual(rows['e.friends']['origin'],'keep_original');self.assertFalse(rows['e.friends']['changed'])
+        self.assertEqual(rows['e.friends']['proposed'],'Friends')
+        self.assertTrue(rows['e.group']['changed']);self.assertEqual(rows['e.group']['proposed'],'Group Created')
+        self.assertIn('改回英文',rows['e.group']['issue'])
+        self.assertIn('fonts/Minecraft-Regular.json',rows['e.friends']['evidence'])
+        self.assertEqual(rows['l.on']['proposed'],'開')
+        for row in result['rows']:row['reviewed']=True
+        apply_session(result,self.home,lambda *_:None)
+        self.assertEqual(json.loads(self.pack()['assets/essential/lang/zh_tw.json'])['e.group'],'Group Created')
+        again=self.make_plan()
+        self.assertFalse(any(r['changed'] for r in again['rows'] if r['source'].startswith('mods/')))
+
+    def test_menu_buttons_drawn_as_pictures_are_explained(self):
+        from mc_zh_tw_translator.desktop_jobs import image_menus, image_text_note
+        layouts=self.instance/'config/fancymenu/customization';layouts.mkdir(parents=True)
+        (layouts/'labels.txt').write_text('element {\n  label = 開始遊戲\n  backgroundnormal = [source:local]config/fancymenu/buttons/plain.png\n}\n',encoding='utf-8')
+        self.assertEqual(image_menus(self.instance),[])  # a picture behind a text label: the label is translated
+        (layouts/'main.txt').write_text('element {\n  source = [source:local]config/fancymenu/assets/menu/fall/buttons/main_single.png\n}\n',encoding='utf-8')
+        self.assertEqual(image_menus(self.instance),['main.txt'])
+        self.assertIn('圖片',image_text_note(dict(image_menus=['main.txt'])));self.assertEqual(image_text_note({}),'')
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_changed_source_refuses_apply(self,_):
         result=self.make_plan()
         next(r for r in result['rows'] if r['key']=='demo.hello')['reviewed']=True

@@ -75,6 +75,7 @@ QPushButton#iconbtn:hover { color: {primary}; border-color: {primary}; }
 QPushButton#nav { text-align: left; border: none; border-radius: 8px; background: transparent; padding: 10px 12px; color: {text80}; font-weight: 600; }
 QPushButton#nav:hover { color: {primary}; }
 QPushButton#nav:checked { color: {primary}; background: {primary_bg}; }
+QPushButton#nav:disabled { color: {text40}; background: transparent; }
 QPushButton#chip { border: 1.5px solid {gray}; border-radius: 14px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: {text80}; background: {surface}; }
 QPushButton#chip:hover { border-color: {primary}; color: {primary}; }
 QPushButton#chip:checked { border-color: {primary}; background: {primary}; color: #FFFFFF; }
@@ -652,6 +653,11 @@ class MainWindow(QMainWindow):
     def memory_advice(self,pack):
         if self.memory_total is None:self.memory_total=jobs.total_memory_mb()
         record=patches.curseforge_record(pack['instances'][0]['path']) if pack.get('instances') else {}
+        if pack.get('kind')=='full' and not pack.get('recommendedRam'):
+            # No author figure: an estimate from the number of mods, labelled as the program's own (patches.memory_estimate).
+            mods=pack.get('mods') or (jobs.mod_count(pack['instances'][0]['path']) if pack.get('instances') else 0)
+            if not mods:return patches.memory_steps(record)
+            return patches.memory_advice(patches.memory_estimate(mods),self.memory_total,record,estimated_from=mods)
         return patches.memory_advice(pack.get('recommendedRam') or 0,self.memory_total,record)
 
     def show_memory_help(self,pack):
@@ -683,7 +689,7 @@ class MainWindow(QMainWindow):
 
     def catalog_loaded(self,packs):
         self.catalog_packs=packs
-        self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home),full_pack.installed(self.home))
+        self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home),full_pack.still_installed(self.home))
         # New = published translations this user has not seen yet; shown until the page is opened.
         seen=self.seen_catalog()
         for pack in self.catalog:pack['new']=self.catalog_key(pack) not in seen
@@ -1394,6 +1400,8 @@ class MainWindow(QMainWindow):
         if mode in ('plan','full_translate','apply','ai_translate'):self.live_session=True;self.set_start_expanded(True)
         self.started_at=self.last_activity=time.monotonic()
         for b in (self.ai_check_btn,self.confirm_all_btn,self.undo_confirm_btn,self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.install_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,self.use_ai,*self.pack_buttons):b.setEnabled(False)
+        # The page showing this job stays; the others wait, so nothing else is started or changed meanwhile.
+        for i,b in enumerate(self.navs):b.setEnabled(i==self.pages.currentIndex())
         if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
         self.patch_cancel.setVisible(mode in ('patch_install','patch_apply','patch_server','patch_full'));self.patch_cancel.setEnabled(True)
         self.patch_cancel.setText('停止等待' if mode=='patch_install' else '停止')
@@ -1413,6 +1421,7 @@ class MainWindow(QMainWindow):
         self.taskbar.update(self,state=TaskbarProgress.NOPROGRESS);self.setWindowTitle('模組包中文化 · MC Translator')
         for b in (self.confirm_all_btn,self.instance_box,self.full_start,self.choose,self.apply_btn,self.restore_btn,self.check_btn,self.review_btn,self.ai_install_btn,self.ai_login_btn,self.ai_refresh_btn,self.ai_logout_btn,self.ai_run_btn,self.ai_models,*self.pack_buttons):b.setEnabled(True)
         self.history.setEnabled(True);self.cancel.setEnabled(False);self.ai_stop_btn.setEnabled(False)
+        for nav in self.navs:nav.setEnabled(True)
         self.install_btn.setEnabled(bool(self.update_info and self.update_info.get('status')=='available'))
         self.ai_progress.hide();self.patch_cancel.hide();self.update_ai_controls();self.update_ai_button()
 
@@ -1796,6 +1805,7 @@ class MainWindow(QMainWindow):
         if self.session.get('apply_error'):message+='\n'+self.session['apply_error']
         if self.session.get('status')=='installed':message+=''.join('\n'+n for n in self.applied_notes(self.session))
         if jobs.unverified_note(self.session):message+='\n'+jobs.unverified_note(self.session)
+        if jobs.image_text_note(self.session):message+='\n'+jobs.image_text_note(self.session)
         self.report_summary.setText(message)
         self.fill_overview()
         # Red is only for what still needs the player; broken files the game skips too and rebuilt files are notes.

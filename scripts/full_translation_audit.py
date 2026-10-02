@@ -258,6 +258,21 @@ def cfg_values(text):
         if start is not None:yield lineno,0,value,False,offset+start,offset+start+len(value)
         offset+=len(line)
 
+def own_font_without_chinese(names,read):
+    """A font a mod draws its screens with by itself (Elementa/UniversalCraft: fonts/<name>.json listing its glyphs
+    and an atlas; Essential uses it) never falls back to the game's fonts, so Chinese shows as boxes (□) when none of
+    its fonts has Chinese glyphs. Returns the font file then, else ''."""
+    found=''
+    for n in sorted(names):
+        if not re.fullmatch(r'fonts/[^/]+\.json',n):continue
+        try:data=json.loads(read(n))
+        except (ValueError,KeyError,OSError,UnicodeError):continue
+        if not isinstance(data,dict) or 'atlas' not in data or not isinstance(data.get('glyphs'),list):continue
+        if any(isinstance(g,dict) and isinstance(g.get('unicode'),int) and g['unicode']>=0x2E80 for g in data['glyphs']):return ''
+        found=found or n
+    return found
+
+
 MIXIN=b'Lorg/spongepowered/asm/mixin/Mixin;'
 CLASS_REF=re.compile(r'L([A-Za-z_$][\w$/]*);')
 CLASS_NAME=re.compile(r'[A-Za-z_$][\w$]*(?:[./][\w$]+)+')
@@ -407,6 +422,7 @@ class Audit:
         for flag in flags:self.counts[flag]+=1
         self.rows.append(row)
     def collection(self,label,names,read):
+        first=len(self.rows);font=own_font_without_chinese(names,read)
         groups={}
         for n in names:
             m=LANG.match('/'+n)
@@ -445,6 +461,8 @@ class Audit:
                 for k in sorted(set(en)|set(tw)|set(cn)):
                     self.add(source,k,en.get(k),tw.get(k),cn.get(k))
             except Exception as e:self.errors.append([label,langs,str(e)])
+        for row in self.rows[first:] if font else ():
+            if row['kind']=='language':row['no_chinese_font']=label+'!/'+font
         for n in names:
             if not BOOK.search('/'+n) or not n.endswith(('.json','.txt')):continue
             # Other languages are represented by the corresponding English/TW row.
