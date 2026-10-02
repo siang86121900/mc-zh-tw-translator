@@ -72,6 +72,23 @@
       "totalSize": 2018521556,
       "files": 1312,
       "revision": 1
+    },
+    {
+      "kind": "full",
+      "name": "VEFV2.7.1",
+      "version": "",
+      "gameVersion": "1.20.1",
+      "loader": "forge-47.4.10",
+      "translator": "MC Translator",
+      "updated": "2026-10-02",
+      "notes": "",
+      "recommendedRam": 0,
+      "driveId": "1BjoFIkASXoTp6IjhJzuW3I5cIPW2L2C-",
+      "sha256": "c5a56999b6daf652a04641222dc80829060e3b59e5f0623efab1b903a876796b",
+      "size": 2375663538,
+      "totalSize": 2657498934,
+      "files": 4201,
+      "revision": 1
     }
   ]
 }
