@@ -314,6 +314,12 @@ DATA_TEXT=re.compile(r'(?:^|/)data/[a-z0-9_.\-]+/whisperingquests/(?:tasks|chapt
 DATA_TEXT_FIELDS={'title','short_description','description','text','pool_name','display_name'}
 # Any other data-pack JSON of a mod file: display fields with Chinese are listed as a format not supported yet.
 DATA_JSON=re.compile(r'^data/([a-z0-9_.\-]+)/([a-z0-9_.\-]+)/.+\.json$')
+# Biomes, structures, structure sets and dimensions a mod defines in its data. Their names are language keys made
+# from the id (Util.makeDescriptionId: biome.<mod>.<path>), which many mods never write in any language file; the
+# game and the compass mods then show the bare key or the id in English (Nature's Compass 1.11.2: I18n.get of
+# "biome.<mod>.<path>"; Explorer's Compass 1.4.0: "structure.<mod>.<path>" and "dimension.<mod>.<path>", else the
+# id title-cased). A missing key becomes a language row of its own, written into the translation resource pack.
+REGISTRY_NAME=re.compile(r'(?:^|/)data/([a-z0-9_.\-]+)/(?:worldgen/(biome|structure|structure_set)|(dimension))/([a-z0-9_.\-/]+)\.json$')
 LOCALE=re.compile(r'[a-z]{2,3}_[a-z]{2,3}$')
 NOT_READ=('config/ftbquests/quests-backup/',)
 CONFIG_SCREEN=b'net/neoforged/neoforge/client/gui/ConfigurationScreen'
@@ -408,6 +414,32 @@ class Audit:
         self.out=out;out.mkdir(parents=True,exist_ok=True)
         self.rows=[];self.files=[];self.errors=[];self.repairs=[];self.counts=Counter();self.decisions=decisions
         self.mixin_targets=set()  # classes some Mixin changes when the game starts (see mixin_targets)
+        self.registry=[]  # [file, mod, language key] of every biome, structure, structure set and dimension (REGISTRY_NAME)
+    def registry_names(self,label,names):
+        for n in sorted(names):
+            m=REGISTRY_NAME.search(n)
+            if m and '/tags/' not in n:
+                kind='biome' if m[2]=='biome' else 'dimension' if m[3] else 'structure'
+                self.registry.append([label,m[1],f"{kind}.{m[1]}.{m[4].replace('/','.')}"])
+    def missing_names(self,installed=None):
+        """A language row for each name key no language file of the modpack has, its English made from the id the way
+        the compass mods show it (ghostly_graveyard → Ghostly Graveyard). The row belongs to a mod file of that mod,
+        so its translation goes into the translation resource pack like the mod's own text."""
+        # The translation resource pack this program made holds keys added here earlier: they are not the mod's own.
+        have={r['key'] for r in self.rows if r['kind']=='language' and not r['source'].startswith('resourcepacks/MCTranslator-zh_tw.zip!/')}
+        jars={}
+        for label,mod,_ in self.registry:
+            if label.startswith('mods/') and '!/' not in label:jars.setdefault(mod,label)
+        for r in self.rows:
+            m=re.match(r'(mods/[^!]+)!/assets/([a-z0-9_.\-]+)/lang/',r['source'])
+            if m and r['kind']=='language':jars.setdefault(m[2],m[1])
+        done=set()
+        for _,mod,key in self.registry:
+            if key in have or key in done or mod=='minecraft' or mod not in jars or (installed is not None and mod not in installed):continue
+            done.add(key)
+            words=[w for w in re.split(r'[_.\-]+',key.split('.',2)[2]) if w]
+            self.add(f'{jars[mod]}!/assets/{mod}/lang/en_us.json',key,' '.join(w[:1].upper()+w[1:] for w in words),None,kind='language')
+            self.rows[-1]['name_from_id']=True;self.counts['names_from_ids']+=1
     def add(self,source,key,en,current,cn=None,kind='language'):
         if not any(isinstance(v,str) and v.strip() for v in (en,current,cn)):return
         row=dict(source=source,key=str(key),en=en,current=current,zh_cn=cn,kind=kind)
@@ -474,6 +506,10 @@ class Audit:
             if not BOOK.search('/'+n) or not n.endswith(('.json','.txt')):continue
             # Other languages are represented by the corresponding English/TW row.
             if re.search(r'/(?!en_us/|zh_tw/)[a-z]{2}_(?:[a-z]{2}|\d{3})/',n,re.I):continue
+            # Another language's copy of an English page under a code of its own (Alex's Caves books/tok/: Toki Pona).
+            parts=n.split('/')
+            if any(p not in ('en_us','zh_tw','zh_cn') and '/'.join(parts[:i]+['en_us']+parts[i+1:]) in names for i,p in enumerate(parts[:-1])):continue
+            if '/models/' in '/'+n or '/textures/' in '/'+n:continue  # a block model's "credit": Made with Blockbench
             if '/zh_tw/' in n and n.replace('/zh_tw/','/en_us/') in names:continue
             try:
                 target=n.replace('/en_us/','/zh_tw/');c=n.replace('/en_us/','/zh_cn/')
@@ -485,7 +521,7 @@ class Audit:
                     self.add(label+'!/'+n,'text',decode(raw),decode(twraw) if twraw else None,decode(cnraw) if cnraw else None,'book');continue
                 en=parse(raw);tw=parse(twraw) if twraw else {};cn=parse(cnraw) if cnraw else {}
                 for path,field,value in leaves(en):
-                    if field in PATCHOULI_SKIP_FIELDS:continue
+                    if field in PATCHOULI_SKIP_FIELDS or NOT_TEXT_FIELD.search(str(field)):continue
                     if field in DISPLAY or HAN.search(value) or (LATIN.search(value) and ' ' in value):
                         self.add(label+'!/'+n,json.dumps(path),value,at(tw,path),at(cn,path),'book')
             except Exception as e:self.errors.append([label,n,str(e)])
@@ -528,6 +564,7 @@ class Audit:
                     self.files.append(dict(source=label+'!/'+info.filename,size=info.file_size,crc=info.CRC,kind='class' if info.filename.endswith('.class') else 'resource'))
                 self.collection(label,names,z.read)
                 self.unsupported_data(label,names,z.read)
+                self.registry_names(label,names)
                 self.nested(z,label,names)
                 screen=False;linked=[];literals=[];compared=set()
                 ships_lang=any(re.match(r'assets/[^/]+/lang/[^/]+\.json$',x) for x in names)
@@ -597,6 +634,7 @@ class Audit:
         if unread:paths=[p for p in paths if p not in set(unread)]
         names={p.relative_to(root).as_posix():p for p in paths}
         self.collection('instance',set(names),lambda n:names[n].read_bytes())
+        self.registry_names('instance',names)  # data packs in folders (OpenLoader, datapacks)
         for n,p in names.items():
             self.files.append(dict(source=n,size=p.stat().st_size,kind='loose'))
             if p.suffix=='.class':

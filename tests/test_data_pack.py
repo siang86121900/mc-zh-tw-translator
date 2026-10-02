@@ -114,6 +114,27 @@ class DataPackTests(unittest.TestCase):
         again = next(r for r in self.make_plan()['rows'] if r['kind'] == 'data_text' and ENGLISH in r['source'] and r['key'] == '["title"]')
         self.assertEqual((again['origin'], again['changed'], again['current']), ('ai_translation', False, '尋找遺失的卷軸'))
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_text_written_before_a_conversion_rule_is_corrected_once(self, _):
+        # 擊殺 3 只殭屍 was written by v0.25.0, before the counter rule (只 → 隻) existed: a rerun corrects it once.
+        q = quest(); q['objectives'][1]['text'] = '击杀 3 只僵尸'
+        with zipfile.ZipFile(self.jar, 'a') as z:
+            z.writestr('data/demo/whisperingquests/tasks/main/kill.json', json.dumps(q, ensure_ascii=False))
+        loose = self.instance/'config/demo/text.json'; loose.parent.mkdir(parents=True)
+        loose.write_text(json.dumps({'title': '击杀 3 只僵尸'}, ensure_ascii=False), encoding='utf-8')
+        with patch('mc_zh_tw_translator.desktop_references.SLIPS', []):  # the rules of v0.25.0, roughly
+            apply_session(self.confirm_all(self.make_plan()), self.home, lambda *_: None)
+        self.assertIn('擊殺 3 只殭屍', json.loads(self.pack()['data/demo/whisperingquests/tasks/main/kill.json'])['objectives'][1]['text'])
+        self.assertIn('只', loose.read_text(encoding='utf-8'))
+        result = self.make_plan()
+        fixed = [r for r in result['rows'] if r.get('changed') and not r.get('installed')]
+        self.assertEqual(sorted(r['proposed'] for r in fixed if '殭屍' in r['proposed']), ['擊殺 3 隻殭屍', '擊殺 3 隻殭屍'])
+        self.assertTrue(all('已修正轉換用字' in r['issue'] and jobs.needs_check(r) for r in fixed if '殭屍' in r['proposed']))
+        apply_session(self.confirm_all(result), self.home, lambda *_: None)
+        self.assertEqual(json.loads(self.pack()['data/demo/whisperingquests/tasks/main/kill.json'])['objectives'][1]['text'], '擊殺 3 隻殭屍')
+        self.assertEqual(json.loads(loose.read_text(encoding='utf-8'))['title'], '擊殺 3 隻殭屍')
+        self.assertFalse([r for r in self.make_plan()['rows'] if r.get('changed') and not r.get('installed')])  # once only
+
     def test_the_modpacks_own_openloader_copy_is_the_one_translated(self):
         loose = self.instance/'config/openloader/data/modpack'/QUEST; loose.parent.mkdir(parents=True)
         changed = dict(quest(), title='§e寻找伊蕾娜（改）§r')

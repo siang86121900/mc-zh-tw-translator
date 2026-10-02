@@ -372,6 +372,23 @@ class QualityTests(Base):
         self.assertEqual(jobs.taiwan_wording('下界合金鍾'),'獄髓鐘');self.assertEqual(jobs.taiwan_wording('強化鍾石劍'),'強化鐘石劍')
         self.assertEqual(jobs.taiwan_wording('情有獨鍾，鍾愛一生'),'情有獨鍾，鍾愛一生')
 
+    def test_one_simplified_character_for_several_traditional_ones(self):
+        # Found by scripts/audit_conversion.py in real modpacks (2026-10-02); each rule has a case it must not touch.
+        from mc_zh_tw_translator.desktop_references import to_taiwan
+        cases={'击杀 3 只僵尸':'擊殺 3 隻殭屍','能让1只宝可梦':'能讓1隻寶可夢','需要10只即可':'需要10隻即可',
+               '进化并成为精神体':'進化並成為精神體','附近敌人并发射破片':'附近敵人並發射破片','显示并合并区块':'顯示並合併區塊',
+               '带回10个中级魔晶':'帶回10個中級魔晶','一个中央控制器':'一個中央控制器','有小几率获得':'有小機率獲得','前方几个方块':'前方幾個方塊',
+               '涂漆干墙':'塗漆乾牆','干泥炭土':'乾泥炭土','釉面饼干':'釉麵餅乾','小块干橡胶':'小塊乾橡膠',
+               '没有采蜜物件':'沒有採蜜物件','聊天历史记录':'聊天歷史記錄','岩系命中':'岩系命中','姜橙色陶瓦':'薑橙色陶瓦',
+               '红色石制灯':'紅色石製燈','指明了通往光明':'指明了通往光明','描述了如何锻造':'描述了如何鍛造','被发明了出来':'被發明了出來',
+               '回复自己最大HP的一半':'回復自己最大HP的一半','魔力回复速度':'魔力回復速度','魷鱼须':'魷魚鬚'}
+        for cn,tw in cases.items():self.assertEqual(to_taiwan(cn),tw,cn)
+        keep={'1.20 只支援 Forge':'1.20 只支援 Forge','3只能用一次':'3只能用一次','合并标签':'合併標籤','一并记录':'一併記錄',
+              '器官移植并发症':'器官移植併發症','个中滋味':'箇中滋味','木茶几':'木茶几','干得好':'幹得好','树干':'樹幹','风采':'風采',
+              '无精打采':'無精打采','了解':'瞭解','瞭望塔':'瞭望塔','简单明了':'簡單明瞭','回复玩家的消息':'回覆玩家的訊息',
+              '控制器':'控制器','维系维度':'維繫維度','系上安全带':'繫上安全帶','胡萝卜':'胡蘿蔔','生姜':'生薑'}
+        for cn,tw in keep.items():self.assertEqual(to_taiwan(cn),tw,cn)
+
     def test_internet_slang_and_kaomoji_need_no_translation(self):
         for text in ('ww','www','Ciallo～(∠・ω< )⌒★'):self.assertTrue(jobs.keep_original_reason(text),text)
         for text in ('Weather cleared','wow','Set the time to Daytime'):self.assertEqual(jobs.keep_original_reason(text),'',text)

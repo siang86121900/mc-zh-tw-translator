@@ -675,7 +675,8 @@ def needs_check(row):
     if row.get('supported') and row.get('number_doubt') and row.get('origin') not in ('untranslated','keep_original'):return True
     return bool(row.get('supported') and (row.get('changed') or row.get('recovered')) and (
         row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None
-        or str(row.get('issue') or '').startswith('既有繁中') or '大陸用語改為台灣用語' in str(row.get('issue') or '')))
+        or str(row.get('issue') or '').startswith('既有繁中') or '大陸用語改為台灣用語' in str(row.get('issue') or '')
+        or '已修正轉換用字' in str(row.get('issue') or '')))
 
 
 # Unambiguous mainland words that some mods' "zh_tw" keeps after a character-only conversion.
@@ -771,7 +772,8 @@ def report_overview(session):
         if needs_check(r):
             check['AI 補譯' if r['origin']=='ai_translation' else '自動統一譯名' if r.get('unified_from') is not None
                   else '版本待確認的參考' if r['origin'] in ('stale_reference','cross_version_reference')
-                  else '數值和原文不同' if r.get('number_doubt') else '改成台灣用語']+=1
+                  else '數值和原文不同' if r.get('number_doubt') else '修正轉換用字' if '已修正轉換用字' in str(r.get('issue') or '')
+                  else '改成台灣用語']+=1
     after=session.get('after_counts')
     return dict(applied=applied,not_applied=reasons,context=context,held=held,check=sum(check.values()),check_kinds=check.most_common(),
                 backup=session.get('backup'),rechecked=after is not None,renamed=session.get('renamed_count',0),
@@ -1123,7 +1125,7 @@ def present_mods(z, depth=0):
 # scan-12: plain Chinese literals (plain_literal) are marked for an in-place Simplified-to-Traditional conversion
 # scan-13: a jar's installed mods are its [[mods]] ids only, not the mods it lists as dependencies
 # scan-14: language rows of a mod drawing with its own font without Chinese glyphs are marked (no_chinese_font)
-SCAN_CACHE_VERSION = 'scan-15'
+SCAN_CACHE_VERSION = 'scan-16'
 
 
 def scan_cache(home, instance):
@@ -1141,10 +1143,10 @@ def scan_archive(audit, p, label, digest, cache):
             audit.rows.extend(data['rows']);audit.files.extend(data['files']);audit.errors.extend(data['errors'])
             audit.repairs.extend(data['repairs']);audit.counts.update(data['counts'])
             audit.installed_namespaces|=set(data['namespaces']);audit.present_mods|=set(data['mods']);audit.cache_hits+=1
-            audit.mixin_targets|=set(data['mixin'])
+            audit.mixin_targets|=set(data['mixin']);audit.registry.extend(data['registry'])
             return key
         except (OSError,ValueError,KeyError):path.unlink(missing_ok=True)
-    marks=(len(audit.rows),len(audit.files),len(audit.errors),len(audit.repairs));before=collections.Counter(audit.counts)
+    marks=(len(audit.rows),len(audit.files),len(audit.errors),len(audit.repairs),len(audit.registry));before=collections.Counter(audit.counts)
     targets=set(audit.mixin_targets);audit.mixin_targets=set()
     audit.archive(p,label)
     mixin=audit.mixin_targets;audit.mixin_targets=targets|mixin
@@ -1160,7 +1162,7 @@ def scan_archive(audit, p, label, digest, cache):
         delta=collections.Counter(audit.counts);delta.subtract(before)
         data=dict(rows=audit.rows[marks[0]:],files=audit.files[marks[1]:],errors=audit.errors[marks[2]:],
                   repairs=audit.repairs[marks[3]:],counts={k:v for k,v in delta.items() if v},namespaces=sorted(namespaces),mods=sorted(mods),
-                  mixin=sorted(mixin))
+                  mixin=sorted(mixin),registry=audit.registry[marks[4]:])
         try:path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(gzip.compress(json.dumps(data,ensure_ascii=False).encode('utf-8'),5))
         except OSError:pass
     return key
@@ -1203,6 +1205,7 @@ def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
                 contained(instance,p.relative_to(instance).as_posix())
                 audit.source_hashes[p.relative_to(instance).as_posix()]=file_hash(p)
     audit.loose(instance)
+    audit.missing_names(audit.present_mods)  # biome, structure and dimension names no language file has
     for r in audit.rows:
         # Files read outside the folders above (Audit.unscanned) are written too: record them so a change is noticed.
         name=r['source'].removeprefix('instance!/')
@@ -1448,8 +1451,14 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                     counts['loose_s2t']+=1;continue
             else:
                 origin,extra=(previous['origin'],dict(installed=True,recovered=True)) if previous else ('existing_zh_tw',{})
-                result['rows'].append(dict(slim(r),proposed=original,origin=origin,evidence='loose_s2t' if previous else '',
-                                           issue=previous.get('issue','') if previous else '',supported=True,reviewed=False,changed=False,**extra))
+                value=original;issue=previous.get('issue','') if previous else ''
+                if previous and origin not in USER_ORIGINS:
+                    # Written by an earlier version before a conversion rule existed (擊殺 3 只殭屍 → 隻): corrected once.
+                    worded=taiwan_wording(original)
+                    if worded!=original and validate_text(original,worded):
+                        value=worded;extra={};issue=(issue+'；' if issue else '')+'已修正轉換用字，請核對'
+                result['rows'].append(dict(slim(r),proposed=value,origin=origin,evidence='loose_s2t' if previous else '',
+                                           issue=issue,supported=True,reviewed=False,changed=value!=original,**extra))
                 counts['loose_tw']+=1;continue
         if r['kind'] not in ('language','book','inline_lang'):
             if r['kind']=='unsupported_config_text':
@@ -1683,6 +1692,12 @@ def data_text_row(r, shown, loader, provenance, memory, ai_memory):
     extra={} if loader else dict(no_data_pack=True)
     previous=provenance.lookup(r) if on_screen is not None else None
     if previous:
+        worded=taiwan_wording(r['current']) if previous['origin'] not in USER_ORIGINS else r['current']
+        if worded!=r['current'] and validate_text(mod_text,worded):
+            # Written before a conversion rule existed (擊殺 3 只殭屍 → 隻): corrected once, then recognised again.
+            return dict(r,proposed=worded,origin=previous['origin'],evidence=previous.get('evidence',''),
+                        issue=(previous.get('issue','')+'；' if previous.get('issue') else '')+'已修正轉換用字，請核對',
+                        supported=True,reviewed=False,changed=True,ai_model=previous.get('model'),**extra)
         return dict(r,proposed=r['current'],origin=previous['origin'],evidence=previous.get('evidence',''),issue=previous.get('issue',''),
                     supported=True,reviewed=False,changed=False,installed=True,recovered=True,ai_model=previous.get('model'),**extra)
     scope=memory_scope(r);mine=memory.lookup(scope,r['key'],mod_text)

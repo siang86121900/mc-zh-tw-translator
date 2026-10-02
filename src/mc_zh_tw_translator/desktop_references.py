@@ -41,6 +41,27 @@ SLIPS = [(re.compile(a), b) for a, b in (
     (r'((?:變成|成為|變為)[^，。、\s]{0,6}?)后(?=[，,])', r'\1後'),  # 變成蜜蜂后，獲得… is after, not a queen bee
     ('(?<![皇王天太母蟻蜂蛛影歌])后(?![羿土冠妃宮])', '後'), ('于', '於'), ('(?<![人所云亦])云(?![亦云])', '雲'),
     (r'范(?=\s*[圍疇例本式])', '範'), ('(?<=[規模示防典風])范', '範'),
+    # Found by scripts/audit_conversion.py over 406,419 Simplified strings of real modpacks (2026-10-02).
+    # 只 after an Arabic numeral is a counter (擊殺 3 只殭屍); the converter only knows 一只, 两只…
+    # Not where 只 is "only": 1.20 只支援, 3 只能, 版本 2 只會.
+    (r'(?<=\d)(\s?)只(?![能有是要會需在對可允讀限剩想為好得管支用作適顯影保做差計算針給讓])', r'\1隻'),
+    # 并 is 並 (and); its word list makes 并为, 并发, 并成 the 併 of 合併. 合併, 吞併, 一併, 併入 and 併發症 stay.
+    ('(?<![合吞兼歸一])併(?![購吞攏入肩]|發(?:症|數|量|執|處|連|請|上限))', '並'), ('合並', '合併'),
+    # 个中 after a number or 一/另/多 is 個中 (一箇中央 → 一個中央); the idiom 箇中滋味 / 箇中原因 stays.
+    ('箇(?=中(?![滋原奧高好緣道玄]))', '個'),
+    ('几率', '機率'), ('几(?=[乎個天次種位分歲年秒週])', '幾'),
+    # 干 is 乾 (dry) in materials and food (乾牆, 乾泥炭, 乾橡膠, 餅乾, 蘑菇乾); 幹活, 幹得好, 樹幹 stay.
+    ('幹(?=[牆玉泥橡香竹耕胡沙淨燥枯涸果肉糧貨])', '乾'), ('幹(?=樹葉)', '乾'), ('(?<=[餅菇排烘曬晾])幹', '乾'),
+    ('采(?=[礦蜜掘集收摘伐])', '採'), ('曆史', '歷史'), ('余燼', '餘燼'), ('准備', '準備'), ('熏(?=製)', '燻'),
+    ('襬放', '擺放'), ('魷魚須', '魷魚鬚'), ('鬍桃', '胡桃'), ('(?<!夥)伙伴', '夥伴'), ('蘇裡拉', '蘇里拉'), ('颱(?=階)', '台'),
+    ('繫列', '系列'), ('(?<=[岩火水冰雷風土光暗毒草電龍鋼])繫(?=命中)', '系'),
+    ('姜(?=橙)', '薑'), ('(?<=[醃生])姜', '薑'), ('髮明', '發明'),
+    ('(?<=[石木鐵銅金銀鋼玉竹皮紙陶瓷])制(?=[燈工品方祭廚成壁器具])', '製'),
+    # 了 after a verb is the particle, not 瞭: 指明了通往, 描述了如何, 被發明了. 瞭解, 瞭望, 明瞭 (clear), 瞭如指掌 stay.
+    ('(?<=[指表說證發聰])明瞭', '明了'), ('(?<!明)瞭(?![望解然]|如指)', '了'),
+    # 回复 that restores HP, hunger or mana is 回復 (Taiwan's Pokémon wording); 回覆 is replying to someone.
+    (r'回覆(?=[自對生血飢飽法魔所全滿少量一速能行藥道\d%＋+ＨH]|得|[，。]|$)', '回復'),
+    ('(?<=[力命值以會能後時可緩並給來秒每級])回覆', '回復'),
 )]
 # 输出端口 is mainland players' slang for what deals the damage; the converter's word list makes it a computer
 # port (輸出埠). In a fight it is 輸出手段; next to machines, the output side of a block is 輸出端.

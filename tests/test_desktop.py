@@ -84,6 +84,44 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(done['shown_mismatch'],0)
         self.assertFalse([r for r in self.make_plan()['rows'] if r.get('changed') and not r.get('installed')])
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_biome_and_structure_names_no_language_file_has_are_translated(self,_):
+        # VEFV2.7.1: the compasses showed biome.jellyfishing.ghostly_graveyard and "Abandoned Mine", since the mods
+        # define them in data but never wrote their name keys; the keys go into the translation resource pack.
+        import zipfile
+        (self.instance/'mods').mkdir();(self.instance/'options.txt').write_text(OPTIONS,encoding='utf-8')
+        with zipfile.ZipFile(self.instance/'mods/jellyfishing.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="jf"\n')
+            z.writestr('assets/jf/lang/en_us.json',json.dumps({'item.jf.net':'Net','biome.jf.known':'Known Place'}))
+            for path in ('worldgen/biome/ghostly_graveyard','worldgen/biome/known','worldgen/structure/abandoned_mine',
+                         'worldgen/structure_set/abandoned_structures','dimension/lamp_shadow_world','tags/worldgen/biome/is_spooky'):
+                z.writestr(f'data/jf/{path}.json','{}')
+        result=self.make_plan()
+        names={r['key']:r for r in result['rows'] if r.get('name_from_id')}
+        self.assertEqual({k:r['en'] for k,r in names.items()},{'biome.jf.ghostly_graveyard':'Ghostly Graveyard','structure.jf.abandoned_mine':'Abandoned Mine',
+                                                             'structure.jf.abandoned_structures':'Abandoned Structures','dimension.jf.lamp_shadow_world':'Lamp Shadow World'})
+        row=names['biome.jf.ghostly_graveyard']
+        self.assertEqual((row['origin'],row['supported']),('untranslated',True))  # a gap, left to AI with the others
+        row.update(proposed='幽靈墓園',origin='ai_translation',changed=True,reviewed=True)
+        apply_session(result,self.home,lambda *_:None)
+        with zipfile.ZipFile(self.instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:
+            self.assertEqual(json.loads(z.read('assets/jf/lang/zh_tw.json'))['biome.jf.ghostly_graveyard'],'幽靈墓園')
+        again=next(r for r in self.make_plan()['rows'] if r['key']=='biome.jf.ghostly_graveyard')
+        self.assertEqual((again['current'],again['changed']),('幽靈墓園',False))  # the pack's entry is what the game shows
+
+    def test_other_languages_and_model_credits_are_not_book_text(self):
+        # Alex's Caves keeps a Toki Pona copy of its book in books/tok/; block models in a books/ folder carry
+        # "credit": "Made with Blockbench". Neither is English for the player to read.
+        import zipfile
+        (self.instance/'mods').mkdir()
+        with zipfile.ZipFile(self.instance/'mods/caves.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="caves"\n')
+            z.writestr('assets/caves/books/en_us/root.txt','Welcome to the caves below.')
+            z.writestr('assets/caves/books/tok/root.txt','o kama pona tawa lupa a.')
+            z.writestr('assets/caves/models/block/books/book.json',json.dumps({'credit':'Made with Blockbench','textures':{}}))
+        sources={r['source'].split('!/')[-1] for r in self.make_plan()['rows'] if r['kind']=='book'}
+        self.assertEqual(sources,{'assets/caves/books/en_us/root.txt'})
+
     def test_broken_optional_chinese_and_nontext_json_do_not_block_translation(self):
         import zipfile
         (self.instance/'mods').mkdir()
