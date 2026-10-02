@@ -49,16 +49,16 @@
       "gameVersion": "1.20.1",
       "loader": "forge-47.4.10",
       "translator": "MC Translator",
-      "updated": "2026-10-02",
+      "updated": "2026-10-03",
       "notes": "以元素魔法與職業為主題的 RPG 整合包（Minecraft 1.20.1 Forge，約 280 個模組）。任務書分元素法師、近戰法師、聖騎士、遊俠等路線，搭配天境、暮色森林、Alex 的洞穴、災變等地區與首領、襲擊挑戰，開局可以選擇難度。",
       "recommendedRam": 0,
-      "driveId": "1mIFqqKG4ybrNKIJ00oASgT7ffEAoWHjO",
-      "sha256": "ce5fd4a5f9bf17b1a37aa981ad9f0421a5317c9c21275e0be71f02eef7c79a03",
-      "size": 608050524,
-      "totalSize": 1827335939,
+      "driveId": "1hJgjzG-3AAQNM0O0ZDT3oAeOBHi9wgRk",
+      "sha256": "ace3d9555abc89fe10f7357e970329a5424f64eeda922debbaa40ee137f00d57",
+      "size": 608054303,
+      "totalSize": 1827339711,
       "files": 8855,
       "mods": 279,
-      "revision": 2
+      "revision": 3
     },
     {
       "name": "Tensura Neo Otherworld",
