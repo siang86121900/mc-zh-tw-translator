@@ -61,7 +61,7 @@ def memory_scope(row):
     """What confirmed and AI translations are remembered under: the mod for language files, the file itself
     for text that lives in one file only (program text, several-language config text)."""
     ns=lang_namespace(row.get('source',''))
-    return ns or (row.get('source','') if row.get('kind') in ('class_display','inline_lang') else '')
+    return ns or (row.get('source','') if row.get('kind') in ('class_display','inline_lang','data_text') else '')
 
 
 def lang_namespace(source):
@@ -240,8 +240,9 @@ def explain_error(exc):
 
 def original_of(row):
     """The text a translation is checked against: the row's English, else the installed mod's English
-    for the same key (en_ref), else the Chinese the row was read from."""
-    return row.get('en') or row.get('en_ref') or row.get('zh_cn') or row.get('current') or ''
+    for the same key (en_ref), else the Chinese the row was read from (mod_text: a data file's own text, which the
+    translation data pack covers, see data_text_row)."""
+    return row.get('en') or row.get('en_ref') or row.get('zh_cn') or row.get('mod_text') or row.get('current') or ''
 
 
 def english_of(row):
@@ -496,7 +497,7 @@ class AiMemory:
             entry=dict(text=original if r.get('ai_keep') else r['proposed'],original=original,model=model,
                        made_at=datetime.now().isoformat(timespec='seconds'))
             if r.get('ai_keep'):entry.update(keep=True,reason=r.get('evidence') or '')
-            if original and r.get('kind') in ('class_display','inline_lang'):
+            if original and r.get('kind') in ('class_display','inline_lang','data_text'):
                 self.entries[TranslationMemory.ident(r['source'],r['key'],original)]=entry
             if ns and original and r.get('kind')=='language':
                 self.entries[TranslationMemory.ident(ns,r['key'],original)]=entry
@@ -1122,7 +1123,7 @@ def present_mods(z, depth=0):
 # scan-12: plain Chinese literals (plain_literal) are marked for an in-place Simplified-to-Traditional conversion
 # scan-13: a jar's installed mods are its [[mods]] ids only, not the mods it lists as dependencies
 # scan-14: language rows of a mod drawing with its own font without Chinese glyphs are marked (no_chinese_font)
-SCAN_CACHE_VERSION = 'scan-14'
+SCAN_CACHE_VERSION = 'scan-15'
 
 
 def scan_cache(home, instance):
@@ -1263,6 +1264,24 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     for r in audit.rows:
         if r['source'].startswith(OWN_PACK) and r['kind'] in ('language','book') and isinstance(r['current'],str):
             pack_text[(r['source'][len(OWN_PACK):],r['key'])]=r['current']
+    # Data files a mod shows as written (DATA_TEXT): the game reads the copy highest up, OpenLoader's packs above
+    # the datapacks folder above the mods; the other copies are not shown. Our data pack is above them all, so its
+    # copy is what the game shows, as long as it was built from the original that is there now.
+    OWN_DATA=DATA_PACK_FILE+'!/';data_reader={}
+    for r in audit.rows:
+        if r['kind']!='data_text' or r['source'].startswith(OWN_DATA):continue
+        rank=(0 if 'config/openloader/' in r['source'] else 1 if r['source'].removeprefix('instance!/').startswith('datapacks/') else 2,r['source'])
+        resource=data_resource(r)
+        if resource and (resource not in data_reader or rank<data_reader[resource]):data_reader[resource]=rank
+    data_reader={k:v[1] for k,v in data_reader.items()}
+    data_loader=reads_data_packs(instance);data_files,data_records=read_data_pack(instance);data_shown={}
+    for resource,source in data_reader.items() if data_loader else ():
+        record=data_records.get(resource)
+        if not isinstance(record,dict) or record.get('source')!=source or resource not in data_files:continue
+        raw=data_original(instance,source)
+        if raw is None or hashlib.sha256(raw).hexdigest()!=record.get('sha256'):continue  # the mod changed: built again
+        try:data_shown[resource]=parse(data_files[resource])
+        except ValueError:continue
     curseforge=is_curseforge(instance);mixin=getattr(audit,'mixin_targets',set())
     # Kept in the report so a later 'retry apply' still knows which program text must not be rewritten.
     result['mixin_targets']=sorted({class_name(r) for r in audit.rows if r['kind']=='class_display' or r.get('plain_literal')}&mixin)
@@ -1327,6 +1346,13 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 result['source_counts']=dict(counts)
                 publish();last_publish=time.monotonic()
         if r['source'].startswith(OWN_PACK):continue  # our own output; its text is what the mod rows below show
+        if r['kind']=='data_text':
+            if r['source'].startswith(OWN_DATA):continue  # our data pack; its text is what the rows of the original show
+            resource=data_resource(r)
+            if data_reader.get(resource)!=r['source']:
+                counts['data_overridden']+=1;continue  # a copy below another one: the game never shows it
+            result['rows'].append(data_text_row(r,data_shown.get(resource),data_loader,provenance,memory,ai_memory))
+            counts['data_text']+=1;continue
         if r['kind'] in ('language','book') and r['source'].split('!/')[0] in older:
             counts['older_mod_copy']+=1;continue  # the game loads the newer copy of this mod (older_copies)
         if (r['kind']=='language' and r['source'].startswith('mods/') and not r['source'].split('!/')[-1].startswith('assets/')
@@ -1643,6 +1669,44 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     return result
 
 
+def data_text_row(r, shown, loader, provenance, memory, ai_memory):
+    """The report row for one string of a data file a mod shows as written (DATA_TEXT).
+
+    mod_text is the string in the original file; current is what the game shows now, which is the translation
+    data pack's copy when there is one. Chinese is converted to Taiwan wording (there is no English to compare
+    with); English waits for a confirmed translation, an earlier AI one, or AI. Text written by an earlier run
+    is recognised by its provenance and is not written again.
+    """
+    mod_text=r['current'] if r['current'] is not None else r['en']
+    on_screen=at(shown,json.loads(r['key'])) if shown is not None else None
+    r=dict(slim(r),mod_text=mod_text,current=on_screen if on_screen is not None else r['current'])
+    extra={} if loader else dict(no_data_pack=True)
+    previous=provenance.lookup(r) if on_screen is not None else None
+    if previous:
+        return dict(r,proposed=r['current'],origin=previous['origin'],evidence=previous.get('evidence',''),issue=previous.get('issue',''),
+                    supported=True,reviewed=False,changed=False,installed=True,recovered=True,ai_model=previous.get('model'),**extra)
+    scope=memory_scope(r);mine=memory.lookup(scope,r['key'],mod_text)
+    value=mod_text;origin='untranslated';evidence='';issue=''
+    if mine and fits(mod_text,mine,True):value=mine;origin='translation_memory';evidence='translation_memory.json'
+    elif HAN.search(mod_text):
+        converted=taiwan_wording(to_taiwan(mod_text))
+        if has_simplified(mod_text) and validate_text(mod_text,converted):value=converted;origin='same_source_zh_cn';evidence='data_s2t'
+        else:origin='existing_zh_tw'
+    else:
+        reason=keep_original_reason(mod_text,r['key'],'')
+        earlier=ai_memory.lookup(scope,r['key'],mod_text)
+        if reason or (earlier and earlier.get('keep')):
+            origin='keep_original';evidence=reason or earlier.get('reason') or 'AI 判斷保留原文'
+        elif earlier and validate_text(mod_text,earlier['text']) and not number_doubt(mod_text,earlier['text']):
+            value=earlier['text'];origin='ai_translation';evidence='ChatGPT/Codex: '+str(earlier.get('model') or '')+'（沿用先前的補譯）'
+            issue='AI 補譯（沿用先前翻過的同一句），尚未人工校對。';extra.update(ai_reused=True,ai_model=earlier.get('model'))
+        elif isinstance(on_screen,str) and HAN.search(on_screen):value=on_screen;origin='existing_zh_tw'
+        else:issue='缺少可用中文來源'
+    if not loader and origin!='keep_original':issue=HELD_NO_DATAPACK
+    return dict(r,proposed=value,origin=origin,evidence=evidence,issue=issue,supported=True,reviewed=False,
+                changed=value!=r['current'] and origin!='untranslated',**extra)
+
+
 def prepare_to_apply(session):
     """What every write is preceded by: one wording per key and per name, then the automatic checks."""
     session['same_key_count']=session.get('same_key_count',0)+unify_same_key(session['rows'])
@@ -1814,7 +1878,7 @@ def row_state(r, curseforge=False):
     if still_english(r):return 'missing'
     if not r.get('changed') or (r.get('installed') and r.get('shown') is not False):return 'done'
     if r.get('installed'):return 'unconfirmed'
-    if write_route(r,curseforge) not in ('pack','file'):return 'unwritable'
+    if write_route(r,curseforge) not in WRITTEN_ROUTES:return 'unwritable'
     return 'waiting'
 
 
@@ -1906,6 +1970,16 @@ def check_shown(instance, rows):
                 found.append(isinstance(data,dict) and tooltip_part(data.get(key),part,parts)==r['proposed'])
             r['shown']=any(found);missing+=not r['shown'];continue
         if r.get('kind')=='class_display':r['shown']=True;continue
+        if r.get('kind')=='data_text':
+            # Shown when the translation data pack holds it and OpenLoader loads that pack (see DATA_PACK_FILE).
+            if 'datapack' not in files:files['datapack']=read_data_pack(instance)[0] if reads_data_packs(instance) else {}
+            resource=data_resource(r)
+            if ('data',resource) not in files:
+                try:files[('data',resource)]=parse(files['datapack'][resource]) if resource in files['datapack'] else None
+                except ValueError:files[('data',resource)]=None
+            try:r['shown']=files[('data',resource)] is not None and at(files[('data',resource)],json.loads(r['key']))==r['proposed']
+            except (ValueError,TypeError):r['shown']=False
+            missing+=not r['shown'];continue
         if convertible(r):
             # Config and quest strings converted in place: the string at that place (JSON: any string) now reads so.
             path=r['source']
@@ -1998,7 +2072,7 @@ def applicable_count(session):
     tooltips=tooltip_texts(session.get('rows',[]))
     return sum(bool(r.get('supported') and r.get('changed') and not r.get('installed') and r.get('origin')!='untranslated'
                     and (r.get('reviewed') or row_fits(r))
-                    and write_route(r,curseforge) in ('pack','file')
+                    and write_route(r,curseforge) in WRITTEN_ROUTES
                     and (not (managed(curseforge,r) and r.get('kind')=='class_display' and r.get('tooltips')) or any(
                         (r['source'].split('!/')[0],key,resource) in tooltips for key,_,_,resource in r['tooltips'])))
                for r in session.get('rows',[]))
@@ -2136,12 +2210,13 @@ PACK_FORMATS = [((1,6),1),((1,9),2),((1,11),3),((1,13),4),((1,15),5),((1,16,2),6
                 ((1,21,2),42),((1,21,4),46),((1,21,5),55),((1,21,6),63),((1,21,7),64)]
 
 
-def pack_format(version):
-    """The resource pack format for a Minecraft version like '1.21.1'; 34 when it is unknown."""
+def pack_format(version, formats=PACK_FORMATS, unknown=34):
+    """The resource pack format (or data pack format, with DATA_PACK_FORMATS) for a Minecraft version like
+    '1.21.1'; `unknown` when the version is not known."""
     try:wanted=tuple(int(x) for x in re.findall(r'\d+',str(version))[:3])
     except ValueError:wanted=()
-    if len(wanted)<2:return 34
-    return max((f for v,f in PACK_FORMATS if v<=wanted),default=34)
+    if len(wanted)<2:return unknown
+    return max((f for v,f in formats if v<=wanted),default=unknown)
 
 
 def pack_metadata(instance):
@@ -2333,15 +2408,127 @@ def book_title(row):
     return (f'assets/{m[1]}/lang/zh_tw.json',row['en']) if m else None
 
 
+# Text a mod reads from data packs and shows as written (Whispering Quests' quests, see full_translation_audit.DATA_TEXT):
+# a copy of each such file with the translation goes into a data pack of ours that OpenLoader puts above the mods.
+# OpenLoader 19.0.5 (Forge 1.20.1, checked in its OpenLoaderRepositorySource) adds every pack in config/openloader/data
+# as required, at Pack.Position.TOP and to existing worlds too; packs are ordered by name, so ours is named to come
+# last, above the modpack's own OpenLoader packs. The mod files stay untouched, so CurseForge has nothing to put back.
+DATA_PACK_FILE = 'config/openloader/data/zz-MCTranslator-zh_tw.zip'
+DATA_PACK_FORMATS = [((1,13),4),((1,15),5),((1,16,2),6),((1,17),7),((1,18),8),((1,18,2),9),((1,19),10),((1,19,4),12),
+                     ((1,20),15),((1,20,2),18),((1,20,3),26),((1,20,5),41),((1,21),48),((1,21,2),57),((1,21,4),61),
+                     ((1,21,5),71),((1,21,6),80),((1,21,7),81)]
+DATA_RESOURCE = re.compile(r'(?:^|/)(data/[a-z0-9_.\-]+/whisperingquests/.+\.json)$')
+HELD_NO_DATAPACK = ('在模組的資料檔裡，只能用資料包蓋過；這個整合包沒有讓每個世界自動讀取資料包的 OpenLoader，'
+                    '所以沒有寫入')
+WRITTEN_ROUTES = ('pack','file','datapack')
+
+
+def data_resource(row):
+    """Where a data_text row's file is in a data pack (data/<mod>/whisperingquests/...json), else ''."""
+    m=DATA_RESOURCE.search((row.get('source') or '').split('!/')[-1])
+    return m[1] if m and row.get('kind')=='data_text' else ''
+
+
+def reads_data_packs(instance):
+    """Whether OpenLoader loads data packs from config/openloader/data for every world (see DATA_PACK_FILE)."""
+    instance=Path(instance)
+    try:
+        options=json.loads((instance/'config/openloader/advanced_options.json').read_text(encoding='utf-8-sig'))
+        enabled=options.get('dataPacks',{}).get('enabled',True) is not False
+    except (OSError,ValueError,AttributeError):enabled=True
+    try:loader=any(p.name.casefold().startswith('openloader') for p in (instance/'mods').glob('*.jar'))
+    except OSError:loader=False
+    return enabled and loader and (instance/'config/openloader/data').is_dir()
+
+
+def read_data_pack(instance):
+    """(files, records) of the translation data pack this program made earlier; empty when there is none.
+    records: {resource: {source, sha256 of the original file, texts: {key: [original, translation]}}}."""
+    path=Path(instance)/DATA_PACK_FILE
+    if not path.is_file():return {},{}
+    try:
+        with zipfile.ZipFile(path) as z:
+            files={n:z.read(n) for n in z.namelist() if DATA_RESOURCE.fullmatch(n)}
+            records=json.loads(z.read(PACK_SOURCES).decode('utf-8')).get('files',{}) if PACK_SOURCES in z.namelist() else {}
+    except (OSError,ValueError,zipfile.BadZipFile):return {},{}
+    return files,(records if isinstance(records,dict) else {})
+
+
+def data_original(instance, source):
+    """The bytes of the file a data_text row was read from (in a mod file, a pack or loose); None when it is gone."""
+    path,entry=target_for(dict(source=source,kind='data_text'))
+    try:
+        if entry is None:
+            p=contained(instance,path);return p.read_bytes() if p.is_file() else None
+        return read_archive_entry(instance,path,entry) if contained(instance,path).is_file() else None
+    except (OSError,KeyError,zipfile.BadZipFile):return None
+
+
+def set_at(value, path, text):
+    for k in path[:-1]:value=value[k]
+    value[path[-1]]=text
+
+
+def build_data_pack(instance, home, staged, rows):
+    """Stage the translation data pack: each file of a translated data_text row, copied from the file the game reads
+    with the translated strings in place. Every file is built again from its original each time, so a mod update
+    (new rewards, coordinates) is never hidden under an old copy; text the original no longer holds is dropped."""
+    files,records=read_data_pack(instance)
+    batch=collections.defaultdict(list)
+    for r in rows:batch[data_resource(r)].append(r)
+    built={};kept={}
+    for resource in sorted(set(records)|set(batch)):
+        record=records.get(resource) if isinstance(records.get(resource),dict) else {}
+        source=batch[resource][0]['source'] if batch.get(resource) else record.get('source')
+        raw=data_original(instance,source) if isinstance(source,str) else None
+        if raw is None:
+            if batch.get(resource):raise changed_since_scan(home,instance,source)
+            continue  # the mod (or that version of it) is gone: its copy is no longer needed
+        base=parse(raw);texts={}
+        if record.get('source')==source:
+            for key,pair in (record.get('texts') or {}).items():
+                try:
+                    if isinstance(pair,list) and len(pair)==2 and at(base,json.loads(key))==pair[0]:texts[key]=pair
+                except (ValueError,TypeError):continue
+        for r in batch.get(resource,()):
+            if at(base,json.loads(r['key']))!=r['mod_text']:raise changed_since_scan(home,instance,source)
+            texts[r['key']]=[r['mod_text'],r['proposed']]
+        texts={k:v for k,v in texts.items() if v[0]!=v[1]}
+        if not texts:continue
+        for key,(_,text) in texts.items():set_at(base,json.loads(key),text)
+        built[resource]=json.dumps(base,ensure_ascii=False,indent=2).encode('utf-8')
+        kept[resource]=dict(source=source,sha256=hashlib.sha256(raw).hexdigest(),texts=dict(sorted(texts.items())))
+    src=Path(instance)/DATA_PACK_FILE;before=file_hash(src) if src.exists() else None
+    if not built:
+        return [dict(file=DATA_PACK_FILE,before=before,after=None,reviewed=True,verified=True)] if before else []
+    from .desktop_references import minecraft_version
+    fmt=pack_format(minecraft_version(instance),DATA_PACK_FORMATS,15)
+    meta=dict(pack_format=fmt,description='MC Translator 繁體中文翻譯（自動產生，只改任務等文字）')
+    if fmt>=18:meta['supported_formats']=dict(min_inclusive=fmt,max_inclusive=fmt)
+    dst=contained(staged,DATA_PACK_FILE);dst.parent.mkdir(parents=True,exist_ok=True)
+    stamp=(2020,1,1,0,0,0)
+    with zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED) as w:
+        def put(name,data):w.writestr(zipfile.ZipInfo(name,stamp),data,zipfile.ZIP_DEFLATED)
+        put('pack.mcmeta',json.dumps(dict(pack=meta),ensure_ascii=False,indent=2))
+        put(PACK_SOURCES,json.dumps(dict(format=1,files=kept),ensure_ascii=False,indent=2,sort_keys=True))
+        for name,content in sorted(built.items()):put(name,content)
+    after=file_hash(dst)
+    if before==after:
+        dst.unlink();return []
+    return [dict(file=DATA_PACK_FILE,before=before,after=after,reviewed=True,verified=True)]
+
+
 def write_route(row, curseforge):
-    """'pack' (the translation resource pack), 'file' (the file itself), or why the row is not written.
+    """'pack' (the translation resource pack), 'file' (the file itself), 'datapack' (the translation data pack),
+    or why the row is not written.
 
     Language files and book pages of mods go into the resource pack, so the mods stay untouched.
     Text inside a mod's program (class) or its data folder cannot be put in a resource pack; it is
     written into the mod file only where the launcher does not put the original back. The exception is a
     config comment that config screens look up in the language files (row['tooltips']): under CurseForge
-    it goes into the pack as that key.
+    it goes into the pack as that key. Data files a known mod shows as written go into the data pack.
     """
+    if row.get('kind')=='data_text':return HELD_NO_DATAPACK if row.get('no_data_pack') else 'datapack'
     path,entry=target_for(row)
     if entry is None or not path.startswith('mods/'):return 'file'
     if book_title(row) or (row.get('kind')!='class_display' and pack_resource(entry)):return 'pack'
@@ -2614,8 +2801,8 @@ def stage_and_apply(session, home, notify, work):
         if r['kind']=='class_display' and routes[id(r)]=='file' and r.get('origin')!='keep_original' and (
                 patched is None or class_name(r) in patched):
             routes[id(r)]=HELD_MIXIN if patched is not None else HELD_OLD_REPORT
-    selected=[r for r in ready if routes[id(r)] in ('pack','file')]
-    held=collections.Counter(routes[id(r)] for r in ready if routes[id(r)] not in ('pack','file'))
+    selected=[r for r in ready if routes[id(r)] in WRITTEN_ROUTES]
+    held=collections.Counter(routes[id(r)] for r in ready if routes[id(r)] not in WRITTEN_ROUTES)
     if not selected:
         raise ValueError('這一批沒有尚未套用的譯文。'+('（'+'；'.join(f'{n:,} 筆{why}' for why,n in held.items())+'）' if held else ''))
     if session.get('status')=='blocked':raise ValueError('此批次預檢未通過，不能套用。')
@@ -2627,10 +2814,11 @@ def stage_and_apply(session, home, notify, work):
     # already wrote are accepted at the hash that earlier write left; anything else must be unchanged.
     changed=changed_sources(session)
     if changed:raise changed_since_scan(home,instance,changed)
-    changes=collections.defaultdict(list);pack_rows=[]
+    changes=collections.defaultdict(list);pack_rows=[];data_rows=[]
     for row in selected:
         if not row_fits(row):raise ValueError('譯文格式或參數不一致：'+row['key'])
         path,entry=target_for(row); contained(instance,path)
+        if routes[id(row)]=='datapack':data_rows.append(row);continue
         if routes[id(row)]=='pack' and row['kind']=='class_display':
             for key,_,_,resource in row['tooltips']:
                 if (path,key,resource) in tooltips:pack_rows.append((path,resource,dict(row,tooltip_key=key,tooltip_text=tooltips[(path,key,resource)])))
@@ -2645,6 +2833,7 @@ def stage_and_apply(session, home, notify, work):
         staged=report/('staged-'+uuid.uuid4().hex[:8])
     staged.mkdir();work.append(staged)
     records=build_pack(instance,staged,pack_rows,session,notify) if pack_rows else []
+    if data_rows:records+=build_data_pack(instance,home,staged,data_rows)
     changed_classes=[]
     for i,(path,edits) in enumerate(changes.items()):
         notify(int(70*i/len(changes)),'驗證並準備套用',path)

@@ -275,7 +275,7 @@ def row_module(row):
 
 
 def row_memory_scope(row):
-    return row.get('source','') if row.get('kind')=='class_display' else row_module(row)
+    return row.get('source','') if row.get('kind') in ('class_display','data_text') else row_module(row)
 
 
 class ReviewDialog(QDialog):
@@ -1862,7 +1862,7 @@ class MainWindow(QMainWindow):
         if dialog.exec()==QDialog.Accepted:
             # Only rows the user confirmed here become translation memory for later modpacks.
             original=jobs.original_of(row)
-            if row.get('kind') in ('language','class_display') and row_memory_scope(row) and original:
+            if row.get('kind') in ('language','class_display','data_text') and row_memory_scope(row) and original:
                 jobs.TranslationMemory(self.home).remember(row_memory_scope(row),row['key'],original,row['proposed'],row['source'])
             jobs.write_json(Path(self.session['report'])/'session.json',self.session);self.fill_table()
 

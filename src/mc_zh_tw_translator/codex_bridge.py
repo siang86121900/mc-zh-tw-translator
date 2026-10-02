@@ -755,6 +755,7 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
         payload = [dict(id=str(i), text=original, key=row['key'], source=row['source']) for i, row, original in batch]
         for item,(_,row,original) in zip(payload,batch):
             if row.get('kind')=='class_display':item['context']=row.get('display_use','玩家顯示文字')
+            if row.get('kind')=='data_text':item['context']='任務模組顯示的任務文字（'+str(json.loads(row['key'])[-1])+' 欄位）'
             if '\n' in original: item['lines'] = str(original.count('\n'))
             codes = jobs.required_codes(original)
             if codes: item['codes'] = codes

@@ -307,6 +307,13 @@ def leaves(value,path=(),field=''):
         for i,v in enumerate(value):yield from leaves(v,path+(i,),field)
     elif isinstance(value,str):yield path,field,value
 
+# Text a mod reads from data packs and shows as written, with no language key (Whispering Quests 3.2: QuestDataManager
+# and ChapterDataManager are SimpleJsonResourceReloadListeners, QuestScreen draws Component.literal). The game reads
+# the topmost data pack's copy, so the translation is a data pack above the mods (desktop_jobs.DATA_PACK_FILE).
+DATA_TEXT=re.compile(r'(?:^|/)data/[a-z0-9_.\-]+/whisperingquests/(?:tasks|chapters)/.+\.json$')
+DATA_TEXT_FIELDS={'title','short_description','description','text','pool_name','display_name'}
+# Any other data-pack JSON of a mod file: display fields with Chinese are listed as a format not supported yet.
+DATA_JSON=re.compile(r'^data/([a-z0-9_.\-]+)/([a-z0-9_.\-]+)/.+\.json$')
 LOCALE=re.compile(r'[a-z]{2,3}_[a-z]{2,3}$')
 NOT_READ=('config/ftbquests/quests-backup/',)
 CONFIG_SCREEN=b'net/neoforged/neoforge/client/gui/ConfigurationScreen'
@@ -482,6 +489,35 @@ class Audit:
                     if field in DISPLAY or HAN.search(value) or (LATIN.search(value) and ' ' in value):
                         self.add(label+'!/'+n,json.dumps(path),value,at(tw,path),at(cn,path),'book')
             except Exception as e:self.errors.append([label,n,str(e)])
+        for n in sorted(names):
+            if not DATA_TEXT.search('/'+n):continue
+            try:
+                for path,field,value in leaves(parse(read(n))):
+                    if field not in DATA_TEXT_FIELDS or not value.strip():continue
+                    # Chinese is what the game shows (converted to Taiwan wording); English needs a translation.
+                    if HAN.search(value):self.add(label+'!/'+n,json.dumps(path),None,value,kind='data_text')
+                    elif LATIN.search(value):self.add(label+'!/'+n,json.dumps(path),value,None,kind='data_text')
+                self.counts['data_text_files']+=1
+            except Exception as e:self.errors.append([label,n,str(e)])
+    def unsupported_data(self,label,names,read):
+        """A mod's data-pack JSON whose display fields hold Chinese, in a format no reader covers: listed once per
+        folder (data/<mod>/<kind>/) so a whole kind of text (quests, dialogue) is never silently left out.
+        Fields other than display ones (a tag file's "__comment") are a developer's notes and are not listed."""
+        found=defaultdict(list)
+        for n in sorted(names):
+            m=DATA_JSON.match(n)
+            if not m or DATA_TEXT.search('/'+n) or BOOK.search('/'+n) or m[2] in ('lang','patchouli_books'):continue
+            try:
+                raw=read(n)
+                if raw.isascii():continue
+                for _,field,value in leaves(parse(raw)):
+                    if field in DISPLAY and HAN.search(value) and SENTENCE.search(value):
+                        found[f'data/{m[1]}/{m[2]}/'].append((n,value));break
+            except Exception:continue
+        for folder,files in found.items():
+            n,value=files[0]
+            self.add(label+'!/'+folder,'folder',None,f'{len(files)} 個資料檔含中文顯示文字，例如 {n}：{value[:200]}',kind='unsupported_config_text')
+            self.counts['unsupported_data_text_files']+=len(files)
     def archive(self,p,label):
         self.counts['archives']+=1
         first_row=len(self.rows)
@@ -491,6 +527,7 @@ class Audit:
                 for info in z.infolist():
                     self.files.append(dict(source=label+'!/'+info.filename,size=info.file_size,crc=info.CRC,kind='class' if info.filename.endswith('.class') else 'resource'))
                 self.collection(label,names,z.read)
+                self.unsupported_data(label,names,z.read)
                 self.nested(z,label,names)
                 screen=False;linked=[];literals=[];compared=set()
                 ships_lang=any(re.match(r'assets/[^/]+/lang/[^/]+\.json$',x) for x in names)
@@ -576,7 +613,7 @@ class Audit:
                     self.counts['binary_config_files']+=1
                 except Exception as e:self.errors.append([n,'binary configuration: '+str(e)])
                 continue
-            if LANG.match('/'+n) or BOOK.search('/'+n):continue
+            if LANG.match('/'+n) or BOOK.search('/'+n) or DATA_TEXT.search('/'+n):continue
             if n.split('/',1)[0] in CONTENT_PACK_FOLDERS:
                 # Beside language files, a content pack shows Chinese of its own only in display fields
                 # (TACZ text_show "text": a brand name printed on the gun model).
@@ -644,7 +681,7 @@ class Audit:
         produced={r['source'].removeprefix('instance!/') for r in self.rows}
         for n,p in names.items():
             content=n.split('/',1)[0] in CONTENT_PACK_FOLDERS
-            if (n in produced or LANG.match('/'+n) or BOOK.search('/'+n) or (content and p.suffix.lower()!='.json')
+            if (n in produced or LANG.match('/'+n) or BOOK.search('/'+n) or DATA_TEXT.search('/'+n) or (content and p.suffix.lower()!='.json')
                     or p.suffix.lower() not in TEXT_CONFIG_SUFFIXES or p.stat().st_size>16*1024*1024):continue
             try:
                 text=decode(p.read_bytes())

@@ -89,6 +89,9 @@
 ## 掃描範圍與增量處理
 - 整包掃描目標包括 mods、kubejs、scripts（CraftTweaker .zs）、config／defaultconfigs、resourcepacks、datapacks、任務、Patchouli／外部書本、模組當成資源包載入的內容包（tacz 槍械包、tlm_custom_pack，只讀語系檔與顯示欄位）及其他玩家文字，不只處理 mods。資料夾清單在 full_translation_audit.LOOSE_FOLDERS／CONTENT_PACK_FOLDERS。
 - 防止整類漏掃：掃描結束時檢查整合包每個最上層資料夾（NOT_PLAYER_TEXT 列的存檔、日誌、快取等除外），沒有讀取器負責卻含中文、英文或簡中語系檔（同資料夾沒有 zh_tw）、或內含語系檔的壓縮檔，一律列為「格式尚未支援」（Audit.unscanned）；其他語言的語系檔、模型骨架名稱、作者清單、readme 不列。新增讀取器時把資料夾加進清單，不靠使用者回報才發現。這些檔案在報告「需要留意」紅字列出（desktop_jobs.unsupported_note），不只計數。例外（使用者 2026-10-02 同意放寬）：這類沒有讀取器的檔案裡，引號內的簡體（嚴格模式的 JSON 只限顯示欄位）、純文字筆記檔的中文行，在原地轉成台灣繁體；只有英文或簡中、沒有 zh_tw 的語系檔資料夾，在旁邊新增 zh_tw.json。這些都標示 unverified、不算進完成率，報告以灰字說明（unverified_note），可還原、不送進分享補丁；跳過存檔、其他語言檔、作者／識別碼欄位、模型運算式，以及模組程式裡也有同一句（可能拿來比對）的字串（Audit.unverified_literals）。轉不了的（引號外的中文、像句子但用途不明的欄位）才留在紅字；測試新的整合包時先看這份清單，有玩家文字的格式就補讀取器並用真實檔案驗證遊戲會讀，再發布。
+- 防止整類漏掃也包含模組檔裡面：模組（含資料包、OpenLoader 壓縮檔）的 data/<模組>/<種類>/ JSON 在 title、description 等顯示欄位有中文、又沒有讀取器負責時，每個資料夾列一筆「格式尚未支援」紅字（Audit.unsupported_data）；只看顯示欄位，標籤檔的 __comment 等開發者註記不列。
+- 使用者回報畫面上的漏翻時，除了修好那一類文字，同時查清楚掃描為什麼沒發現、報告為什麼沒有紅字，補上防漏檢查（讓同類格式以後一定會被列出）與測試；只修單一檔案不算完成。新增讀取器前先拆模組程式確認它怎麼顯示這段文字（照字面 Component.literal 或查語系鍵）、從哪裡讀（資源包、資料包、存檔），依據寫在程式註解。
+- 模組照字面顯示、從資料包讀的文字（Whispering Quests 的 data/<模組>/whisperingquests/tasks|chapters，full_translation_audit.DATA_TEXT，欄位 title、short_description、description、objectives 的 text、pool_name、display_name）：簡中轉台灣用語、英文照一般順序與 AI 補翻，連同該檔其餘內容複製進翻譯資料包 config/openloader/data/zz-MCTranslator-zh_tw.zip（desktop_jobs.DATA_PACK_FILE；OpenLoader 19 以 Pack.Position.TOP、必載並自動加入既有世界，依名稱排序所以名稱排最後），模組檔不修改，CurseForge 模組也適用。同一個檔案有多份時翻遊戲讀的那份（OpenLoader > datapacks > 模組）。資料包每次都從目前的原檔重建，只放回原句仍相同的譯文，原檔變了（模組更新）就重做，不讓舊複本蓋掉新任務內容。沒有 OpenLoader（或其資料包停用）時不寫入，報告寫明原因（HELD_NO_DATAPACK）。任務進度只記 id、不記文字（已查 QuestManager），改文字不影響存檔。
 - 同一段文字並列多種語言的格式（{"en_us": …, "zh_cn": …}，例如 Ponderer 的 config/ponderer/scripts）：在同一段加上 zh_tw，不改其他語言。英文可能被整合包作者截斷未寫完，有完整的簡中時照一般順序先用簡中轉台灣用語，英文只作比對。寫入前必須先在模組程式裡確認它會依遊戲語言讀 zh_tw（記在 desktop_jobs.INLINE_ZH_TW 並註明依據）；未確認的格式不寫入、不算進完成率，報告寫明「還沒確認這個模組會讀繁中」。
 - 設定檔與任務檔裡直接寫的中文（config、defaultconfigs、kubejs 的 json／snbt／toml／txt／yaml 字串值、Forge 舊式 .cfg 的值與清單行、.properties 的值（KubeJS 視窗標題）、FancyMenu 版面檔的 label／hoverlabel／description／source 等顯示欄位、KubeJS 腳本 .js 與 CraftTweaker 腳本 scripts/*.zs 的字串、內容包 JSON 顯示欄位，例如 FTB Quests 1.20.1 寫在 chapters 裡的任務文字、Text.of('…')）：簡體一律在原檔轉成台灣用語，只改那個字串、其餘位元組不動（desktop_jobs.convertible／rewrite_literals）；鍵名（腳本裡只有開頭、{ 或逗號後接冒號的才算鍵名，三元運算的文字照轉）、註解行（含腳本的 /* */ 區塊）、其他語言的檔案（lang 資料夾、zh_cn 等語言代碼命名）與遊戲不讀的 quests-backup 不改。英文仍列待查。
 - FTB Quests 的任務文字在 config/ftbquests/quests/lang/<語言>.snbt（mc_zh_tw_translator.quest_lang），當成語系檔處理：說明清單逐行成為一筆，簡中清單行數和英文不同時不逐行對應；寫出 zh_tw.snbt 時沿用英文檔的排版，圖片與換頁行原樣保留，英文檔不修改。
@@ -108,6 +111,7 @@
 - 套用前備份所有受影響的真正原檔至 output/<名稱>/原始備份/<時間戳>/，保留相對路徑；每批新目錄，驗證全部備份雜湊後才寫回。
 - 清冊保存目標絕對路徑、修改前後 SHA-256、新增檔、套用狀態與還原資訊。受影響原檔備份不是完整存檔備份，不混用不同 instance 的備份。
 - 使用 mc_zh_tw_translator.deployment.apply_reviewed 處理通用備份與寫回；它不能代替翻譯審核、遊戲狀態或資源驗證。來源或候選驗證後變動須停止套用。
+- 翻譯資料包（DATA_PACK_FILE）與翻譯資源包一樣走 apply_reviewed 備份、清冊與還原；裡面的 mctranslator.json 記每個檔案的來源、原檔 SHA-256 與「原句 → 譯文」，重跑以它判斷遊戲目前顯示的文字，內容相同就不重寫。
 - Patchouli 書本設定（data/<ns>/patchouli_books/<書>/book.json）寫死的英文書名與首頁介紹：Patchouli 以 Component.translatable 顯示（GuiBookLanding），所以在翻譯資源包的 assets/<ns>/lang/zh_tw.json 加上「英文原句 → 譯文」，不改模組檔，CurseForge 模組也適用（desktop_jobs.book_title）。
 - 模組裡的語系檔與書本頁一律寫進程式產生的資源包 resourcepacks/MCTranslator-zh_tw.zip，並在 options.txt 的資源包清單放到最後（最高優先），模組檔本身不修改。資源包內含模組原有的 zh_tw 與本程式的譯文，並以 mctranslator.json 記錄每個檔案對應的模組檔與 SHA-256；重跑時以資源包內容作為遊戲目前顯示的文字，內容相同就不重寫。
 - 遊戲偵測須辨識程序工作資料夾、啟動參數及 Forge／NeoForge 參數檔 server target。已確認不同 instance 的伺服器／Java 工具不應阻擋；未知或同目標程序仍須安全阻擋並說明證據，不自行結束程序。
@@ -177,6 +181,7 @@
 - 補丁由 mc_zh_tw_translator.patches 產生／套用，只收已套用且未被後續改動的必要翻譯文字，綁定原檔 SHA-256；JAR／ZIP 不散布整個模組、class 或腳本。
 - 排除存檔、交易／進度、帳號、options.txt、伺服器清單、日誌及個人材質／光影。僅允許受支援路徑與文字類型，防止路徑穿越與越界寫入。
 - 補丁只能寫入繁體中文語系檔（lang/zh_tw.json、lang/zh_tw.lang）、zh_tw 書本頁、FTB Quests 的 config/ftbquests/quests/lang/zh_tw.snbt，以及翻譯資源包裡的這些檔案；英文或簡中語系檔、配方、戰利品表一律拒絕。例外（使用者 2026-10-02 同意，讓安裝者也全是繁體）：設定檔與腳本（patches.LITERAL_ROOTS，含 scripts、FancyMenu、KubeJS）裡原地轉換的文字，以逐句修改（補丁格式 mctranslator-patch-2 的 literals）分享，從不帶整份檔案；每處修改只能改中文字，中文以外的字元（英文、數字、引號、跳脫字元）必須完全相同（patches.edit_safe），接收端的檔案雜湊等於翻譯者的原檔才套用，套用後雜湊須等於翻譯者的結果。沒有逐句修改的補丁仍寫成格式 1，讓舊版程式能安裝。解開後的單檔與總大小有上限，先檢查再解開。
+- 翻譯資料包含有模組任務檔的完整複本（不只文字），不放進分享補丁（匯出時列為略過並說明）；要分享時須改成只帶逐句修改並經使用者同意放寬。
 - 翻譯資源包分享時，每個翻譯檔帶著它所屬模組檔的 SHA-256 與大小；對方的模組資料夾裡有相同雜湊的檔案才放進對方的資源包，否則列出是哪個模組版本不同。
 - 讓別人「一次裝好」的做法是由 CurseForge 安裝官方整合包、本程式接著套用翻譯；不把模組檔、設定檔或整個 instance 放進目錄或儲存庫，也不把使用者的雲端硬碟當成發布位置（例外：沒有 CurseForge 編號的整合包，見下方「整包分享」）。等待安裝時以檔案是否到齊且大小相符判斷，逾時或取消都要說明之後怎麼接著做。
 - 分享者用 CurseForge 加裝的模組（整合包清單以外的專案）只在補丁與目錄記下專案、檔案、大小與未翻譯原檔的 SHA-256，不放檔案。對方按下安裝的確認（確認畫面列出會一起加入的模組，不另外詢問）後由程式從 CurseForge 的檔案伺服器（edge.forgecdn.net、mediafilez.forgecdn.net）下載，大小與 SHA-256 相符才放進 mods，並以一個可還原的批次記錄；轉址到其他網域、校驗不符或不是壓縮檔一律不安裝。
@@ -220,7 +225,7 @@
 - 一鍵安裝的測試在 tests/test_install.py：等待檔案到齊、下載到一半不算就緒、可取消與逾時、版本不同不誤認、沒有 CurseForge 時不開始。真實的 CurseForge 安裝無法自動測試，需在交付時說明。
 - 整包分享的測試在 tests/test_full_pack.py：個人檔案不打包、只有和 CurseForge 位元相同的模組才只記網址、有 CurseForge 編號的整合包拒絕、安裝後每個檔案與清單相符且 CurseForge 清單只多一筆、同名改用 (2)、等待 CurseForge 關閉與取消不留東西、校驗不符或清單看不懂時不登記、不安全的壓縮檔（路徑穿越、清單外檔案、載入器或模組網址不明）被拒絕、雲端下載續傳與被 Google 擋下的說明、就地更新（存檔與遊戲設定不動、移除被拿掉的檔案、保留玩家改過的、整批還原回原版本）、跨版本名稱視為同一個整合包。改動後另用真實整合包打包一次，並在模擬的 CurseForge 清單上實際安裝一次。
 - 加裝模組的測試也在 tests/test_install.py：補丁不含模組檔、校驗不符不安裝、只連 CurseForge 檔案伺服器、不安全的檔名與大小被拒絕、已有其他版本不動、未同意不加入、還原後模組移除。改動下載流程後，另用整合包裡的小模組對 CurseForge 實際下載一次。
-- 精準度功能的測試集中在 tests/test_accuracy.py：AI 核對的三種結果、不重送、已套用譯文的改寫流程、AI 記憶的沿用與順位、整批確認與取消、同檔相同原文只送一次、沒有英文可比對不算匹配、同一句在各檔案譯文一致、先寫入再交給 AI 與被擋住後的重試、任務書逐行翻譯與重跑不再寫入（QuestTests）、換行自動重排與 AI 判斷保留原文。翻譯資源包的寫入、啟用、重跑與還原在 tests/test_desktop.py，分享與版本比對在 tests/test_patches.py。同時送出多批的測試在 tests/test_codex_bridge.py：各批回覆不混淆、一批失敗保留另一批、被拒絕時改回一次一批、額度偏低時不同時送。
+- 精準度功能的測試集中在 tests/test_accuracy.py：AI 核對的三種結果、不重送、已套用譯文的改寫流程、AI 記憶的沿用與順位、整批確認與取消、同檔相同原文只送一次、沒有英文可比對不算匹配、同一句在各檔案譯文一致、先寫入再交給 AI 與被擋住後的重試、任務書逐行翻譯與重跑不再寫入（QuestTests）、換行自動重排與 AI 判斷保留原文。翻譯資源包的寫入、啟用、重跑與還原在 tests/test_desktop.py，翻譯資料包（Whispering Quests 任務：寫入、重跑不再寫入、模組更新後重建、OpenLoader 的複本優先、沒有 OpenLoader 不寫入、還原、模組資料檔的未支援格式列出）在 tests/test_data_pack.py，分享與版本比對在 tests/test_patches.py。同時送出多批的測試在 tests/test_codex_bridge.py：各批回覆不混淆、一批失敗保留另一批、被拒絕時改回一次一批、額度偏低時不同時送。
 - 防呆也要有測試：寫入時檔案被其他程式佔用（tests/test_deployment.py）、套用或還原中斷後的還原、硬碟空間不足、選錯資料夾、查詢次數用完與連線重試、重跑不再寫入、數值與字形判斷、補丁越界內容（集中在 tests/test_safeguards.py）。
 - 改動翻譯規則或套用流程後，在真實整合包的副本上跑一次完整流程並核對：套用檔案與清冊一致、重跑沒有新寫入、還原後與原始檔逐位元相同。
 - UI 改動檢查亮／暗主題、小視窗、高 DPI、長文字與下拉選單；打包改動檢查 EXE 啟動、圖示、必要資源及不需 Python 的使用情境。
