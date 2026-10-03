@@ -68,6 +68,8 @@ def update_catalog(entry, same, message, files=(), dry_run=False, revise=True):
             index['packs'] = [p for p in index['packs'] if p not in replaced]
             for old in replaced:
                 url = old.get('url') or ''
+                # A card corrected in place keeps its patch: removing it would leave the catalog pointing at nothing.
+                if url == entry.get('url'):continue
                 if url.startswith(RAW) and (work/url[len(RAW):]).exists():
                     git('rm', '--quiet', url[len(RAW):], cwd=work)
             # revision counts re-publishes of the same modpack version.
