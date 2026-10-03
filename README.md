@@ -4,7 +4,7 @@
 
 ## 下載與使用
 
-從 [最新版下載頁](https://github.com/siang86121900/mc-zh-tw-translator/releases/latest) 下載 `MCTranslator.exe`，雙擊即可，不需要安裝 Python。
+**[直接下載最新版 MCTranslator.exe](https://github.com/siang86121900/mc-zh-tw-translator/releases/latest/download/MCTranslator.exe)**，雙擊即可，不需要安裝 Python。瀏覽器若顯示「這個檔案不常被下載」請按「保留」；Windows 若跳出「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」。想看更新說明可到 [最新版下載頁](https://github.com/siang86121900/mc-zh-tw-translator/releases/latest)。
 
 1. **關閉遊戲**，從下拉清單選擇模組包（會自動列出 CurseForge、Modrinth、Prism、MultiMC、ATLauncher 的模組包和你用過的資料夾）。找不到時可直接貼上路徑，或按「選擇資料夾」。選到模組包裡的 `mods` 之類的資料夾也沒關係，程式會改用模組包本身；選到放了好幾個模組包的外層資料夾，會請你選其中一個。
 2. （選用）勾選：
