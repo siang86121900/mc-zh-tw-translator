@@ -1,25 +1,6 @@
 {
   "packs": [
     {
-      "kind": "full",
-      "name": "Chapter of Yuusha v3.13.15",
-      "packId": "chapter of yuusha",
-      "version": "",
-      "gameVersion": "1.20.1",
-      "loader": "forge-47.4.10",
-      "translator": "MC Translator",
-      "updated": "2026-10-03",
-      "notes": "以勇者冒險為主題的魔法戰鬥整合包（Minecraft 1.20.1 Forge，約 370 個模組）。拔刀劍、鐵魔法、詭厄巫法、災變、天境、TaCZ 槍械與車萬女僕都在裡面，任務書帶你一路打開天境、地獄、終界等各個世界之門，挑戰各地首領。",
-      "recommendedRam": 0,
-      "driveId": "1AMuSwJ2XWO3z0s4EF634PeesEAxTk-MX",
-      "sha256": "34ac24af8d047cd028c4e617f44d172be86235f038bc68288f2e5674c00930be",
-      "size": 256515803,
-      "totalSize": 1345733086,
-      "files": 14148,
-      "mods": 376,
-      "revision": 2
-    },
-    {
       "name": "COBBLEVERSE",
       "projectID": 1210677,
       "fileID": 8488030,
@@ -40,88 +21,6 @@
       "sha256": "222b93b6b81da02aef8f447d2cef6be427f26cfd49dd4ad089bb6252192cd87c",
       "size": 2445958,
       "revision": 2
-    },
-    {
-      "kind": "full",
-      "name": "Elemental Awakening v1.4.6",
-      "packId": "elemental awakening",
-      "version": "",
-      "gameVersion": "1.20.1",
-      "loader": "forge-47.4.10",
-      "translator": "MC Translator",
-      "updated": "2026-10-03",
-      "notes": "以元素魔法與職業為主題的 RPG 整合包（Minecraft 1.20.1 Forge，約 280 個模組）。任務書分元素法師、近戰法師、聖騎士、遊俠等路線，搭配天境、暮色森林、Alex 的洞穴、災變等地區與首領、襲擊挑戰，開局可以選擇難度。",
-      "recommendedRam": 0,
-      "driveId": "1hJgjzG-3AAQNM0O0ZDT3oAeOBHi9wgRk",
-      "sha256": "ace3d9555abc89fe10f7357e970329a5424f64eeda922debbaa40ee137f00d57",
-      "size": 608054303,
-      "totalSize": 1827339711,
-      "files": 8855,
-      "mods": 279,
-      "revision": 3
-    },
-    {
-      "name": "Tensura Neo Otherworld",
-      "projectID": 1478248,
-      "fileID": 8908669,
-      "version": "1.1.1a",
-      "modpackDate": "2026-09-18",
-      "gameVersion": "1.21.1",
-      "translator": "MC Translator",
-      "updated": "2026-10-03",
-      "notes": "以《關於我轉生變成史萊姆這檔事》為主題的魔法冒險整合包。轉生到異世界後選擇種族、學習數百種技能，探索各地、建立自己的城鎮，最終目標是登上魔王之位。收錄超過 200 個模組，並附任務書一步步帶你上手。",
-      "recommendedRam": 12128,
-      "addedMods": [
-        {
-          "name": "IMBlocker",
-          "size": 225648
-        }
-      ],
-      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1478248/8908669-72a49ca2.zip",
-      "sha256": "72a49ca296cbc9c96d1efcc4ec010e73ed9bdd5c2ee53924a82292536518183c",
-      "size": 3543691,
-      "revision": 3
-    },
-    {
-      "kind": "full",
-      "name": "The Foll v0.3.0",
-      "packId": "the foll",
-      "version": "",
-      "gameVersion": "1.20.1",
-      "loader": "forge-47.4.23",
-      "translator": "MC Translator",
-      "updated": "2026-10-03",
-      "notes": "以塔羅與秘聞為主題的魔法冒險整合包（Minecraft 1.20.1 Forge，約 230 個模組）。巫法、血肉、變身、機械等多種流派可以選，搭配詭厄巫法、鐵魔法、災變、暮色森林與 Alex 的洞穴，任務書附模組教學與塔羅儀式章節。",
-      "recommendedRam": 0,
-      "driveId": "1ba1P8CF1uNstR3hQNqowdscqvyeIVB9W",
-      "sha256": "42fa7514df1bc4f3700f2fc296c4e7acd2c3cb830d10111453263ba053b1a7ed",
-      "size": 1016502449,
-      "totalSize": 2017449628,
-      "files": 1312,
-      "mods": 226,
-      "revision": 2
-    },
-    {
-      "name": "The Pixelmon Modpack",
-      "projectID": 389615,
-      "fileID": 8902290,
-      "version": "9.4.1",
-      "modpackDate": "2026-09-17",
-      "gameVersion": "1.21.1",
-      "translator": "MC Translator",
-      "updated": "2026-10-02",
-      "notes": "以寶可夢為主題的官方 Pixelmon 整合包。在 Minecraft 世界裡捕捉、培育超過一千種寶可夢，挑戰道館與對戰，還能收集卡牌。模組不多、容易上手，適合想輕鬆體驗寶可夢冒險的玩家。主選單按鈕是作者畫好的英文圖片，Essential 選單因字型沒有中文字保留英文。需要 MC Translator v0.24.1 以上才能安裝。",
-      "recommendedRam": 0,
-      "addedMods": [
-        {
-          "name": "IMBlocker",
-          "size": 225646
-        }
-      ],
-      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/389615/8902290-e2497cb5.zip",
-      "sha256": "e2497cb5423fbc05b4d98eba9dfff0c7054ae7b3d35d79864e8cb21c9d927a9b",
-      "size": 1051214,
-      "revision": 1
     },
     {
       "kind": "full",
