@@ -93,15 +93,17 @@ class EmbeddedTextTests(unittest.TestCase):
         self.assertEqual([t for _, t in et.units('data/x/advancement/a.json', adv.encode())], ['Gym Challenger'])
 
     def test_a_data_format_without_a_reader_is_listed(self):
-        # English sentences in display fields of data no reader covers (Cobblemon dialogues) are listed in red.
+        # English sentences in display fields of data no reader covers (a mod's own quest board) are listed in red;
+        # Cobblemon dialogues have a reader since v0.30.0 (DATA_KEY_SENTENCES), so they are not.
         from full_translation_audit import Audit
         with tempfile.TemporaryDirectory() as folder:
             audit = Audit(Path(folder) / 'audit', {})
-            files = {'data/cobblemon/dialogues/intro.json': b'{"pages": [{"lines": [{"text": "Welcome to my humble shop"}]}]}',
+            files = {'data/questboard/notices/intro.json': b'{"pages": [{"lines": [{"text": "Welcome to my humble shop"}]}]}',
+                     'data/cobblemon/dialogues/intro.json': b'{"pages": [{"lines": ["Welcome to the Pokemon Center"]}]}',
                      'data/sample/recipe/a.json': b'{"result": {"name": "Not shown to anyone here"}}'}
             audit.unsupported_data('mods/a.jar', set(files), files.__getitem__)
             listed = [r['source'] for r in audit.rows if r['kind'] == 'unsupported_config_text']
-            self.assertEqual(listed, ['mods/a.jar!/data/cobblemon/dialogues/'])
+            self.assertEqual(listed, ['mods/a.jar!/data/questboard/notices/'])
 
     def client(self, answers):
         class Client:

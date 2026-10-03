@@ -426,7 +426,7 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 if file==jobs.DEFAULT_OPTIONS_FILE:continue  # the pack switched on again; installing redoes it
                 if item['after'] is None:continue  # removed by a whole-modpack update; nothing to share
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
-                if file==jobs.DATA_PACK_FILE:
+                if file in jobs.DATA_PACK_FILES:
                     # It holds whole copies of a mod's data files (quests), not only text: never shared.
                     skipped.append((file,'翻譯資料包含有模組任務檔的完整複本，不分享；安裝的人用本程式翻譯一次就會產生'));continue
                 if not allowed_file(file,archive) and not archive and literal_file(file) and item['before']:

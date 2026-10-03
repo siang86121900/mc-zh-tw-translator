@@ -22,6 +22,7 @@ LOOT = re.compile(r'(?:^|/)data/[^/]+/(?:loot_tables?|advancements?|item_modifie
 # What makes such a file show words: an item named or given lore, an advancement with a display.
 LOOT_WORDS = re.compile(r'"(?:minecraft:)?set_(?:name|lore)"|"display"\s*:')
 WORDS = re.compile(r'[A-Za-z]{2}|[\u3400-\u9fff]')
+HAN = re.compile('[\u3400-\u9fff]')
 
 # NBT strings holding a JSON text component: names over entities and blocks, sign lines, item names and lore.
 JSON_FIELDS = {'CustomName', 'Text1', 'Text2', 'Text3', 'Text4', 'messages', 'filtered_messages',
@@ -31,7 +32,8 @@ PLAIN_FIELDS = {'Category', 'author'}
 
 
 def is_file(name):
-    return bool(STRUCTURE.search(name) or FUNCTION.search(name) or LOOT.search(name) or RCT_TRAINER.search(name))
+    return bool(STRUCTURE.search(name) or FUNCTION.search(name) or LOOT.search(name) or RCT_TRAINER.search(name)
+                or FANCYMENU.search(name))
 
 
 # --- JSON text components -------------------------------------------------------------------------------------
@@ -328,6 +330,62 @@ def rewrite_trainer(raw, changes):
     return raw
 
 
+# --- FancyMenu layouts -------------------------------------------------------------------------------------------
+
+# FancyMenu draws a layout's button labels, their hover descriptions and the text of a text element (source_mode =
+# direct) as written in config/fancymenu/customization/*.txt: no language key, whatever the game's language
+# (COBBLEVERSE's "Start a Server"): English is translated, Simplified Chinese converted, both written in place. The
+# config reader leaves these files to this one, so a translated line is the same row on a rerun.
+FANCYMENU = re.compile(r'(?:^|/)config/fancymenu/customization/[^/]+\.txt$', re.I)
+FANCYMENU_FIELDS = {'label', 'hoverlabel', 'hover_label', 'description', 'tooltip', 'text', 'title'}
+FANCYMENU_FILE = re.compile(r'\.(?:png|jpe?g|gif|webp|txt|md|json|ogg|mp4|apng)\b', re.I)
+FANCYMENU_LINE = re.compile(r'^(\s*)([A-Za-z_]+)(\s*=\s*)(.*?)\s*$')
+# What a translation must keep of a FancyMenu text: placeholders ({"placeholder":"loadedmods"}), colour and line
+# codes (%#FF5555%, %#%, %n%), markdown link targets ((click:open_changelogs)) and resource sources ([source:local]).
+FANCYMENU_MARK = re.compile(r'%!![^%]*%[^%]*%!!%|\{"placeholder".*?\}(?:\})*|%#?[0-9A-Fa-f]{0,8}%|%n%|\]\([^)]*\)|\[source:[^\]]*\]')
+
+
+def fancymenu_marks(text):
+    return sorted(FANCYMENU_MARK.findall(text or ''))
+
+
+def fancymenu_units(text):
+    """[(key, text, (start, end))] of the shown words of a FancyMenu layout, keyed by line number. A source is shown
+    text in a text element (source_mode = direct), or Chinese of an older layout; a picture's source never is."""
+    lines = text.splitlines(True); starts = [0]
+    for line in lines: starts.append(starts[-1] + len(line))
+    blocks = []; current = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.endswith('{'): current = []; blocks.append(current); continue
+        if s == '}': current = None; continue
+        m = FANCYMENU_LINE.match(line.rstrip('\r\n'))
+        if m and current is not None: current.append((i, m))
+    found = []
+    for block in blocks:
+        direct = any(m[2] == 'source_mode' and m[4] == 'direct' for _, m in block)
+        for i, m in block:
+            field, value = m[2], m[4]
+            if not (field in FANCYMENU_FIELDS or (field == 'source' and (direct or HAN.search(value)))):continue
+            if value.startswith('[source:') or re.match(r'(?i)https?://', value) or (field == 'source' and FANCYMENU_FILE.search(value)):continue
+            # Words a player reads once the marks are taken out (a version line of placeholders only is not).
+            if not WORDS.search(FANCYMENU_MARK.sub(' ', value)):continue
+            start = starts[i] + m.start(4)
+            found.append((str(i + 1), value, (start, start + len(value))))
+    return found
+
+
+def rewrite_fancymenu(text, changes):
+    units = {key: (value, span) for key, value, span in fancymenu_units(text)}
+    for key, (expected, new) in sorted(changes.items(), key=lambda kv: -units.get(kv[0], (None, (0, 0)))[1][0]):
+        if key not in units or units[key][0] != expected:raise ValueError('FancyMenu 版面的文字已變動，請重新翻譯')
+        if '\n' in new or '\r' in new or fancymenu_marks(new) != fancymenu_marks(expected):
+            raise ValueError('譯文改動了 FancyMenu 的換行、顏色或佔位符')
+        start, end = units[key][1]
+        text = text[:start] + new + text[end:]
+    return text
+
+
 # --- one entry point ---------------------------------------------------------------------------------------------
 
 def units(name, raw):
@@ -336,6 +394,7 @@ def units(name, raw):
     if FUNCTION.search(name):return [(k, t) for k, t, _ in function_units(raw.decode('utf-8-sig'))]
     if LOOT.search(name):return [(k, t) for k, t, _ in loot_units(raw.decode('utf-8-sig'))]
     if RCT_TRAINER.search(name):return [(k, t) for k, t, _ in trainer_units(raw.decode('utf-8-sig'))]
+    if FANCYMENU.search(name):return [(k, t) for k, t, _ in fancymenu_units(raw.decode('utf-8-sig'))]
     return []
 
 
@@ -348,5 +407,6 @@ def rewrite(name, raw, changes):
     if FUNCTION.search(name):out = rewrite_function(text, changes)
     elif LOOT.search(name):out = rewrite_loot(text, changes)
     elif RCT_TRAINER.search(name):out = rewrite_trainer(text, changes)
+    elif FANCYMENU.search(name):out = rewrite_fancymenu(text, changes)
     else:raise ValueError('不支援的檔案：' + name)
     return (b'\xef\xbb\xbf' if bom else b'') + out.encode('utf-8')

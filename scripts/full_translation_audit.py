@@ -12,10 +12,27 @@ HAN=re.compile('[\u3400-\u9fff]'); LATIN=re.compile('[A-Za-z]{3,}')
 # FTB Quests keeps quest text in config/ftbquests/quests/lang/<locale>.snbt (see quest_lang).
 LANG=re.compile(r'^(.*?/lang/)(en_us|zh_tw|zh_cn)\.(json|lang)$|^(.*?/ftbquests/quests/lang/)(en_us|zh_tw|zh_cn)\.(snbt)$',re.I)
 
+def lang_table(text,name=''):
+    """{key: text} of a .lang file. A shader pack's (shaders/lang/en_US.lang) is a Java properties file that Iris and
+    Oculus load with Properties.load: spaces around the = and indented or "!" comments are allowed there
+    (Photon: "profile.low                            = §e低")."""
+    shader=bool(SHADER_LANG.search(name.replace('\\','/')));out={}
+    for line in text.splitlines():
+        s=line.lstrip() if shader else line
+        if '=' not in s or s.startswith('#') or (shader and s.startswith('!')):continue
+        k,v=s.split('=',1)
+        if shader:k,v=k.strip(),v.strip()
+        out[k]=v
+    return out
+
 def lang_parts(m):
     """(folder, language, extension) of a LANG match, whichever of its two forms matched."""
     return (m[1],m[2],m[3]) if m[1] is not None else (m[4],m[5],m[6])
-BOOK=re.compile(r'/(?:patchouli_books|books?|guidebook)/',re.I)
+# codex/: Saint's Dragons' Draconic Codex pages (assets/saintsdragons/codex/<language>/ecology/*.txt), read in the game's
+# language with en_us as the fallback (CodexEcologyPanel asks LanguageManager.getSelected).
+BOOK=re.compile(r'/(?:patchouli_books|books?|guidebook|codex)/',re.I)
+INLINE_ASSETS=re.compile(r'(?:^|/)assets/(?:chronodawn/chronicle|foxablazeaqzl_wiki/wiki)/.+\.json$')
+BESTIARY=re.compile(r'(?:^|/)assets/[^/]+/lang/bestiary/en_us_0/[^/]+\.txt$')
 DISPLAY={'name','Name','text','title','subtitle','description','landing_text','header','customTooltips','displayName','tooltip','label','message','lore','Lore'}
 # Folders of loose files the game reads player text from (mods and other archives are scanned on their own).
 # scripts/ holds CraftTweaker's ZenScript (.zs): tooltips and names written straight into the script.
@@ -25,6 +42,7 @@ LOOSE_FOLDERS=('kubejs','config','defaultconfigs','patchouli_books','datapacks',
 # Little Maid custom packs (LanguageLoader reads assets/<ns>/lang/<code>.json). Only their language files and
 # books are text; their other JSON is game data naming language keys.
 CONTENT_PACK_FOLDERS=('tacz','tlm_custom_pack')
+SHADER_LANG=re.compile(r'(?:^|/)shaders/lang/[^/]+\.lang$',re.I)
 # Top-level folders holding no text the game shows from a file of their own: left out of the unscanned sweep.
 # data/ is what mods write while the game runs (Collective rebuilds data/serilum/translations at every start).
 NOT_PLAYER_TEXT={'mods','saves','data','logs','crash-reports','screenshots','backups','cache','shaderpacks','.mixin.out','natives',
@@ -36,12 +54,20 @@ CC=OpenCC('s2twp')
 def decode(b):
     return b.decode('utf-16' if b.startswith((b'\xff\xfe',b'\xfe\xff')) else 'utf-8-sig')
 
+def mutf8(b):
+    """Text of an NBT string, which Java writes as Modified UTF-8: an emoji is two 3-byte surrogate halves and NUL is
+    C0 80 (Mega Showdown's observatory.nbt failed as UTF-8). A lone half becomes U+FFFD."""
+    try:return b.decode('utf-8')
+    except UnicodeDecodeError:pass
+    s=b.replace(bytes([0xc0,0x80]),bytes([0])).decode('utf-8','surrogatepass')
+    return s.encode('utf-16-le','surrogatepass').decode('utf-16-le','replace')
+
 def parse_binary_nbt(data):
     """Read configuration NBT without changing numeric types or writing it back."""
     if data.startswith(b'\x1f\x8b'):data=gzip.decompress(data)
     f=io.BytesIO(data)
     def number(fmt):return struct.unpack('>'+fmt,f.read(struct.calcsize('>'+fmt)))[0]
-    def string():return f.read(number('H')).decode('utf-8',errors='strict')
+    def string():return mutf8(f.read(number('H')))
     def value(tag):
         if tag in (1,2,3,4,5,6):return number({1:'b',2:'h',3:'i',4:'q',5:'f',6:'d'}[tag])
         if tag==8:return string()
@@ -84,7 +110,7 @@ def rewrite_binary_nbt(data,replacements):
     def value(tag,path):
         if tag in (1,2,3,4,5,6):return take({1:1,2:2,3:4,4:8,5:4,6:8}[tag])
         if tag==8:
-            encoded=string_bytes();old=encoded[2:].decode('utf-8',errors='strict')
+            encoded=string_bytes();old=mutf8(encoded[2:])
             replacement=replacements.get(path)
             if replacement is None:return encoded
             if path in found or old!=replacement[0]:raise ValueError('NBT string changed since scan: '+json.dumps(path,ensure_ascii=False))
@@ -100,7 +126,7 @@ def rewrite_binary_nbt(data,replacements):
             while True:
                 kind=take(1);out+=kind
                 if kind==b'\0':return out
-                name=string_bytes();key=name[2:].decode('utf-8',errors='strict')
+                name=string_bytes();key=mutf8(name[2:])
                 out+=name+value(kind[0],path+(key,))
         if tag in (7,11,12):
             head,count=number('i')
@@ -308,11 +334,46 @@ def leaves(value,path=(),field=''):
         for i,v in enumerate(value):yield from leaves(v,path+(i,),field)
     elif isinstance(value,str):yield path,field,value
 
-# Text a mod reads from data packs and shows as written, with no language key (Whispering Quests 3.2: QuestDataManager
-# and ChapterDataManager are SimpleJsonResourceReloadListeners, QuestScreen draws Component.literal). The game reads
-# the topmost data pack's copy, so the translation is a data pack above the mods (desktop_jobs.DATA_PACK_FILE).
-DATA_TEXT=re.compile(r'(?:^|/)data/[a-z0-9_.\-]+/whisperingquests/(?:tasks|chapters)/.+\.json$')
-DATA_TEXT_FIELDS={'title','short_description','description','text','pool_name','display_name'}
+# Text mods read from data packs and show as written, with no language key, and the fields that hold it. The game reads
+# the topmost data pack's copy, so the translation is a data pack above the mods (desktop_jobs.DATA_PACK_FILE). Each
+# format was checked in the mod's own program (docs/translation-reference.md):
+# - Whispering Quests 3.2: tasks and chapters (QuestDataManager and ChapterDataManager are
+#   SimpleJsonResourceReloadListeners, QuestScreen draws Component.literal).
+# - Slime Throne Extras 2.0.9: st_quests "name", drawn in the prestige screens and the completion message
+#   (stextras.quest.completed with the name as its argument), in the game's own font.
+# - Monster Expansion 0.7.6: quest_data (QuestDataManager) and monsterology (MonsterologyDataManager), drawn by the
+#   guidebook (GuidebookScreen) in the game's own font.
+DATA_TEXT_FORMATS=[(re.compile(r'(?:^|/)data/[a-z0-9_.\-]+/whisperingquests/(?:tasks|chapters)/.+\.json$'),
+                    {'title','short_description','description','text','pool_name','display_name'}),
+                   (re.compile(r'(?:^|/)data/stextras/st_quests/.+\.json$'),{'name'}),
+                   (re.compile(r'(?:^|/)data/monsterexpansion/quest_data/.+\.json$'),{'name','objective','description','display_name'}),
+                   (re.compile(r'(?:^|/)data/monsterexpansion/monsterology/.+\.json$'),{'title','type','lore','fighting_tips'})]
+# Data files whose English sentences the mod hands to Component.translatable as the language key, so an entry keyed by
+# the sentence in the translation resource pack shows the translation (Audit.data_keys):
+# - Pixelmon 9.4.1 NPC presets: open_dialogue "title" and "message", open_paged_dialogue "pages"
+#   (OpenDialogueInteractionResult / OpenPagedDialogueInteractionResult -> DialogueFactory.Builder.title/description,
+#   both Component.translatable).
+# - Cobblemon 1.7.3 dialogues (data/<mod>/dialogues/): a page's "lines" and an option's "text" given as plain strings
+#   (DialogueTextAdapter: a JSON string becomes asTranslated, Component.translatable).
+# - Apotheosis 7.4.3 minibosses: "name", set over the mob as Component.translatable(name) (ApothMiniboss).
+# Text holding % is left out (translatable reads it as a format), and so is a language key or id itself
+# (pixelmon.npc.dialogue.battle.trainer.wild).
+DATA_KEY_SENTENCES=[(re.compile(r'(?:^|/)data/pixelmon/pixelmon/npc/.+\.json$'),{'title','message','pages'}),
+                    (re.compile(r'(?:^|/)data/[a-z0-9_.\-]+/dialogues/.+\.json$'),{'lines','text'}),
+                    (re.compile(r'(?:^|/)data/apotheosis/minibosses/.+\.json$'),{'/name'})]
+
+
+def shown_as_key(text):
+    """Whether a string from DATA_KEY_SENTENCES is words a player reads, not a key or an id."""
+    return bool(re.search(r'[A-Za-z]{2}',text) and not re.fullmatch(r'[a-z0-9_.:\-/]+',text.strip())
+                and '%' not in text and '\n' not in text and not re.search(r'\b(?:q|c|v|t)\.[a-z_]+',text))
+DATA_TEXT=re.compile('|'.join(f'(?:{r.pattern})' for r,_ in DATA_TEXT_FORMATS))
+DATA_TEXT_FIELDS=set().union(*(f for _,f in DATA_TEXT_FORMATS))  # every format's fields (older callers)
+
+
+def data_text_fields(name):
+    """The shown fields of a data file DATA_TEXT_FORMATS covers; empty for other files."""
+    return next((fields for r,fields in DATA_TEXT_FORMATS if r.search('/'+name)),set())
 # Any other data-pack JSON of a mod file: display fields with Chinese are listed as a format not supported yet.
 DATA_JSON=re.compile(r'^data/([a-z0-9_.\-]+)/([a-z0-9_.\-]+)/.+\.json$')
 # Biomes, structures, structure sets and dimensions a mod defines in its data. Their names are language keys made
@@ -347,16 +408,33 @@ def declared_mods(z,names):
             return [i for i in ids if isinstance(i,str) and NAMESPACE.match(i)] if all(isinstance(i,str) for i in ids) else []
     return []
 
-def inline_languages(value,path=()):
+def inline_languages(value,path=(),short=False):
     """(path, {locale: text}) for every object whose keys are all language codes and hold text, with
-    English or Simplified Chinese among them: the same text written in several languages in one file."""
+    English or Simplified Chinese among them: the same text written in several languages in one file.
+    short: two-letter codes count too ({"en": …, "zh": …}, see INLINE_FIELDS)."""
+    code=lambda k:isinstance(k,str) and (LOCALE.match(k) or (short and k in ('en','zh')))
     if isinstance(value,dict):
-        if value and all(isinstance(k,str) and LOCALE.match(k) for k in value) and all(isinstance(v,str) for v in value.values()) \
-                and ('en_us' in value or 'zh_cn' in value):
+        if value and all(code(k) for k in value) and all(isinstance(v,str) for v in value.values())                 and any(k in value for k in (('en_us','zh_cn','en','zh') if short else ('en_us','zh_cn'))):
             yield list(path),value;return
-        for k,v in value.items():yield from inline_languages(v,path+(k,))
+        for k,v in value.items():yield from inline_languages(v,path+(k,),short)
     elif isinstance(value,list):
-        for i,v in enumerate(value):yield from inline_languages(v,path+(i,))
+        for i,v in enumerate(value):yield from inline_languages(v,path+(i,),short)
+
+# Files holding one text in several languages that a mod reads in the game's language, and the field the game shows
+# in Traditional Chinese (desktop_jobs.reads_inline_zh_tw lists where writing is confirmed):
+# - Ponderer scenes and Chrono Dawn's Chronicle look the language code up (zh_tw), falling back to English.
+# - foxablazeaqzl_wiki 1.0.2.5 shows its zh_cn (or zh) text for every Chinese language code (FoxItemWikiData.languageKey:
+#   startsWith "zh" -> zh_cn), so that field itself becomes Taiwan wording.
+INLINE_FIELDS={'config/ponderer/scripts/':('zh_tw',),'assets/chronodawn/chronicle/':('zh_tw',),
+               'assets/foxablazeaqzl_wiki/wiki/':('zh_cn','zh')}
+
+def inline_field(source,node=None):
+    """The field of an inline-language object the game shows for zh_tw (INLINE_FIELDS); zh_tw where unknown."""
+    path=(source or '').split('!/')[-1]
+    for prefix,fields in INLINE_FIELDS.items():
+        if path.startswith(prefix):
+            return next((f for f in fields if isinstance(node,dict) and f in node),fields[0])
+    return 'zh_tw'
 
 def at(value,path):
     try:
@@ -423,9 +501,42 @@ def exclude_tooltip_conflicts(rows):
 SENTENCE_LIKE=re.compile(r"\b[A-Za-z][A-Za-z']{2,} [A-Za-z][A-Za-z']{2,} [A-Za-z][A-Za-z']{2,}")
 # Three English words or more in a row, short ones included ("Welcome to my shop"): words a player reads.
 ENGLISH_WORDS=re.compile(r"\b[A-Za-z][A-Za-z']+(?:[ ,]+[A-Za-z][A-Za-z']*){2,}")
+# Resource files of a mod checked for text no reader covers (Audit.unsupported_assets), and the kinds that hold game
+# data only: models, sounds, shaders, fonts, animations, Minecraft's own texts (splashes: English in every language).
+ASSET_FILE=re.compile(r'^assets/([a-z0-9_.\-]+)/([a-z0-9_.\-]+)/.+\.(?:json|txt|md)$')
+ASSET_MACHINE={'lang','models','blockstates','textures','sounds','shaders','particles','animations','animation','geo',
+               'font','atlases','post_effect','equipment','items','texts','optifine','emissive','skins','gltf','obj',
+               'patchouli_books','books','book','guidebook','codex','lods','waypoints','dimension_effects','tips',
+               # developer notes in animation files, Xaero's example entity icons, FancyMenu's music list, a web tool
+               'attack_animations','spell_animations','player_animations','player_animation','entity','metadata','web',
+               'configs','config','moonlight','load_screens','tlm_custom_pack'}
+# Another language's copy: zh_cn/, _zh_cn/ (AE2 guides), zh_cn_0/, tr-TR.json; en_us is the text to check.
+OTHER_LOCALE_PART=re.compile(r'(?:^|/)_?(?!en[_-]us(?:_\d)?(?:/|\.))[a-z]{2}[_-][a-z]{2}(?:_\d)?(?:/|\.(?:json|txt|md)$)',re.I)
+ASSET_SENTENCE=re.compile(r"\b[A-Za-z][a-z']+(?:[ ,]+[A-Za-z][A-Za-z']*){3,}")
 # Minecraft fills in only %s and %n$s; any other letter (%d, %2$i) makes the game show the whole text as written
 # (TranslatableContents.decomposeTemplate fails and the key itself is shown).
 UNRENDERED=re.compile(r'%(\d+\$)?([A-Za-rt-z])')
+# A JSON text component naming a language key, with or without the text shown when no language file has it:
+# {"translate": "incendium.item.necrotic_shield.desc1", "fallback": "Reacts to attacks with"} in a loot table's lore,
+# {"translate": "Bastion Remnant Map"} as an item name. Either order of the two fields.
+TRANSLATE_REF=re.compile(r'"translate"\s*:\s*"((?:\\.|[^"\\])*)"(?:\s*,\s*"fallback"\s*:\s*"((?:\\.|[^"\\])*)")?'
+                         r'|"fallback"\s*:\s*"((?:\\.|[^"\\])*)"\s*,\s*"translate"\s*:\s*"((?:\\.|[^"\\])*)"')
+DATA_KEY_FILE=re.compile(r'^data/([a-z0-9_.\-]+)/(?!lang/).+\.(?:json|mcfunction)$')
+
+
+def data_key_refs(text):
+    """(key, fallback or None) of every language key a data file's text components name (TRANSLATE_REF)."""
+    def unquote(s):
+        try:return json.loads('"'+s+'"') if s is not None else None
+        except ValueError:return s
+    for m in TRANSLATE_REF.finditer(text):
+        key,fallback=(m[1],m[2]) if m[1] is not None else (m[4],m[3])
+        yield unquote(key),unquote(fallback)
+
+
+def sentence_key(key):
+    """Whether a language key is itself the English the game shows when no file has it ("I LOVE URANIUM")."""
+    return bool(' ' in key.strip() and re.search(r'[A-Za-z]{2}',key) and not re.fullmatch(r'[a-z0-9_.:\-/ ]+\.[a-z0-9_]+',key))
 NAME_KINDS=('block','item','entity','effect','fluid')
 
 def mod_ids(z,names):
@@ -525,11 +636,25 @@ class Audit:
         """Rows for the keys unnamed_keys found that no language file of the modpack has."""
         have={r['key'] for r in self.rows if r['kind']=='language'
               and not r['source'].startswith(('resourcepacks/MCTranslator-zh_tw.zip!/','config/paxi/resourcepacks/'))}
+        # A key a data pack outside mods/ names (datapacks/, OpenLoader folders) is written through a mod file of
+        # the same namespace, else through the first mod file with language files: the resource pack holds language
+        # files of any namespace, and only mod files are recorded as what it translates.
+        jars={}
+        for r in self.rows:
+            m=re.match(r'(mods/[^!]+)!/assets/([a-z0-9_.\-]+)/lang/',r['source'])
+            if m and r['kind']=='language':jars.setdefault(m[2],m[1])
+        first=min(jars.values()) if jars else None
         for source,key,en,cn,extra in self.extra_keys:
             if key in have:continue
+            if extra.get('key_from_data') and not re.match(r'mods/[^!]+!/assets/',source):
+                ns=re.search(r'assets/([a-z0-9_.\-]+)/lang/en_us\.json$',source)[1]
+                host=jars.get(ns,first)
+                if not host:
+                    self.counts['data_keys_without_mod']+=1;continue
+                source=f'{host}!/assets/{ns}/lang/en_us.json'
             have.add(key)
             self.add(source,key,en,None,cn,kind='language')
-            self.rows[-1].update(extra);self.counts['keys_from_program']+=1
+            self.rows[-1].update(extra);self.counts['keys_from_data' if extra.get('key_from_data') else 'keys_from_program']+=1
     def add(self,source,key,en,current,cn=None,kind='language'):
         if not any(isinstance(v,str) and v.strip() for v in (en,current,cn)):return
         row=dict(source=source,key=str(key),en=en,current=current,zh_cn=cn,kind=kind)
@@ -566,7 +691,7 @@ class Audit:
                         self.counts['empty_language_files']+=1
                         return {}
                     if ext=='snbt':return quest_lang.parse(decode(b))
-                    return parse(b) if ext=='json' else dict(s.split('=',1) for s in decode(b).splitlines() if '=' in s and not s.startswith('#'))
+                    return parse(b) if ext=='json' else lang_table(decode(b),langs[lang])
                 en=load('en_us')
                 try:cn=load('zh_cn')
                 except (ValueError,UnicodeError):
@@ -592,6 +717,17 @@ class Audit:
             except Exception as e:self.errors.append([label,langs,str(e)])
         for row in self.rows[first:] if font else ():
             if row['kind']=='language':row['no_chinese_font']=label+'!/'+font
+        for n in sorted(names):
+            # Ice and Fire's bestiary pages: plain text the book reads through the resource manager from
+            # lang/bestiary/<language>_0/, the game's language first, then en_us_0 (BestiaryScreen.writeFromTxt).
+            # A zh_tw_0 page with no English beside it is the translation resource pack's own copy (read on a rerun).
+            if not BESTIARY.search(n) and not (BESTIARY.search(n.replace('/zh_tw_0/','/en_us_0/')) and '/zh_tw_0/' in n
+                                               and n.replace('/zh_tw_0/','/en_us_0/') not in names):continue
+            try:
+                raw=read(n);tw,cn=n.replace('/en_us_0/','/zh_tw_0/'),n.replace('/en_us_0/','/zh_cn_0/')
+                if not decode(raw).strip():continue
+                self.add(label+'!/'+n,'text',decode(raw),decode(read(tw)) if tw in names else None,decode(read(cn)) if cn in names else None,'book')
+            except Exception as e:self.errors.append([label,n,str(e)])
         for n in names:
             if not BOOK.search('/'+n) or not n.endswith(('.json','.txt')):continue
             # Other languages are represented by the corresponding English/TW row.
@@ -626,13 +762,57 @@ class Audit:
         for n in sorted(names):
             if not DATA_TEXT.search('/'+n):continue
             try:
+                fields=data_text_fields(n)
                 for path,field,value in leaves(parse(read(n))):
-                    if field not in DATA_TEXT_FIELDS or not value.strip():continue
+                    if field not in fields or not value.strip():continue
                     # Chinese is what the game shows (converted to Taiwan wording); English needs a translation.
                     if HAN.search(value):self.add(label+'!/'+n,json.dumps(path),None,value,kind='data_text')
                     elif LATIN.search(value):self.add(label+'!/'+n,json.dumps(path),value,None,kind='data_text')
                 self.counts['data_text_files']+=1
             except Exception as e:self.errors.append([label,n,str(e)])
+        self.data_keys(label,names,read)
+        for n in sorted(names):
+            # A mod's book written in several languages in one file ({"en_us": …, "ja_jp": …}), read in the game's
+            # language (desktop_jobs.INLINE_ZH_TW): Chrono Dawn's Chronicle.
+            if not INLINE_ASSETS.search(n):continue
+            try:
+                for path,texts in inline_languages(parse(read(n)),short=True):
+                    shown=inline_field(n,texts)
+                    self.add(label+'!/'+n,json.dumps(path),texts.get('en_us',texts.get('en')),texts.get(shown),
+                             texts.get('zh_cn',texts.get('zh')),kind='inline_lang')
+            except Exception as e:self.errors.append([label,n,str(e)])
+    def data_keys(self,label,names,read):
+        """Language keys a data file's text names (loot table names and lore, advancement titles, tellraw), kept for
+        missing_keys: when no language file of the modpack has the key, the game shows the fallback or the key itself,
+        in English whatever the language (Incendium 5.4.4 ships no language file at all; ATi Structures names loot
+        "Uranium Tipped Arrow" by key). An entry under that key in the translation resource pack shows the
+        translation. Keys with neither a fallback nor English of their own (rechiseled.advancement.….title) give the
+        player nothing to translate and are left out."""
+        for n in sorted(names):
+            # The last data/ of the path is the pack's own (OpenLoader: config/openloader/data/<pack>/data/<mod>/...).
+            m=([x for x in re.finditer(r'(?<![^/])data/([a-z0-9_.\-]+)/',n)] or [None])[-1]
+            if not m or not re.search(r'\.(?:json|mcfunction)$',n) or n[m.end():].startswith('lang/') or '!/' in n:continue
+            sentences=any(r.search('/'+n) for r,_ in DATA_KEY_SENTENCES)
+            try:
+                raw=read(n)
+                if len(raw)>2*1024*1024 or (b'"translate"' not in raw and not sentences):continue
+                text=decode(raw)
+            except Exception:continue
+            where=(label+'!/'+n) if label!='instance' else n
+            source_of=lambda ns:f'{label}!/assets/{ns}/lang/en_us.json' if label!='instance' else f'instance!/assets/{ns}/lang/en_us.json'
+            fields=next((f for r,f in DATA_KEY_SENTENCES if r.search('/'+n)),None)
+            if fields:
+                try:data=parse(raw)
+                except ValueError:data=None
+                for path,field,value in leaves(data) if data is not None else ():
+                    # "/name": only the file's own top-level field (a miniboss's gear has names of its own)
+                    if (field in fields or (len(path)==1 and '/'+field in fields)) and shown_as_key(value):
+                        self.extra_keys.append([source_of(m[1]),value,value,None,dict(key_from_data=where,key_sentence=True)])
+            for key,fallback in data_key_refs(text):
+                if not isinstance(key,str) or not key.strip() or not re.search('[A-Za-z]',key) or '\n' in key:continue
+                en=fallback if isinstance(fallback,str) and fallback.strip() else key if sentence_key(key) else None
+                if en is None:continue
+                self.extra_keys.append([source_of(m[1]),key,en,None,dict(key_from_data=where)])
     def unsupported_data(self,label,names,read):
         """A mod's data-pack JSON whose display fields hold a sentence (Chinese, or three English words or more), in a
         format no reader covers: listed once per folder (data/<mod>/<kind>/) so a whole kind of text (quests,
@@ -642,6 +822,7 @@ class Audit:
         for n in sorted(names):
             m=DATA_JSON.match(n)
             if (not m or DATA_TEXT.search('/'+n) or BOOK.search('/'+n) or embedded_text.is_file('/'+n)
+                    or any(r.search('/'+n) for r,_ in DATA_KEY_SENTENCES)
                     or m[2] in ('lang','patchouli_books','tags','recipe','recipes','worldgen')):continue
             try:
                 raw=read(n)
@@ -654,6 +835,30 @@ class Audit:
             n,value=files[0]
             self.add(label+'!/'+folder,'folder',None,f'{len(files)} 個資料檔含顯示文字，例如 {n}：{value[:200]}',kind='unsupported_config_text')
             self.counts['unsupported_data_text_files']+=len(files)
+    def unsupported_assets(self,label,names,read,first):
+        """A mod's resource files (assets/<mod>/<kind>/) holding sentences that no reader turned into rows (rows from
+        `first` on are this file's): listed once per folder, so a mod's own book, wiki or info page in a format of its
+        own is never silently counted as done (the 2026-10-03 inventory found Ice and Fire's bestiary, Chrono Dawn's
+        Chronicle and a Simplified wiki this way). Kinds that are game data only (models, sounds, fonts...) and other
+        languages' copies are not read."""
+        produced={r['source'].split('!/',1)[-1] for r in self.rows[first:]}
+        found=defaultdict(list)
+        for n in sorted(names):
+            m=ASSET_FILE.match(n)
+            if not m or m[2] in ASSET_MACHINE or n in produced or OTHER_LOCALE_PART.search(n) or NOT_TEXT_FILE.search(n):continue
+            try:
+                raw=read(n)
+                if len(raw)>4*1024*1024:continue
+                text=decode(raw)
+                values=[v for _,f,v in leaves(parse(raw)) if not str(f).startswith('_') and not NOT_TEXT_FIELD.search(str(f))] \
+                       if n.endswith('.json') else text.splitlines()
+            except Exception:continue
+            hit=next((v for v in values if (len(HAN.findall(v))>=2 and not other_language(n)) or ASSET_SENTENCE.search(v)),None)
+            if hit:found[f'assets/{m[1]}/{m[2]}/'].append((n,hit))
+        for folder,files in found.items():
+            n,value=files[0]
+            self.add(label+'!/'+folder,'folder',None,f'{len(files)} 個資源檔含有文字，例如 {n}：{value.strip()[:200]}',kind='unsupported_config_text')
+            self.counts['unsupported_asset_text_files']+=len(files)
     def archive(self,p,label):
         self.counts['archives']+=1
         first_row=len(self.rows)
@@ -664,6 +869,7 @@ class Audit:
                     self.files.append(dict(source=label+'!/'+info.filename,size=info.file_size,crc=info.CRC,kind='class' if info.filename.endswith('.class') else 'resource'))
                 self.collection(label,names,z.read)
                 self.unsupported_data(label,names,z.read)
+                self.unsupported_assets(label,names,z.read,first_row)
                 self.registry_names(label,names)
                 self.nested(z,label,names)
                 screen=False;linked=[];literals=[];compared=set();keys=set();constants_seen=set()
@@ -730,6 +936,9 @@ class Audit:
         for folder in LOOSE_FOLDERS+CONTENT_PACK_FOLDERS:
             paths.extend(p for p in (root/folder).rglob('*') if p.is_file() and p.suffix not in ('.zip','.jar'))
         paths.extend(p for p in (root/'saves').rglob('*') if p.is_file() and 'ftbquests' in str(p).lower())
+        # A shader pack kept as a folder: only its option names (shaders/lang/en_US.lang), which Iris and Oculus look up
+        # in the game's language first (MixinClientLanguage: zh_tw, then en_us; file names are read lower-cased).
+        paths.extend(p for p in (root/'shaderpacks').rglob('*.lang') if p.is_file() and SHADER_LANG.search(p.relative_to(root).as_posix()))
         # A copy of the quests some modpacks keep beside them (The Foll): FTB Quests never reads it.
         unread=[p for p in paths if p.relative_to(root).as_posix().startswith(NOT_READ)]
         self.counts['not_read_by_game']+=len(unread)
@@ -765,6 +974,9 @@ class Audit:
                 continue
             if p.suffix not in ('.js','.zs','.json','.snbt','.toml','.txt','.local','.lang','.cfg','.yaml','.yml','.properties'):continue
             if NOT_TEXT_FILE.search(n):continue  # notes for people (readme, notice), tool caches, IDE files
+            # A FancyMenu layout is read as words shown as written (embedded_text.fancymenu_units, in collection above):
+            # its English labels too, and the same row stays the same on a rerun once it is Chinese.
+            if FANCYMENU.search(n):continue
             try:
                 raw=decode(p.read_bytes())
                 if p.suffix=='.snbt':

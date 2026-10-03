@@ -18,7 +18,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from full_translation_audit import (Audit, parse, parse_binary_nbt, rewrite_binary_nbt, placeholders, at, string_literals,
+from full_translation_audit import (Audit, parse, lang_table, inline_field, parse_binary_nbt, rewrite_binary_nbt, placeholders, at, string_literals,
                                     LOOSE_FOLDERS, CONTENT_PACK_FOLDERS, FANCYMENU, plain_text)
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_free
 from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified, VANILLA_STRUCTURE_NAMES
@@ -49,7 +49,11 @@ QUEST_NAMESPACE = 'ftbquests_quests'
 # Files holding one text in several languages ({"en_us": ..., "zh_cn": ...}) whose mod is confirmed to show
 # the entry of the game's language (zh_tw), falling back to en_us. Checked in the mod before adding a path:
 # Ponderer (com.nododiiiii.ponderer.ponder.LocalizedText reads LanguageManager.getSelected()).
-INLINE_ZH_TW = ('config/ponderer/scripts/',)
+# Chrono Dawn 0.8.0's Chronicle book (assets/chronodawn/chronicle/): LocalizedText.get takes the game's language code
+# (ChronicleScreen.getLanguageCode) with getOrDefault and en_us as the default; the book is read through the resource
+# manager (ChronicleData), so the translation resource pack carries the file with zh_tw added. foxablazeaqzl_wiki
+# 1.0.2.5 reads its wiki through the resource manager too and shows the zh_cn text for zh_tw (inline_field).
+INLINE_ZH_TW = ('config/ponderer/scripts/','assets/chronodawn/chronicle/','assets/foxablazeaqzl_wiki/wiki/')
 INLINE_UNVERIFIED = '並列多種語言的文字：還沒確認這個模組會讀繁中（zh_tw），暫不寫入'
 # Mods that draw their own screens with a font holding no Chinese characters (Audit.own_font_without_chinese, e.g.
 # Essential's fonts/Minecraft-Regular.json: 95 glyphs, U+0020-U+007E): Chinese there shows as □, so their text stays
@@ -57,6 +61,23 @@ INLINE_UNVERIFIED = '並列多種語言的文字：還沒確認這個模組會�
 # Keys a mod's program asks for with a parameter Minecraft cannot fill in (full_translation_audit.renderable).
 FORMAT_FIXED_NOTE = '原文的 {} 遊戲看不懂，英文版也會照原樣顯示；譯文改用 %s 才會顯示數值'
 NO_CHINESE_FONT ='這個模組用自己的字型顯示介面（{}），字型裡沒有中文字，翻成中文會變成方框（□）'
+
+
+# Text the scan lists as a format no reader covers that stays English on purpose, with the reason checked in the mod.
+# Beyond Adventures 1.1.9 draws its quest names (MissionsScreen) and its summon guide (InfoScreen, info_text/text.txt)
+# in its own bitmap fonts (assets/beyond_gacha_c/font/tensura_*.json), which hold Latin letters and digits only.
+KEEP_ENGLISH_FORMATS = [
+    (re.compile(r'!/(?:data/beyond_gacha_c/quests|assets/beyond_gacha_c/info_text)/'),
+     'Beyond Adventures 用自己的像素字型畫任務名稱與說明頁，字型裡只有英文字母，翻成中文會變成方框'),
+]
+
+
+def node_at(value, path):
+    """The object or list at `path` in parsed JSON (at() returns text only); None when it is not there."""
+    try:
+        for k in path:value=value[k]
+        return value
+    except (KeyError,IndexError,TypeError):return None
 
 
 def reads_inline_zh_tw(source):
@@ -323,6 +344,7 @@ def same_format(original, value):
     if shape is not None and json_text_shape(value)!=shape:return False
     words=embedded_text.blank_words(original) if original.lstrip()[:1] in ('[','{') else None
     if words is not None and embedded_text.blank_words(value)!=words:return False  # a whole text component's shape
+    if embedded_text.fancymenu_marks(original)!=embedded_text.fancymenu_marks(value):return False  # FancyMenu's codes
     return (placeholders(original)==placeholders(value)
             and re.findall(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',original)==re.findall(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',value)
             and code_signature(original)==code_signature(value))
@@ -735,6 +757,7 @@ def unsupported_note(session):
     # Only what is surely text: Chinese, or language files. A config line that merely names a field (name = "minecraft")
     # stays in the list below without a red line.
     files=sorted({r['source'] for r in session.get('rows',[]) if r.get('kind')=='unsupported_config_text'
+                  and r.get('origin')!='keep_original'  # checked and kept English on purpose (KEEP_ENGLISH_FORMATS)
                   and (HAN.search(r.get('current') or '') or '/lang/' in r['source'])})
     if not files:return ''
     shown='、'.join(files[:3])+('…' if len(files)>3 else '')
@@ -1355,7 +1378,9 @@ def present_mods(z, depth=0):
 # scan-14: language rows of a mod drawing with its own font without Chinese glyphs are marked (no_chinese_font)
 # scan-18: words data packs show as written (structures, functions, loot tables: embedded_text)
 # scan-17: program text followed through helper methods and fields (JarFlow); keys a mod's program asks for (extra_keys)
-SCAN_CACHE_VERSION = 'scan-18'
+# scan-19: keys data files name (data_keys), FancyMenu English, shader packs, bestiary/codex/inline books, more quest
+#          formats (DATA_TEXT_FORMATS), resource text no reader covers (unsupported_assets)
+SCAN_CACHE_VERSION = 'scan-19'
 
 
 def scan_cache(home, instance):
@@ -1429,7 +1454,8 @@ def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
     audit = Audit(report/'audit',{});audit.cache_hits=0;used=set()
     audit.source_hashes={}
     archives=[]
-    for folder in ('mods','resourcepacks','datapacks','config/openloader',PAXI_PACKS)+CONTENT_PACK_FOLDERS:
+    # shaderpacks/: a shader pack's option names (shaders/lang/*.lang), which Iris and Oculus show in the game's language.
+    for folder in ('mods','resourcepacks','datapacks','config/openloader',PAXI_PACKS,'shaderpacks')+CONTENT_PACK_FOLDERS:
         for p in (instance/folder).rglob('*'):
             if p.suffix.lower() in ('.jar','.zip') and p.is_file() and not generated_copy(p.relative_to(instance).as_posix()):
                 contained(instance,p.relative_to(instance).as_posix())
@@ -1517,12 +1543,12 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     # The translation resource pack written earlier: what the game shows for the mod rows it covers.
     OWN_PACK=RESOURCE_PACK_FILE+'!/';pack_text={}
     for r in audit.rows:
-        if r['source'].startswith(OWN_PACK) and r['kind'] in ('language','book') and isinstance(r['current'],str):
+        if r['source'].startswith(OWN_PACK) and r['kind'] in ('language','book','inline_lang') and isinstance(r['current'],str):
             pack_text[(r['source'][len(OWN_PACK):],r['key'])]=r['current']
     # Data files a mod shows as written (DATA_TEXT): the game reads the copy highest up, OpenLoader's packs above
     # the datapacks folder above the mods; the other copies are not shown. Our data pack is above them all, so its
     # copy is what the game shows, as long as it was built from the original that is there now.
-    OWN_DATA=DATA_PACK_FILE+'!/';data_reader={}
+    OWN_DATA=tuple(f+'!/' for f in DATA_PACK_FILES);data_reader={}
     for r in audit.rows:
         if r['kind']!='data_text' or r['source'].startswith(OWN_DATA):continue
         rank=(0 if 'config/openloader/' in r['source'] else 1 if r['source'].removeprefix('instance!/').startswith('datapacks/') else 2,r['source'])
@@ -1625,7 +1651,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # the screen shows the same key from assets/<mod>/lang/, which is translated there. A zh_tw here is
             # never read, so it is neither a gap nor something to write.
             counts['server_lang']+=1;continue
-        if r['source'].startswith('mods/') and r['kind'] in ('language','book'):
+        if r['source'].startswith('mods/') and r['kind'] in ('language','book','inline_lang'):
             title=book_title(r)  # a book's name or landing text: the pack holds it as a language entry
             shown=pack_text.get(title if title else (pack_resource(target_for(r)[1]),r['key']),r['current'])
             if shown is not None:r=dict(r,current=shown,own_tw=r['current'])
@@ -1734,6 +1760,12 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if r['kind'] not in ('language','book','inline_lang'):
             if r['kind']=='unsupported_config_text':
                 value=r['current'] or ''
+                kept=next((why for pattern,why in KEEP_ENGLISH_FORMATS if pattern.search(r['source'])),None)
+                if kept:
+                    # Checked in the mod's program: Chinese would show as boxes there (see KEEP_ENGLISH_FORMATS).
+                    result['rows'].append(dict(slim(r),proposed=value,origin='keep_original',evidence=kept,issue='無需翻譯：'+kept,
+                                               supported=False,reviewed=False,changed=False))
+                    counts['kept_english_format']+=1;continue
                 result['rows'].append(dict(slim(r),proposed=value,origin='untranslated',
                                            issue='這個設定檔含有可能顯示給玩家的文字，但檔案格式尚未支援；已列出避免漏掉，暫不修改',
                                            supported=False,reviewed=False,changed=False))
@@ -1927,7 +1959,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # Parameters, key names and similar strings stay as-is; they are neither gaps nor AI work.
             origin='keep_original';evidence=reason;issue=''
             if r['en'] is None and r['current'] is None:issue='無需翻譯：'+evidence  # no en_us fallback in game
-        supported=r['kind']=='language' or ('/en_us/' in r['source'] or '/zh_tw/' in r['source']) or bool(book_title(r))
+        supported=r['kind']=='language' or bool(re.search(r'/(?:en_us|zh_tw)(?:_0)?/',r['source'])) or bool(book_title(r))
         if r['kind']=='inline_lang':
             supported=reads_inline_zh_tw(r['source'])
             if not supported:issue=INLINE_UNVERIFIED  # written only where the mod is known to read zh_tw
@@ -2315,7 +2347,7 @@ def check_shown(instance, rows):
             if raw is None:data=None
             elif name.endswith('.snbt'):data=quest_file(raw)
             elif name.endswith('.json'):data=parse(raw)
-            elif name.endswith('.lang'):data=dict(l.split('=',1) for l in raw.decode('utf-8-sig').splitlines() if '=' in l and not l.startswith('#'))
+            elif name.endswith('.lang'):data=lang_table(raw.decode('utf-8-sig'),name)
             else:data=raw.decode('utf-8-sig')
         except (ValueError,UnicodeError):data=None
         files[where]=data;return data
@@ -2382,7 +2414,8 @@ def check_shown(instance, rows):
         elif not isinstance(data,dict):text=None
         elif title:text=data.get(title[1])
         elif r.get('kind')=='book':text=data if r['key']=='text' else at(data,json.loads(r['key']))
-        elif r.get('kind')=='inline_lang':text=at(data,json.loads(r['key'])+['zh_tw'])
+        elif r.get('kind')=='inline_lang':
+            node=node_at(data,json.loads(r['key']));text=node.get(inline_field(r['source'],node)) if isinstance(node,dict) else None
         else:text=data.get(r['key'])
         r['shown']=text==r['proposed'];r.pop('shown_other',None)
         if where is None:missing+=not r['shown']
@@ -2474,7 +2507,7 @@ def target_for(row):
     if row.get('kind','language')=='language':  # reports from early versions had language rows only
         path=re.sub(r'/(?:en_us|zh_cn|zh_tw)\.(json|lang|snbt)$',r'/zh_tw.\1',path,flags=re.I)
     else:
-        path=re.sub('/en_us/','/zh_tw/',path,flags=re.I)
+        path=re.sub(r'/en_us(_0)?/',r'/zh_tw\1/',path,flags=re.I)  # _0: Ice and Fire's bestiary (lang/bestiary/en_us_0/)
     if outer=='instance':return path,None
     return outer,path
 
@@ -2815,42 +2848,61 @@ def book_title(row):
 # OpenLoader 19.0.5 (Forge 1.20.1, checked in its OpenLoaderRepositorySource) adds every pack in config/openloader/data
 # as required, at Pack.Position.TOP and to existing worlds too; packs are ordered by name, so ours is named to come
 # last, above the modpack's own OpenLoader packs. The mod files stay untouched, so CurseForge has nothing to put back.
+# OpenLoader 21.1.5 (NeoForge 1.21.1, Tensura) reads config/openloader/packs instead (OpenLoaderRepositorySource:
+# "openloader/packs", a pack with data/ is a data pack, PackSelectionConfig(required, TOP)), and load_data_packs in
+# config/openloader/options.json switches it off; data_pack_file picks the folder the installed OpenLoader reads.
 DATA_PACK_FILE = 'config/openloader/data/zz-MCTranslator-zh_tw.zip'
+DATA_PACK_FILE_21 = 'config/openloader/packs/zz-MCTranslator-zh_tw.zip'
+DATA_PACK_FILES = (DATA_PACK_FILE, DATA_PACK_FILE_21)
 DATA_PACK_FORMATS = [((1,13),4),((1,15),5),((1,16,2),6),((1,17),7),((1,18),8),((1,18,2),9),((1,19),10),((1,19,4),12),
                      ((1,20),15),((1,20,2),18),((1,20,3),26),((1,20,5),41),((1,21),48),((1,21,2),57),((1,21,4),61),
                      ((1,21,5),71),((1,21,6),80),((1,21,7),81)]
-DATA_RESOURCE = re.compile(r'(?:^|/)(data/[a-z0-9_.\-]+/whisperingquests/.+\.json)$')
 HELD_NO_DATAPACK = ('在模組的資料檔裡，只能用資料包蓋過；這個整合包沒有讓每個世界自動讀取資料包的 OpenLoader，'
                     '所以沒有寫入')
 WRITTEN_ROUTES = ('pack','file','datapack')
 
 
 def data_resource(row):
-    """Where a data_text row's file is in a data pack (data/<mod>/whisperingquests/...json), else ''."""
-    m=DATA_RESOURCE.search((row.get('source') or '').split('!/')[-1])
-    return m[1] if m and row.get('kind')=='data_text' else ''
+    """Where a data_text row's file is in a data pack (data/<mod>/<kind>/...json), else ''. The last data/ folder of
+    the path counts: OpenLoader keeps a pack as config/openloader/data/<pack>/data/<mod>/..."""
+    if row.get('kind')!='data_text':return ''
+    parts=(row.get('source') or '').split('!/')[-1].split('/')
+    starts=[i for i,p in enumerate(parts) if p=='data' and len(parts)-i>=4]
+    return '/'.join(parts[starts[-1]:]) if starts and parts[-1].endswith('.json') else ''
+
+
+def data_pack_file(instance):
+    """The translation data pack's place for the OpenLoader installed: config/openloader/data (OpenLoader 19) or,
+    where only config/openloader/packs exists, that folder (OpenLoader 21); see DATA_PACK_FILE."""
+    instance=Path(instance)
+    if not (instance/'config/openloader/data').is_dir() and (instance/'config/openloader/packs').is_dir():return DATA_PACK_FILE_21
+    return DATA_PACK_FILE
 
 
 def reads_data_packs(instance):
-    """Whether OpenLoader loads data packs from config/openloader/data for every world (see DATA_PACK_FILE)."""
+    """Whether OpenLoader loads data packs from the folder data_pack_file names, for every world."""
     instance=Path(instance)
     try:
         options=json.loads((instance/'config/openloader/advanced_options.json').read_text(encoding='utf-8-sig'))
         enabled=options.get('dataPacks',{}).get('enabled',True) is not False
     except (OSError,ValueError,AttributeError):enabled=True
+    try:  # OpenLoader 21: {"load_data_packs": {"value": false}} switches data packs off
+        newer=json.loads((instance/'config/openloader/options.json').read_text(encoding='utf-8-sig'))
+        enabled=enabled and (newer.get('load_data_packs') or {}).get('value',True) is not False
+    except (OSError,ValueError,AttributeError):pass
     try:loader=any(p.name.casefold().startswith('openloader') for p in (instance/'mods').glob('*.jar'))
     except OSError:loader=False
-    return enabled and loader and (instance/'config/openloader/data').is_dir()
+    return enabled and loader and (instance/data_pack_file(instance)).parent.is_dir()
 
 
 def read_data_pack(instance):
     """(files, records) of the translation data pack this program made earlier; empty when there is none.
     records: {resource: {source, sha256 of the original file, texts: {key: [original, translation]}}}."""
-    path=Path(instance)/DATA_PACK_FILE
+    path=Path(instance)/data_pack_file(instance)
     if not path.is_file():return {},{}
     try:
         with zipfile.ZipFile(path) as z:
-            files={n:z.read(n) for n in z.namelist() if DATA_RESOURCE.fullmatch(n)}
+            files={n:z.read(n) for n in z.namelist() if re.fullmatch(r'data/[a-z0-9_.\-]+/.+\.json',n)}
             records=json.loads(z.read(PACK_SOURCES).decode('utf-8')).get('files',{}) if PACK_SOURCES in z.namelist() else {}
     except (OSError,ValueError,zipfile.BadZipFile):return {},{}
     return files,(records if isinstance(records,dict) else {})
@@ -2900,14 +2952,15 @@ def build_data_pack(instance, home, staged, rows):
         for key,(_,text) in texts.items():set_at(base,json.loads(key),text)
         built[resource]=json.dumps(base,ensure_ascii=False,indent=2).encode('utf-8')
         kept[resource]=dict(source=source,sha256=hashlib.sha256(raw).hexdigest(),texts=dict(sorted(texts.items())))
-    src=Path(instance)/DATA_PACK_FILE;before=file_hash(src) if src.exists() else None
+    pack_file=data_pack_file(instance)
+    src=Path(instance)/pack_file;before=file_hash(src) if src.exists() else None
     if not built:
-        return [dict(file=DATA_PACK_FILE,before=before,after=None,reviewed=True,verified=True)] if before else []
+        return [dict(file=pack_file,before=before,after=None,reviewed=True,verified=True)] if before else []
     from .desktop_references import minecraft_version
     fmt=pack_format(minecraft_version(instance),DATA_PACK_FORMATS,15)
     meta=dict(pack_format=fmt,description='MC Translator 繁體中文翻譯（自動產生，只改任務等文字）')
     if fmt>=18:meta['supported_formats']=dict(min_inclusive=fmt,max_inclusive=fmt)
-    dst=contained(staged,DATA_PACK_FILE);dst.parent.mkdir(parents=True,exist_ok=True)
+    dst=contained(staged,pack_file);dst.parent.mkdir(parents=True,exist_ok=True)
     stamp=(2020,1,1,0,0,0)
     with zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED) as w:
         def put(name,data):w.writestr(zipfile.ZipInfo(name,stamp),data,zipfile.ZIP_DEFLATED)
@@ -2917,7 +2970,7 @@ def build_data_pack(instance, home, staged, rows):
     after=file_hash(dst)
     if before==after:
         dst.unlink();return []
-    return [dict(file=DATA_PACK_FILE,before=before,after=after,reviewed=True,verified=True)]
+    return [dict(file=pack_file,before=before,after=after,reviewed=True,verified=True)]
 
 
 def write_route(row, curseforge):
@@ -2990,9 +3043,11 @@ def build_pack(instance, staged, pack_rows, session, notify):
             data=parse(read_archive_entry(instance,outer,first['source'].split('!/',1)[1]))  # English structure
         if previous:
             before=parse(previous) if resource.endswith('.json') else dict(l.split('=',1) for l in previous.decode('utf-8-sig').splitlines() if '=' in l)
-            data=before if first['kind']=='book' else {**data,**before}
+            data=before if first['kind'] in ('book','inline_lang') else {**data,**before}
         for r in rows:
             if r['kind']=='language':data[r['key']]=r['proposed'];continue
+            if r['kind']=='inline_lang':
+                node=node_at(data,json.loads(r['key']));node[inline_field(r['source'],node)]=r['proposed'];continue  # beside en_us
             if r.get('tooltip_key'):data[r['tooltip_key']]=r['tooltip_text'];continue  # a config comment, see tooltip_texts
             keys=json.loads(r['key']);node=data
             for key in keys[:-1]:node=node[key]
@@ -3318,7 +3373,7 @@ def stage_and_apply(session, home, notify, work):
                 else:
                     try:
                         data=(quest_file(raw) if name.endswith('.snbt') else parse(raw) if raw and name.endswith('.json')
-                              else dict(line.split('=',1) for line in raw.decode('utf-8-sig').splitlines() if '=' in line and not line.startswith('#')) if raw else {})
+                              else lang_table(raw.decode('utf-8-sig'),name) if raw else {})
                     except ValueError:
                         # Only zh_tw files the scan already recorded as unreadable may be rebuilt.
                         if not any(l==path and n==name or entry is None and path.endswith(n) for l,n,*_ in session.get('repairs',[])):raise
@@ -3339,8 +3394,9 @@ def stage_and_apply(session, home, notify, work):
                         elif r['kind']=='inline_lang':
                             node=data
                             for key in json.loads(r['key']):node=node[key]
-                            if node.get('zh_tw')!=r['current']:raise changed_since_scan(home,instance,path)
-                            node['zh_tw']=r['proposed']
+                            field=inline_field(r['source'],node)
+                            if node.get(field)!=r['current']:raise changed_since_scan(home,instance,path)
+                            node[field]=r['proposed']
                         else:
                             keys=json.loads(r['key']);node=data
                             for key in keys[:-1]:node=node[key]
