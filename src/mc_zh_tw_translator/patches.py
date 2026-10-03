@@ -515,7 +515,7 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
             manifest['source_hash_aliases']={u['source_after']:h for u in units for h in u['requires'].values() if u['source_after']!=h}
             manifest['sharing_status']='partial' if manifest['skipped'] else 'ready'
             manifest['save_note']=shared_text.SAVE_NOTE
-            manifest['minimum_app_version']='0.32.0'
+            manifest['minimum_app_version']='0.32.1'  # a name read back as one coloured piece counts as shown from 0.32.1
             w.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
             w.writestr('授權與來源.txt',ATTRIBUTION)
             # Per-string sources (AI, converted, reference), so the receiver's report keeps the same labels.
@@ -647,6 +647,10 @@ def plan_patch(instance: Path, z, manifest, local_versions=None):
                 index=mods_by_hash(instance)
                 for path,pair in (local_versions or {}).items():
                     if pair['after'] in index:index.setdefault(pair['before'],index[pair['after']])
+                # A mod byte-identical to the translator's translated copy (the translator's own computer, or a
+                # reinstall) came from the same original, so it stands for that original.
+                for m in manifest.get('required_mods') or []:
+                    if isinstance(m,dict) and m.get('after') in index and m.get('before'):index.setdefault(m['before'],index[m['after']])
             # A mod file counts when any file in the receiver's mods folder has its exact SHA-256 (renamed copies too).
             use=[name for name,mods in item['requires'].items() if all(h in index for h in mods.values())]
             item['use']=use

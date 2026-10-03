@@ -2413,7 +2413,7 @@ def check_shown(instance, rows):
                     raw=read_archive_entry(instance,path,entry) if entry else contained(instance,path).read_bytes()
                     files[where]=dict(embedded_text.units(entry or path,raw)) if raw is not None else {}
                 except (OSError,ValueError,KeyError,zipfile.BadZipFile):files[where]={}
-            r['shown']=files[where].get(r['key'])==r['proposed'];missing+=not r['shown'];continue
+            r['shown']=embedded_text.reads_as(files[where].get(r['key']),r['proposed']);missing+=not r['shown'];continue
         if r.get('kind')=='data_text':
             # Shown when the translation data pack holds it and OpenLoader loads that pack (see DATA_PACK_FILE).
             if 'datapack' not in files:files['datapack']=read_data_pack(instance)[0] if reads_data_packs(instance) else {}

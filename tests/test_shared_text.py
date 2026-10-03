@@ -74,6 +74,37 @@ class SharedTextTests(unittest.TestCase):
         jobs.restore_backup(Path(done['backup']),self.friend)
         self.assertEqual({p.relative_to(self.friend).as_posix():p.read_bytes() for p in self.friend.rglob('*') if p.is_file()},before)
 
+    def test_translator_installing_own_patch_writes_nothing_and_matches(self,_):
+        # COBBLEVERSE 2026-10-04: the translator installed the published patch on the same computer; files already
+        # translated were called "a different version" and the card said the content did not match.
+        self.translate();out=patches.export_patch(self.sender,self.home)
+        before={p.relative_to(self.sender).as_posix():p.read_bytes() for p in self.sender.rglob('*') if p.is_file()}
+        done=patches.apply_patch(self.sender,Path(out['path']),self.home,set_language=True)
+        self.assertEqual(done['consistency'],'matched',done)
+        self.assertFalse(done['applied']);self.assertFalse(done['skipped']);self.assertIsNone(done['backup'])
+        self.assertEqual({p.relative_to(self.sender).as_posix():p.read_bytes() for p in self.sender.rglob('*') if p.is_file()},before)
+
+    def test_name_whose_translation_leaves_one_coloured_piece_is_shared(self,_):
+        # COBBLEVERSE bell_tower: "Guardian of the " + "Skies" in two colours became "天空的守護者" + "". The file
+        # then reads as one piece; it was taken for "not shown" and left out of the patch.
+        name='{"extra":[{"color":"gold","text":"Guardian of the "},{"color":"yellow","text":"Skies"}],"text":""}'
+        chinese='{"extra":[{"color":"gold","text":"天空的守護者"},{"color":"yellow","text":""}],"text":""}'
+        for root in (self.sender,self.friend):
+            with zipfile.ZipFile(root/'datapacks/world.zip','w') as z:
+                z.writestr('pack.mcmeta','{"pack":{"pack_format":15,"description":"fixture"}}')
+                z.writestr('data/demo/structures/shop.nbt',embedded_fixture.nbt({'entities':[{'nbt':{'CustomName':name}}]}))
+        session=jobs.plan(self.sender,self.home,lambda *_:None,references=([{},{}],{'fixture':True}))
+        row=next(r for r in session['rows'] if r['kind']=='embedded_text' and jobs.original_of(r)==name)
+        row.update(proposed=chinese,origin='ai_translation',changed=True,reviewed=True)
+        jobs.apply_session(session,self.home,lambda *_:None)
+        out=patches.export_patch(self.sender,self.home)
+        z,m=patches.read_patch(Path(out['path']));z.close()
+        self.assertFalse(m['text_omissions'],m['text_omissions'])
+        self.assertTrue(any(u['text']==chinese for u in m['text_units']))
+        done=patches.apply_patch(self.friend,Path(out['path']),self.friend_home)
+        self.assertFalse(done['readback_mismatch']);self.assertFalse(done['sender_text_omissions'])
+        self.assertEqual((self.sender/'datapacks/world.zip').read_bytes(),(self.friend/'datapacks/world.zip').read_bytes())
+
     def test_missing_module_and_changed_original_are_reported_as_partial(self,_):
         self.translate();out=patches.export_patch(self.sender,self.home)
         (self.friend/'mods/demo.jar').unlink()
@@ -173,6 +204,9 @@ class SharedTextTests(unittest.TestCase):
         self.assertEqual(jar.read_bytes(),(self.friend/'mods/help.jar').read_bytes())
         again=patches.apply_patch(self.friend,Path(out['path']),self.friend_home,set_language=True)
         self.assertFalse(again['applied'],again)
+        # The translator's own jar is already translated: same result, nothing written, nothing called different.
+        own=patches.apply_patch(self.sender,Path(out['path']),self.home,set_language=True)
+        self.assertEqual(own['consistency'],'matched',own);self.assertFalse(own['applied'],own)
         jobs.restore_backup(Path(done['backup']),self.friend)
         self.assertEqual((self.friend/'mods/help.jar').read_bytes(),original)
         (self.friend/'minecraftinstance.json').write_text(json.dumps({'installedAddons':[{'installedFile':{'fileName':'help.jar'}}]}),encoding='utf-8')

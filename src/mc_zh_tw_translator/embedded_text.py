@@ -118,6 +118,16 @@ def component_unit(raw):
     return raw, ('whole', None)
 
 
+def reads_as(found, written):
+    """Whether the unit read back from a file (`found`) is the translation `written` there. A whole component
+    whose translation leaves words in one piece only (["天空的守護者", ""] for ["Guardian of the ", "Skies"]) is
+    read back as that one piece."""
+    if found is None:return False
+    if found == written:return True
+    unit = component_unit(written) if isinstance(written, str) else None
+    return bool(unit) and unit[1][0] == 'piece' and unit[0] == found
+
+
 def put_component(raw, how, text):
     """`raw` with the unit's words replaced by `text` (a piece, or a whole component of the same shape)."""
     spans = text_spans(raw)

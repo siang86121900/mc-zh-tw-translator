@@ -145,6 +145,12 @@ def prepare(instance, home, units, notify, work, cancelled, pack_base=None):
         why=''
         original_match=hashes[source]==u['requires'][source] or versions.get(source,{}).get('before')==u['requires'][source]
         after_match=hashes[source]==u['source_after'] and row and row.get('current')==u['text']
+        if hashes[source]==u['source_after'] and not original_match and (row or u['kind'] in ('class_display','embedded_text')):
+            # The translator's translated file (the translator's own computer, or the patch installed before),
+            # where a rescan may list no row for text already in Chinese. A claimed hash proves nothing by itself:
+            # it counts only when the words read back from that place are the translation.
+            candidate=dict(row or {},source=u['source'],key=u['key'],kind=u['kind'],proposed=u['text'])
+            already_candidates.append((u,candidate));continue
         if not original_match and not after_match:why='原檔版本和分享者不同'
         elif not row or not row.get('supported') or row.get('unverified') or row.get('literal'):why='本機無法證明這個文字位置可安全改寫'
         elif jobs.write_route(row,curseforge) not in jobs.WRITTEN_ROUTES:why='本機啟動器或資料包載入方式不允許寫入'
