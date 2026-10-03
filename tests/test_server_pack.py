@@ -89,8 +89,8 @@ class LoaderTests(unittest.TestCase):
 
     def test_unsupported_loaders_are_named(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaisesRegex(ValueError, 'Fabric'):
-                sp.loader_of(make_instance(Path(tmp), 'fabric-0.16.0'))
+            with self.assertRaisesRegex(ValueError, 'Quilt'):
+                sp.loader_of(make_instance(Path(tmp), 'quilt-0.26.0'))
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(ValueError, '1.16.5'):
                 sp.loader_of(make_instance(Path(tmp), 'forge-36.2.39', '1.16.5'))
@@ -184,7 +184,7 @@ class FakeStarts:
                     stop_hung=text == 'ok-hung')
 
 
-def fake_install(server, installer, java, notify, cancelled):
+def fake_install(server, installer, java, notify, cancelled, loader=None):
     args = server/'libraries/net/neoforged/neoforge/21.1.244/win_args.txt'
     args.parent.mkdir(parents=True); args.write_text('-cp x', encoding='utf-8')
 
@@ -448,6 +448,176 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(stop.isHidden())
         window.finish_worker()
         self.assertTrue(card.isHidden()); self.assertTrue(stop.isHidden()); self.assertIsNone(window.active_card)
+
+
+def fabric_jar(path, mod, environment='*', provides=(), bundled=()):
+    with zipfile.ZipFile(path, 'w') as z:
+        z.writestr('fabric.mod.json', json.dumps({'schemaVersion': 1, 'id': mod, 'environment': environment, 'provides': list(provides)}))
+        for inner in bundled:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, 'w') as nested:
+                nested.writestr('fabric.mod.json', json.dumps({'schemaVersion': 1, 'id': inner}))
+            z.writestr(f'META-INF/jars/{inner}.jar', buf.getvalue())
+
+
+def make_fabric(root):
+    instance = make_instance(root, 'fabric-0.18.4')
+    for p in (instance/'mods').glob('*.jar'):
+        p.unlink()
+    fabric_jar(instance/'mods/cobblemon.jar', 'cobblemon')
+    fabric_jar(instance/'mods/fabric-api.jar', 'fabric-api', bundled=('fabric-api-base', 'fabric-key-binding-api-v1'))
+    fabric_jar(instance/'mods/sodium.jar', 'sodium', environment='client')
+    fabric_jar(instance/'mods/menu.jar', 'fancymenu')
+    fabric_jar(instance/'mods/konkrete.jar', 'konkrete')
+    return instance
+
+
+FABRIC_ENTRY_CLIENT = """[16:12:01] [main/ERROR]: Failed to start the minecraft server
+java.lang.RuntimeException: Could not execute entrypoint stage 'main' due to errors, provided by 'konkrete' at 'de.keksuccino.konkrete.Konkrete'!
+\tat net.fabricmc.loader.impl.FabricLoaderImpl.lambda$invokeEntrypoints$2(FabricLoaderImpl.java:403) ~[fabric-loader-0.18.4.jar:?]
+Caused by: java.lang.NoClassDefFoundError: net/minecraft/class_437
+\tat de.keksuccino.konkrete.Konkrete.onInitialize(Konkrete.java:20) ~[konkrete.jar:?]
+Caused by: java.lang.ClassNotFoundException: net.minecraft.class_437
+"""
+FABRIC_REQUIRES = """[16:11:40] [main/ERROR]: Incompatible mods found!
+net.fabricmc.loader.impl.FormattedException: Some of your mods are incompatible with the game or each other!
+A potential solution has been determined, this may resolve your problem:
+\t - Install konkrete, any version.
+More details:
+\t - Mod 'FancyMenu' (fancymenu) 3.2.0 requires any version of konkrete, which is missing!
+"""
+FABRIC_REQUIRES_ZH = """[16:13:14] [main/WARN]: Mod resolution failed
+[16:13:14] [main/INFO]: Immediate reason: [HARD_DEP_NO_CANDIDATE controlling 19.0.5 {depends searchables @ [>=1.0.1]}, ROOT_FORCELOAD_SINGLE controlling 19.0.5]
+[16:13:14] [main/INFO]: Reason: [HARD_DEP controlling 19.0.5 {depends searchables @ [>=1.0.1]}, HARD_DEP c2me-opts-natives-math 0.4.0-alpha.0.23+1.21.1 {depends java @ [>=25]}]
+[16:13:14] [main/ERROR]: Incompatible mods found!
+net.fabricmc.loader.impl.FormattedException: Some of your mods are incompatible with the game or each other!
+\t - 模組 'Controlling' (controlling) 19.0.5 需要 版本 1.0.1 以上（含） searchables，但該版本缺失！
+"""
+# COBBLEVERSE with Sodium's "client" label removed (2026-10-03).
+FABRIC_SODIUM = """[16:16:34] [main/WARN]: Error loading class: org/quiltmc/loader/api/plugin/ModContainerExt (java.lang.ClassNotFoundException: org/quiltmc/loader/api/plugin/ModContainerExt)
+[16:16:34] [main/ERROR]: A mod crashed on startup!
+net.fabricmc.loader.impl.FormattedException: java.lang.RuntimeException: Could not execute entrypoint stage 'preLaunch' due to errors, provided by 'sodium' at 'net.caffeinemc.mods.sodium.fabric.SodiumPreLaunch'!
+\tat net.fabricmc.loader.impl.FormattedException.ofLocalized(FormattedException.java:63) ~[fabric-loader-0.18.4.jar:?]
+Caused by: java.lang.RuntimeException: Could not execute entrypoint stage 'preLaunch' due to errors, provided by 'sodium' at 'net.caffeinemc.mods.sodium.fabric.SodiumPreLaunch'!
+\tat net.fabricmc.loader.impl.FabricLoaderImpl.lambda$invokeEntrypoints$0(FabricLoaderImpl.java:409) ~[fabric-loader-0.18.4.jar:?]
+\t... 3 more
+Caused by: java.lang.NoClassDefFoundError: org/lwjgl/Version
+\tat knot/net.caffeinemc.mods.sodium.client.compatibility.checks.PreLaunchChecks.isUsingKnownCompatibleLwjglVersion(PreLaunchChecks.java:136) ~[sodium.jar:?]
+Caused by: java.lang.ClassNotFoundException: org.lwjgl.Version
+"""
+# Logged by every Fabric start of COBBLEVERSE, also the ones that work.
+FABRIC_WARNINGS = """[16:13:52] [main/WARN]: Error loading class: net/minecraft/class_906 (java.lang.ClassNotFoundException: net/minecraft/class_906)
+[16:13:52] [main/WARN]: @Mixin target net.minecraft.class_906 was not found porting_lib_item_abilities.mixins.json:FishingHookRendererMixin from mod porting_lib_item_abilities
+"""
+FABRIC_PORT = """[16:14:28] [Server thread/WARN]: **** FAILED TO BIND TO PORT!
+[16:14:28] [Server thread/ERROR]: Encountered an unexpected exception
+java.lang.IllegalStateException: Failed to initialize server
+\tat knot/net.minecraft.server.MinecraftServer.runServer(MinecraftServer.java:716) ~[server-intermediary.jar:?]
+[16:14:29] [Server thread/ERROR]: Exception stopping the server
+java.lang.NullPointerException: Cannot invoke "net.minecraft.server.PlayerManager.getPlayerList()"
+\tat knot/com.cobblemon.mod.fabric.CobblemonFabric.initialize$lambda$10(CobblemonFabric.kt:166) ~[Cobblemon-fabric-1.7.3+1.21.1.jar:?]
+"""
+FABRIC_ENTRY_ERROR = """java.lang.RuntimeException: Could not execute entrypoint stage 'main' due to errors, provided by 'cobblemon' at 'x'!
+Caused by: java.lang.IllegalStateException: Duplicate registration
+"""
+
+
+class FabricTests(unittest.TestCase):
+    def test_loader_from_manifest_and_from_curseforge_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            loader = sp.loader_of(make_fabric(Path(tmp)))
+        self.assertEqual(loader, dict(kind='fabric', version='0.18.4', mc='1.21.1'))
+        with tempfile.TemporaryDirectory() as tmp:
+            # COBBLEVERSE's minecraftinstance.json alone: fabric-<loader>-<Minecraft>.
+            instance = Path(tmp)
+            (instance/'minecraftinstance.json').write_text(json.dumps({'baseModLoader': {'name': 'fabric-0.18.4-1.21.1'}}), encoding='utf-8')
+            self.assertEqual(sp.loader_of(instance), dict(kind='fabric', version='0.18.4', mc='1.21.1'))
+        self.assertEqual(sp.installer_url(dict(kind='fabric', version='0.18.4', mc='1.21.1', installer='1.1.2')),
+                         'https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.1.2/fabric-installer-1.1.2.jar')
+
+    def test_fabric_ids_bundled_modules_and_client_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mods = make_fabric(Path(tmp))/'mods'
+            index = sp.mod_ids(mods)
+            self.assertEqual(index['fabric-api-base'], 'fabric-api.jar')
+            self.assertEqual(index['konkrete'], 'konkrete.jar')
+            self.assertEqual(sp.declared_client_only(mods), ['sodium.jar'])
+
+    def test_fabric_crashes(self):
+        index = {'konkrete': 'konkrete.jar', 'fancymenu': 'menu.jar', 'cobblemon': 'cobblemon.jar'}
+        present = set(index.values())
+        found = sp.fabric_culprits(FABRIC_ENTRY_CLIENT, index, present)
+        self.assertEqual([(x['file'], x['kind']) for x in found], [('konkrete.jar', 'client')])
+        req = sp.fabric_culprits(FABRIC_REQUIRES, index, present)
+        self.assertEqual([(x['file'], x['kind'], x['needs']) for x in req], [('menu.jar', 'requires', 'konkrete')])
+        err = sp.fabric_culprits(FABRIC_ENTRY_ERROR, index, present)
+        self.assertEqual([(x['file'], x['kind']) for x in err], [('cobblemon.jar', 'error')])
+        # No mod named: the first mod jar under the missing class; the loader's own jar is not a mod.
+        bare = FABRIC_WARNINGS+'java.lang.NoClassDefFoundError: net/minecraft/class_437\n'+FABRIC_ENTRY_CLIENT.split('\n', 2)[2]
+        self.assertEqual([(x['file'], x['kind']) for x in sp.fabric_culprits(bare, index, present)], [('konkrete.jar', 'client')])
+        # Sodium on a server: its pre-launch check needs LWJGL, the game's window and sound library.
+        sodium = sp.fabric_culprits(FABRIC_SODIUM, {'sodium': 'sodium.jar'}, {'sodium.jar'})
+        self.assertEqual([(x['file'], x['kind']) for x in sodium], [('sodium.jar', 'client')])
+        # The warnings every Fabric start logs for mixins aimed at the player's game blame nobody.
+        self.assertEqual(sp.fabric_culprits(FABRIC_WARNINGS+FABRIC_PORT, index, present | {'Cobblemon-fabric-1.7.3+1.21.1.jar'}), [])
+        # Fabric writes its sentences in the computer's language; the resolver's English line names the mods.
+        index['controlling'] = 'Controlling.jar'
+        req = sp.fabric_culprits(FABRIC_REQUIRES_ZH, index, present | {'Controlling.jar'})
+        self.assertEqual([(x['file'], x['kind'], x['needs']) for x in req], [('Controlling.jar', 'requires', 'searchables')])
+        self.assertEqual(sp.fabric_culprits('Exception in server tick loop', index, present), [])
+
+    def test_fabric_install_command_and_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = Path(tmp); installer = server.parent/(server.name+'-installer.jar'); installer.write_bytes(b'PK')
+            self.addCleanup(installer.unlink)
+            calls = []
+            def popen(cmd, **kw):
+                calls.append(cmd); (server/sp.FABRIC_LAUNCHER).write_bytes(b'PK'); (server/'server.jar').write_bytes(b'PK')
+                return FakeProcess(['Done\n'])
+            sp.install_loader(server, installer, Path('java.exe'), loader=dict(kind='fabric', version='0.18.4', mc='1.21.1'), popen=popen)
+            self.assertEqual(calls[0][3:], ['server', '-dir', '.', '-mcversion', '1.21.1', '-loader', '0.18.4', '-downloadMinecraft'])
+            self.assertEqual(sp.args_file(server), sp.FABRIC_LAUNCHER)
+            self.assertFalse((server/installer.name).exists())
+            started = []
+            def start(cmd, **kw):
+                started.append(cmd); return FakeProcess(['[16:12:30] [Server thread/INFO]: Done (21.5s)! For help, type "help"\n'])
+            self.assertTrue(sp.try_start(server, Path('java.exe'), sp.FABRIC_LAUNCHER, popen=start)['ok'])
+            self.assertEqual(started[0], ['java.exe', '@user_jvm_args.txt', '-jar', 'fabric-server-launch.jar', 'nogui'])
+        self.assertTrue(sp.DONE.search('[Server thread/INFO] (Minecraft) Done (3.2s)! For help'))
+
+    def test_fabric_build_takes_out_client_mods(self):
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup); root = Path(tmp.name)
+        instance = make_fabric(root); before = tree_hash(instance)
+        def install(server, installer, java, notify, cancelled, loader=None):
+            self.assertEqual(loader['kind'], 'fabric')
+            (server/sp.FABRIC_LAUNCHER).write_bytes(b'PK'); (server/'server.jar').write_bytes(b'PK')
+        starts = FakeStarts([FABRIC_ENTRY_CLIENT, FABRIC_REQUIRES, 'ok'])
+        result = sp.build_server(instance, root/'srv', root/'home', java=Path('C:/Java/bin/java.exe'), name='Cobble',
+                                 download=fake_download, install=install, start=starts)
+        self.assertEqual(tree_hash(instance), before)
+        self.assertTrue(result['ok'])
+        self.assertEqual([(x['file'], x['kind']) for x in result['removed']],
+                         [('sodium.jar', 'declared'), ('konkrete.jar', 'client'), ('menu.jar', 'requires')])
+        server = Path(result['folder'])
+        self.assertIn('@user_jvm_args.txt -jar fabric-server-launch.jar', (server/'run.bat').read_text(encoding='ascii'))
+        self.assertIn('sodium.jar：模組自己標明只給玩家端用', (server/sp.NOTE_FILE).read_text(encoding='utf-8-sig'))
+
+    def test_fabric_installer_version_from_fabric_list(self):
+        class S:
+            def __init__(self, loader_status=200, broken=False):
+                self.loader_status = loader_status; self.broken = broken
+            def get(self, url, **kw):
+                if '/versions/loader/' in url:
+                    return Response(b'[]', url, self.loader_status)
+                if self.broken:
+                    raise __import__('requests').ConnectionError('down')
+                r = Response(b'', url); r.json = lambda: [{'version': '1.2.0', 'stable': False}, {'version': '1.1.9', 'stable': True}]
+                return r
+        loader = dict(kind='fabric', version='0.18.4', mc='1.21.1')
+        self.assertEqual(sp.fabric_installer(loader, S(), {}), '1.1.9')
+        self.assertEqual(sp.fabric_installer(loader, S(broken=True), {}), sp.FABRIC_INSTALLER)
+        with self.assertRaisesRegex(ValueError, 'Fabric Loader 0.18.4'):
+            sp.fabric_installer(loader, S(400), {})
 
 
 if __name__ == '__main__':

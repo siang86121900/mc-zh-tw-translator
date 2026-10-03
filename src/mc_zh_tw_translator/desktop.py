@@ -989,7 +989,7 @@ class MainWindow(QMainWindow):
         memory=server_pack.server_memory(mods,self.memory_total,client or pack.get('recommendedRam') or 0)
         untranslated=('\n\n注意：這個整合包的翻譯還沒裝好或有更新。伺服器會複製整合包目前的任務與設定文字，建議先安裝翻譯再建立伺服器。'
                       if pack['status'] in ('exact','update','other_version') else '')
-        name={'neoforge':'NeoForge','forge':'Forge'}[loader['kind']]
+        name=server_pack.LOADER_NAMES[loader['kind']]
         text=(f"將用你電腦上的「{instance.name}」建立伺服器：\n{server}\n\n"
               '1. 複製 mods、config、kubejs 等伺服器需要的資料夾（整合包本身不會被修改）。\n'
               f"2. 從 {name} 官方網站下載 {loader['version']} 版伺服器程式並核對校驗碼，它會再從官方下載 Minecraft 伺服器（共約數百 MB）。\n"

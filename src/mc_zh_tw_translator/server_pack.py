@@ -3,7 +3,7 @@
 What a player does by hand, done the same way:
 1. a new folder next to (never inside) the modpack, with copies of the folders a server reads
    (mods, config, kubejs ...), so the translated quests, settings and scripts come along;
-2. the official NeoForge / Forge server from the loader's own download site, checked against the
+2. the official NeoForge / Forge / Fabric server from the loader's own download site, checked against the
    SHA-256 published next to it;
 3. eula.txt only after the player agreed to Minecraft's EULA in the program;
 4. the server is started and every mod that stops it (client-only mods) is moved to a side folder,
@@ -15,6 +15,7 @@ The player's modpack folder is only read. Mod files are copied from it, never do
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -37,7 +38,13 @@ COPY_DIRS = ('mods', 'config', 'defaultconfigs', 'kubejs', 'scripts', 'global_pa
              'patchouli_books', 'openloader', 'paxi', 'moonlight-global-datapacks', 'tlm_custom_pack')
 REMOVED_DIR = '_已拿掉的模組'
 NOTE_FILE = '伺服器說明.txt'
-LOADER_HOSTS = ('maven.neoforged.net', 'maven.minecraftforge.net')
+LOADER_HOSTS = ('maven.neoforged.net', 'maven.minecraftforge.net', 'maven.fabricmc.net', 'meta.fabricmc.net')
+LOADER_NAMES = {'neoforge': 'NeoForge', 'forge': 'Forge', 'fabric': 'Fabric'}
+# Fabric's server installer is one program for every Minecraft version: the newest stable one on Fabric's own
+# list, this one when the list cannot be read. Either way it is checked against the SHA-256 on maven.fabricmc.net.
+FABRIC_META = 'https://meta.fabricmc.net/v2'
+FABRIC_INSTALLER = '1.1.2'
+FABRIC_LAUNCHER = 'fabric-server-launch.jar'
 MAX_INSTALLER_SIZE = 64*1024*1024
 MAX_TRIES = 40
 START_TIMEOUT = 20*60          # a first start of a large modpack also builds the world
@@ -46,7 +53,9 @@ STOP_TIMEOUT = 3*60
 # Forge 1.20.1 writes its crash report when mods fail to load and may then never exit (The Foll, 2026-10-02:
 # java still running 8 minutes after "Crash report saved to"). After the report it gets this long to end by itself.
 CRASH_GRACE = 30
-CRASHED = re.compile(r'Crash report saved to|LoadingFailedException|Failed to start the minecraft server')
+CRASHED = re.compile(r'Crash report saved to|crash report has been saved to|LoadingFailedException|Failed to start the minecraft server', re.I)
+# Forge: "[Server thread/INFO] [minecraft/DedicatedServer]: Done (12.3s)!"; Fabric: "[Server thread/INFO] (Minecraft) Done (12.3s)!"
+DONE = re.compile(r'(?:\]:|\] \([^()\n]*\)) Done \([\d.,]+s\)!')
 GAME_PORT = 25565
 EULA_URL = 'https://aka.ms/MinecraftEULA'
 TRIAL_WORLD = 'mctranslator-trial-world'
@@ -83,18 +92,26 @@ def loader_of(instance: Path) -> dict:
         if not m:
             continue
         kind = m[1].lower(); version = m[2]
-        if kind in ('fabric', 'quilt'):
-            raise ValueError('這個整合包使用 Fabric／Quilt，目前只能建立 NeoForge 和 Forge 的伺服器。')
+        if kind == 'quilt':
+            raise ValueError('這個整合包使用 Quilt，目前只能建立 NeoForge、Forge 和 Fabric 的伺服器。')
+        if kind == 'fabric':
+            # CurseForge's own record writes fabric-<loader>-<Minecraft>: fabric-0.18.4-1.21.1.
+            tail = re.fullmatch(r'(\d[\w.+]*?)-(\d+\.\d+(?:\.\d+)?)', version)
+            if tail and (not mc or tail[2] == mc):
+                version, mc = tail[1], mc or tail[2]
         if not mc:
             break
         if kind == 'forge' and version_tuple(mc) < (1, 17):
             raise ValueError(f'Minecraft {mc} 的 Forge 伺服器開法和新版不同，目前還不支援。')
         return dict(kind=kind, version=version, mc=mc)
-    raise ValueError('讀不到這個整合包使用的 Minecraft 與 NeoForge／Forge 版本，無法建立伺服器。')
+    raise ValueError('讀不到這個整合包使用的 Minecraft 與 NeoForge／Forge／Fabric 版本，無法建立伺服器。')
 
 
 def installer_url(loader: dict) -> str:
     v = loader['version']; mc = loader['mc']
+    if loader['kind'] == 'fabric':
+        i = loader.get('installer') or FABRIC_INSTALLER
+        return f'https://maven.fabricmc.net/net/fabricmc/fabric-installer/{i}/fabric-installer-{i}.jar'
     if loader['kind'] == 'neoforge':
         if mc == '1.20.1':  # NeoForge's first release kept Forge's naming
             return f'https://maven.neoforged.net/releases/net/neoforged/forge/1.20.1-{v}/forge-1.20.1-{v}-installer.jar'
@@ -237,18 +254,53 @@ def copy_instance(instance: Path, server: Path, notify=lambda *_: None, cancelle
 declared_ids = jobs.declared_mod_ids
 
 
+def fabric_meta(z: zipfile.ZipFile) -> dict:
+    """A Fabric mod's fabric.mod.json ({} when the jar has none or it cannot be read)."""
+    try:
+        text = z.read('fabric.mod.json').decode('utf-8-sig', 'replace')
+    except KeyError:
+        return {}
+    try:
+        meta = json.loads(text, strict=False)
+        return meta if isinstance(meta, dict) else {}
+    except ValueError:
+        m = re.search(r'"id"\s*:\s*"([^"]+)"', text)
+        return {'id': m[1]} if m else {}
+
+
+def fabric_ids(meta: dict) -> list[str]:
+    provides = meta.get('provides') if isinstance(meta.get('provides'), list) else []
+    return [x for x in [meta.get('id')]+provides if isinstance(x, str) and x]
+
+
 def mod_ids(mods: Path) -> dict[str, str]:
-    """Mod id → jar file name for every jar in a mods folder."""
-    index = {}
+    """Mod id → jar file name for every jar in a mods folder.
+
+    The mods a Fabric jar carries inside (META-INF/jars, e.g. Fabric API's modules) count as that jar's,
+    so "X requires fabric-api-base" points at the jar that carries it."""
+    index = {}; bundled = {}
     for jar in sorted(mods.glob('*.jar')):
         try:
             with zipfile.ZipFile(jar) as z:
+                names = z.namelist()
                 for meta in ('META-INF/neoforge.mods.toml', 'META-INF/mods.toml'):
-                    if meta in z.namelist():
+                    if meta in names:
                         for mod in declared_ids(z.read(meta).decode('utf-8', 'replace')):
                             index.setdefault(mod, jar.name)
+                for mod in fabric_ids(fabric_meta(z)):
+                    index.setdefault(mod, jar.name)
+                for inner in names:
+                    if inner.startswith('META-INF/jars/') and inner.endswith('.jar'):
+                        try:
+                            with zipfile.ZipFile(io.BytesIO(z.read(inner))) as nested:
+                                for mod in fabric_ids(fabric_meta(nested)):
+                                    bundled.setdefault(mod, jar.name)
+                        except (zipfile.BadZipFile, OSError, KeyError, RuntimeError):
+                            continue
         except (zipfile.BadZipFile, OSError, KeyError):
             continue
+    for mod, name in bundled.items():
+        index.setdefault(mod, name)
     return index
 
 
@@ -256,14 +308,17 @@ CLIENT_ONLY = re.compile(r'(?m)^\s*clientSideOnly\s*=\s*true\b')
 
 
 def declared_client_only(mods: Path) -> list[str]:
-    """Jars whose own description says they are for the player's game only."""
+    """Jars whose own description says they are for the player's game only
+    (clientSideOnly=true in mods.toml, "environment": "client" in fabric.mod.json)."""
     found = []
     for jar in sorted(mods.glob('*.jar')):
         try:
             with zipfile.ZipFile(jar) as z:
-                for meta in ('META-INF/neoforge.mods.toml', 'META-INF/mods.toml'):
-                    if meta in z.namelist() and CLIENT_ONLY.search(z.read(meta).decode('utf-8', 'replace')):
-                        found.append(jar.name); break
+                names = z.namelist()
+                if any(meta in names and CLIENT_ONLY.search(z.read(meta).decode('utf-8', 'replace'))
+                       for meta in ('META-INF/neoforge.mods.toml', 'META-INF/mods.toml')) \
+                        or fabric_meta(z).get('environment') == 'client':
+                    found.append(jar.name)
         except (zipfile.BadZipFile, OSError, KeyError):
             continue
     return found
@@ -276,8 +331,9 @@ EXCEPTION = re.compile(r'Exception message: (.+)')
 REQUIRES = re.compile(r'Mod (\S+) requires (\S+)')
 FAILED_MOD = re.compile(r'\((\w[\w-]*)\) (?:has failed to load|encountered an error)')
 INVALID_DIST = re.compile(r'Attempted to load class (\S+) for invalid dist DEDICATED_SERVER')
-# A class of the player's game only (screen, keys, sound, rendering) that a server does not have.
-CLIENT_CLASS = re.compile(r'(?:NoClassDefFoundError|ClassNotFoundException|invalid dist)\S*:?\s+(?:net[/.]minecraft[/.]client[/.]|com[/.]mojang[/.]blaze3d[/.])|invalid dist DEDICATED_SERVER')
+# A class of the player's game only (screen, keys, sound, rendering) that a server does not have;
+# org.lwjgl is the game's window, input and sound library (Sodium's pre-launch check, COBBLEVERSE 2026-10-03).
+CLIENT_CLASS = re.compile(r'(?:NoClassDefFoundError|ClassNotFoundException|invalid dist)\S*:?\s+(?:net[/.]minecraft[/.]client[/.]|com[/.]mojang[/.]blaze3d[/.]|org[/.]lwjgl[/.])|invalid dist DEDICATED_SERVER')
 # A mod reading its settings for the player's game (a client config, never loaded on a server).
 CLIENT_CONFIG = re.compile(r'Cannot get config value before config is loaded')
 # A stack frame in a mod jar: ~[particle_effects-1.21.1-NeoForge-1.0.1.jar%23514!/:?]
@@ -337,6 +393,76 @@ def culprits(text: str, index: dict[str, str], present: set[str]) -> list[dict]:
     return list(found.values())
 
 
+# Fabric runs Minecraft under intermediary names (net.minecraft.class_310): a Minecraft class that a server
+# cannot find is one of the player's game, whatever its name. "Cannot load class ... in environment type SERVER"
+# is Fabric's own refusal of a class marked for the player's game.
+FABRIC_CLIENT = re.compile(r'(?:NoClassDefFoundError|ClassNotFoundException)\S*:?\s+(?:net[/.]minecraft[/.](?:client[/.]|class_\d+\b)|com[/.]mojang[/.]blaze3d[/.]|org[/.]lwjgl[/.])'
+                           r'|Cannot load class \S+ in environment type SERVER')
+FABRIC_ENTRY = re.compile(r"entrypoint (?:stage )?'[\w:-]+'[^\n]*? provided by '([\w.-]+)'")
+# "Mod 'Konkrete' (konkrete) 1.0 requires any version of fabric-api, which is missing!"
+# "Mod 'A' (a) 1.0 requires version 2.0 or later of mod 'B' (b), but only the wrong version is present: 1.0!"
+FABRIC_REQUIRES = re.compile(r"Mod '[^'\n]*' \(([\w.-]+)\) \S+ requires (?:[^\n]*? of )?(?:mod )?(?:'[^'\n]*' \(([\w.-]+)\)|([\w.-]+))")
+# Those sentences are in the computer's language (Chinese on the player's computer, COBBLEVERSE 2026-10-03);
+# the resolver's own line above them is always English:
+# "Reason: [HARD_DEP controlling 19.0.5 {depends searchables @ [>=1.0.1]}, ...]"
+FABRIC_REASON = re.compile(r'HARD_DEP(?:_NO_CANDIDATE)? ([\w.-]+) \S+ \{depends ([\w.-]+) @[^}\n]*\}')
+# A stack frame in a mod jar as Fabric's log writes it: at knot/x.Y.z(Y.kt:166) ~[Cobblemon-fabric-1.7.3+1.21.1.jar:?]
+FABRIC_FRAME = re.compile(r'\[([^\[\]/\\:\n]+?\.jar):')
+# The first line of an error with its stack ("java.lang.RuntimeException: ...", "Caused by: ...").
+# A normal Fabric start also logs "Error loading class: net/minecraft/class_906 (ClassNotFoundException ...)"
+# warnings for mixins aimed at the player's game (COBBLEVERSE 2026-10-03): those are not errors and never read.
+ERROR_HEAD = re.compile(r'(?m)^(?:Caused by: )?[\w.$]+(?:Error|Exception): ')
+
+
+def error_block(text: str, start: int) -> str:
+    """One error from its first line: the stack lines and causes under it."""
+    lines = text[start:].splitlines()[:400]
+    keep = lines[:1]
+    for line in lines[1:]:
+        if not (line.startswith(('\t', ' ', 'Caused by:')) or ERROR_HEAD.match(line)):
+            break
+        keep.append(line)
+    return '\n'.join(keep)
+
+
+def fabric_culprits(text: str, index: dict[str, str], present: set[str]) -> list[dict]:
+    """culprits() for a Fabric server: the mods named in its log and crash report.
+
+    A mod is 'client' only when the error that names it is a class of the player's game missing on the server."""
+    found = {}
+    def add(name, mod, kind, detail, needs=''):
+        if name and name in present and name not in found:
+            found[name] = dict(file=name, mod=mod, kind=kind, detail=detail.strip()[:300])
+            if needs:
+                found[name]['needs'] = needs
+    def jar(mod):
+        return index.get(mod or '')
+    def named(m, mod):
+        client = FABRIC_CLIENT.search(error_block(text, text.rfind('\n', 0, m.start())+1))
+        add(jar(mod), mod, 'client' if client else 'error', client[0] if client else m[0])
+    for m in FABRIC_REASON.finditer(text):
+        add(jar(m[1]), m[1], 'requires', m[0], m[2])
+    for m in FABRIC_REQUIRES.finditer(text):
+        add(jar(m[1]), m[1], 'requires', m[0], m[2] or m[3])
+    for m in FABRIC_ENTRY.finditer(text):
+        named(m, m[1])
+    for m in MIXIN_MOD.finditer(text):
+        named(m, m[1] or m[2])
+    if not found:
+        # No mod named: the first mod jar in the stack of an error whose cause is a missing class of the player's game.
+        for m in ERROR_HEAD.finditer(text):
+            if m[0].startswith('Caused by'):
+                continue
+            block = error_block(text, m.start()); client = FABRIC_CLIENT.search(block)
+            if not client:
+                continue
+            name = next((j for j in FABRIC_FRAME.findall(block) if j in present), None)
+            add(name, next((k for k, v in index.items() if v == name), ''), 'client', client[0])
+            if found:
+                break
+    return list(found.values())
+
+
 def plain_reason(item: dict) -> str:
     if item['kind'] == 'client':
         return '玩家端專用（會用到畫面、按鍵或聲音，伺服器沒有這些，開啟時會當掉）'
@@ -366,7 +492,10 @@ def download_installer(loader: dict, home: Path, notify=lambda *_: None, session
     """The loader's official installer, kept only when it matches the SHA-256 the download site publishes."""
     import requests
     session = session or requests.Session()
-    url = installer_url(loader); headers = {'User-Agent': f'MCTranslator/{VERSION}'}
+    headers = {'User-Agent': f'MCTranslator/{VERSION}'}
+    if loader['kind'] == 'fabric' and not loader.get('installer'):
+        loader['installer'] = fabric_installer(loader, session, headers)
+    url = installer_url(loader)
     folder = home/'downloads'/'server'; folder.mkdir(parents=True, exist_ok=True)
     problem = None
     for attempt in range(3):
@@ -376,7 +505,7 @@ def download_installer(loader: dict, home: Path, notify=lambda *_: None, session
         try:
             r = session.get(url+'.sha256', timeout=(15, 60), headers=headers)
             if r.status_code == 404:
-                raise ValueError(f"{loader['kind']} {loader['version']} 的官方下載找不到，可能是版本太舊或已下架。")
+                raise ValueError(f"{LOADER_NAMES[loader['kind']]} {loader['version']} 的官方下載找不到，可能是版本太舊或已下架。")
             r.raise_for_status()
             if urlparse(r.url).netloc not in LOADER_HOSTS:
                 raise ValueError('校驗碼被轉到官方以外的位置，沒有下載。')
@@ -412,7 +541,30 @@ def download_installer(loader: dict, home: Path, notify=lambda *_: None, session
                 time.sleep(2*(attempt+1))
         finally:
             part.unlink(missing_ok=True)
-    raise RuntimeError('連不上 NeoForge／Forge 的官方下載網站，請確認網路後再試一次。') from problem
+    raise RuntimeError(f"連不上 {LOADER_NAMES[loader['kind']]} 的官方下載網站，請確認網路後再試一次。") from problem
+
+
+def fabric_installer(loader: dict, session, headers) -> str:
+    """The newest stable Fabric installer on Fabric's own list; first checks that Fabric has this loader for
+    this Minecraft version, so a wrong version is said plainly instead of failing inside the installer."""
+    import requests
+    try:
+        status = session.get(f"{FABRIC_META}/versions/loader/{loader['mc']}/{loader['version']}",
+                             timeout=(15, 60), headers=headers).status_code
+    except requests.RequestException:
+        status = 0
+    if status in (400, 404):
+        raise ValueError(f"Fabric 官方沒有 Minecraft {loader['mc']} 的 Fabric Loader {loader['version']}，無法建立伺服器。")
+    try:
+        r = session.get(f'{FABRIC_META}/versions/installer', timeout=(15, 60), headers=headers)
+        r.raise_for_status()
+        for item in r.json():
+            version = str(item.get('version') or '')
+            if item.get('stable') and re.fullmatch(r'\d+(?:\.\d+){1,3}', version):
+                return version
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        pass
+    return FABRIC_INSTALLER
 
 
 def watch(process, deadline, cancelled, stop_flag):
@@ -434,12 +586,17 @@ def watch(process, deadline, cancelled, stop_flag):
 
 
 def install_loader(server: Path, installer: Path, java: Path, notify=lambda *_: None, cancelled=lambda: False,
-                   popen=subprocess.Popen) -> None:
-    """Run the official installer's --installServer in the server folder; it downloads Minecraft's server and libraries."""
+                   loader: dict | None = None, popen=subprocess.Popen) -> None:
+    """Run the official installer in the server folder; it downloads Minecraft's server and libraries.
+    NeoForge / Forge: --installServer. Fabric: server -mcversion -loader -downloadMinecraft."""
     target = server/installer.name
     shutil.copy2(installer, target)
     notify(25, '安裝伺服器程式', '從官方下載 Minecraft 伺服器與函式庫，約需 1～5 分鐘')
-    process = popen([str(java), '-jar', target.name, '--installServer'], cwd=str(server), stdin=subprocess.DEVNULL,
+    command = [str(java), '-jar', target.name, '--installServer']
+    if loader and loader['kind'] == 'fabric':
+        command = [str(java), '-jar', target.name, 'server', '-dir', '.', '-mcversion', loader['mc'],
+                   '-loader', loader['version'], '-downloadMinecraft']
+    process = popen(command, cwd=str(server), stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     flag = threading.Event(); watch(process, time.monotonic()+INSTALL_TIMEOUT, cancelled, flag)
@@ -458,9 +615,19 @@ def install_loader(server: Path, installer: Path, java: Path, notify=lambda *_: 
 
 
 def args_file(server: Path) -> str:
-    """The loader's Windows argument file, relative to the server folder ('' when not installed)."""
+    """What starts the server, relative to its folder ('' when not installed): NeoForge / Forge's Windows
+    argument file, or Fabric's launcher jar (with the Minecraft server it starts next to it)."""
     found = sorted((server/'libraries').glob('net/*/*/*/win_args.txt'))
-    return found[-1].relative_to(server).as_posix() if found else ''
+    if found:
+        return found[-1].relative_to(server).as_posix()
+    if (server/FABRIC_LAUNCHER).is_file() and (server/'server.jar').is_file():
+        return FABRIC_LAUNCHER
+    return ''
+
+
+def launch_args(args: str) -> list[str]:
+    """The Java arguments after user_jvm_args.txt for what args_file() found."""
+    return ['-jar', args] if args.endswith('.jar') else ['@'+args]
 
 
 def short_path(path: Path) -> str:
@@ -487,14 +654,14 @@ def write_launch_files(server: Path, java: Path, memory_mb: int, args: str) -> N
     (server/'run.bat').write_text(
         '@echo off\r\ncd /d "%~dp0"\r\n'
         'REM Made by MC Translator. Memory: user_jvm_args.txt. Add nogui after the args file to hide the server window.\r\n'
-        f'"{short_path(java)}" @user_jvm_args.txt @{args} %*\r\npause\r\n', encoding='ascii')
+        f'"{short_path(java)}" @user_jvm_args.txt {" ".join(launch_args(args))} %*\r\npause\r\n', encoding='ascii')
 
 
 def try_start(server: Path, java: Path, args: str, notify=lambda *_: None, cancelled=lambda: False,
               popen=subprocess.Popen, timeout=START_TIMEOUT) -> dict:
     """Start the server once without its window. ok when it reached 'Done', then it is stopped again."""
     started = time.time()
-    process = popen([str(java), '@user_jvm_args.txt', '@'+args, 'nogui'], cwd=str(server), stdin=subprocess.PIPE,
+    process = popen([str(java), '@user_jvm_args.txt', *launch_args(args), 'nogui'], cwd=str(server), stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     flag = threading.Event(); deadline = [time.monotonic()+timeout]
@@ -504,7 +671,7 @@ def try_start(server: Path, java: Path, args: str, notify=lambda *_: None, cance
     # writing it and never gets to saving the world and stopping.
     for line in process.stdout:
         output.append(line.rstrip()); output = output[-4000:]
-        if not ok and re.search(r'\]: Done \([\d.,]+s\)!', line):
+        if not ok and DONE.search(line):
             ok = True; deadline[0] = time.monotonic()+STOP_TIMEOUT
             notify(0, '試開伺服器', '已成功開啟，正在存檔並關閉')
             try:
@@ -559,9 +726,10 @@ def build_server(instance: Path, parent: Path, home: Path, notify=lambda *_: Non
     copy_instance(instance, server, notify, cancelled)
     for jar_name in declared_client_only(server/'mods'):
         move_mod(server, jar_name)
-        result['removed'].append(dict(file=jar_name, mod='', kind='declared', detail='clientSideOnly=true'))
+        result['removed'].append(dict(file=jar_name, mod='', kind='declared',
+                                      detail='"environment": "client"' if loader['kind'] == 'fabric' else 'clientSideOnly=true'))
     installer = download(loader, home, notify, cancelled=cancelled)
-    install(server, installer, java, notify, cancelled)
+    install(server, installer, java, notify, cancelled, loader=loader)
     args = args_file(server)
     (server/'eula.txt').write_text(f'# Agreed in MC Translator by the player ({EULA_URL})\neula=true\n', encoding='utf-8')
     # A free port for the trial, so another server already running on this computer does not get in the way.
@@ -589,7 +757,7 @@ def build_server(instance: Path, parent: Path, home: Path, notify=lambda *_: Non
                 result['problem'] = '伺服器啟動超過 20 分鐘還沒完成，已停止嘗試。'
                 break
             present = {p.name for p in (server/'mods').glob('*.jar')}
-            found = culprits(attempt['text'], index, present)
+            found = (fabric_culprits if loader['kind'] == 'fabric' else culprits)(attempt['text'], index, present)
             if not found:
                 result['problem'] = ('伺服器開不起來，但當機紀錄沒有指出是哪個模組，程式不敢亂拿。'
                                      '\n（技術細節：'+last_error(attempt.get('tail') or [])+'）')

@@ -254,7 +254,7 @@ FTB 任務書的文字（`config/ftbquests/quests/lang/` 裡的 `.snbt`）會逐
 2. 確認一次內容，再同意 Minecraft 的使用者授權合約（EULA）。EULA 必須由你本人同意，程式不會代按。
 3. 程式自動完成：
    - 複製 mods、config、kubejs、defaultconfigs 等伺服器需要的資料夾（翻好的任務、設定文字也一起帶過去）。存檔、材質包、光影和遊戲選項不複製，整合包本身不會被修改。
-   - 從 NeoForge／Forge 官方網站下載對應版本的伺服器程式，核對官方校驗碼後才安裝。
+   - 從 NeoForge／Forge／Fabric 官方網站下載對應版本的伺服器程式，核對官方校驗碼後才安裝。
    - 自動試開伺服器。只給玩家端用的模組（例如 IMBlocker、Sodium、小地圖）會讓伺服器當掉，程式從當機紀錄找出是哪一個，移到「_已拿掉的模組」資料夾（不刪除），再重開，直到開得起來。
    - 寫好 `run.bat` 和記憶體設定。記憶體依模組數量設定上限（以 1～10 人、同一台電腦也要開遊戲和其他遊戲來估算），可在 `user_jvm_args.txt` 修改。
 4. 完成後雙擊 `run.bat` 就能開伺服器。拿掉了哪些模組和原因、朋友怎麼連線，都寫在資料夾裡的「伺服器說明.txt」。
@@ -262,7 +262,7 @@ FTB 任務書的文字（`config/ftbquests/quests/lang/` 裡的 `.snbt`）會逐
 限制：
 - 當機原因不是玩家端模組時（例如 KubeJS 腳本錯誤、模組本身的錯誤、整合包缺少前置模組），程式不會亂拿東西，會停下來說明是哪個模組出了問題。
 - 試開只能確認伺服器開得起來；少數模組要等玩家進遊戲才出錯，遇到時請看伺服器資料夾的 `crash-reports`。
-- 目前支援 NeoForge 和 Minecraft 1.17 以上的 Forge；Fabric／Quilt 還不支援。需要電腦上有對應的 Java（用 CurseForge 開過這個整合包通常就有）。
+- 目前支援 NeoForge、Minecraft 1.17 以上的 Forge 和 Fabric；Quilt 還不支援。Fabric 模組自己標明只給玩家端用（environment 為 client）的會先拿掉。需要電腦上有對應的 Java（用 CurseForge 開過這個整合包通常就有）。
 - 朋友從其他地方連線，需要在路由器設定連接埠轉發 25565，或使用 Radmin VPN、ZeroTier 這類工具，程式無法代為設定。
 
 ## AI 補翻（選用）

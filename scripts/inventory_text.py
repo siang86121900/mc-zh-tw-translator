@@ -19,6 +19,7 @@ import json
 import re
 import sys
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]/'src'), str(Path(__file__).resolve().parent)]
@@ -40,7 +41,7 @@ def strings_of(name, raw):
     """Chinese runs (with a little context) and English sentences of one file."""
     if PurePosixPath(name).suffix.lower() == '.nbt':
         try: raw = gzip.decompress(raw)
-        except OSError: pass
+        except (OSError, EOFError, zlib.error): pass  # damaged .nbt files in Tensura and Elemental Awakening mods: read as they are
     text = raw.decode('utf-8', 'ignore')
     if '\0' in text[:2000] and not name.lower().endswith('.nbt'): return []
     found = []; last = -1

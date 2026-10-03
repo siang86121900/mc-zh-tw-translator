@@ -142,12 +142,38 @@ class CodexBridgeTests(unittest.TestCase):
             self.assertEqual(ai.pending_rows(result),[])  # the rejected row is not resent automatically
 
     def test_duplicate_ids_rejected(self):
+        # An id answered twice is used for neither; both are asked once more, then left for the next run.
         class Bad(FakeClient):
             def translate(self,payload,model):
                 result=super().translate(payload,model);result['translations'][1]['id']='0';return result
         with tempfile.TemporaryDirectory() as d:
             result=ai.supplement(self.session(Path(d)),Path(d),'account-model',lambda *_:None,client_factory=Bad)
-            self.assertEqual(result['ai_status'],'paused');self.assertEqual(len(ai.pending_rows(result)),2)
+            self.assertEqual(result['ai_status'],'completed');self.assertEqual(len(ai.pending_rows(result)),2)
+            self.assertEqual(len(Bad.calls),2);self.assertIn('沒有回覆',result['ai_message'])
+            self.assertTrue(all('下次' in r['issue'] for _,r in ai.pending_rows(result)))
+
+    def test_a_reply_with_rows_missing_does_not_stop_the_run(self):
+        # COBBLEVERSE 2026-10-03: "AI 回傳筆數不符" stopped everything with 2,567 rows left.
+        class Short(FakeClient):
+            def translate(self,payload,model):
+                result=super().translate(payload,model)
+                if len(self.calls)==1:result['translations'].pop()  # the first reply leaves its last row out
+                return result
+        with tempfile.TemporaryDirectory() as d:
+            result=ai.supplement(self.session(Path(d),ai.BATCH_ROWS+1),Path(d),'account-model',lambda *_:None,client_factory=Short)
+            self.assertEqual(result['ai_status'],'completed');self.assertEqual(ai.pending_rows(result),[])
+            self.assertEqual(result['ai_translation'],ai.BATCH_ROWS+1)
+            self.assertEqual(len(Short.calls),3)  # two batches, then the one row left out asked once more
+
+    def test_an_unreadable_reply_is_asked_once_more(self):
+        class Unreadable(FakeClient):
+            def translate(self,payload,model):
+                result=super().translate(payload,model)
+                if len(self.calls)==1:raise ai.AnswerMismatch('AI 回傳格式不符，本批未採用。')
+                return result
+        with tempfile.TemporaryDirectory() as d:
+            result=ai.supplement(self.session(Path(d)),Path(d),'account-model',lambda *_:None,client_factory=Unreadable)
+            self.assertEqual(result['ai_status'],'completed');self.assertEqual(ai.pending_rows(result),[])
 
     def test_cancel_before_turn_spends_nothing(self):
         with tempfile.TemporaryDirectory() as d:

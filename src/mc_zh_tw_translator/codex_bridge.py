@@ -39,6 +39,11 @@ class RequestRefused(BridgeError):
     """The official component answered a request with an error; that request started nothing."""
 
 
+class AnswerMismatch(BridgeError):
+    """A batch came back, but not as the rows that were sent (unreadable, or rows missing). Unlike quota or service
+    errors this stops nothing: the rows without an answer are asked once more in the same run, then left for the next."""
+
+
 def find_runtime(home):
     local = home / 'runtime/codex.exe'
     if local.is_file():
@@ -419,7 +424,7 @@ class CodexClient:
                         replies[turn['n']] = BridgeError('AI 本批未完成（可能達到額度或服務限制）。已保留前批，不會自動重試。')
                         continue
                     try: replies[turn['n']] = json.loads('\n'.join(turn['answers'].values()))
-                    except ValueError: replies[turn['n']] = BridgeError('AI 回傳格式不符，本批未採用，不會自動重送。')
+                    except ValueError: replies[turn['n']] = AnswerMismatch('AI 回傳格式不符，本批未採用。')
         except Exception as exc:
             # Whatever stops the group (quota, stop button, timeout, the component ending) stops every
             # batch still being written; finished ones keep their replies.
@@ -490,15 +495,19 @@ def usage_estimate(start, now, completed, left):
 
 
 def answers_by_id(response, batch):
-    """The reply matched to the rows that were sent; anything missing, extra or repeated stops the batch."""
-    values = response.get('translations')
-    if not isinstance(values, list) or len(values) != len(batch): raise BridgeError('AI 回傳筆數不符，已停止。')
-    mapped = {}
+    """The reply matched to the rows that were sent: only answers whose id is one sent and appears once.
+
+    A reply with rows missing or extra (COBBLEVERSE 2026-10-03: "AI 回傳筆數不符" stopped the whole run with
+    2,567 rows left) keeps the answers that match; the rest are asked again by the caller. An id answered twice
+    is used for neither, since it is unknown which answer belongs to it."""
+    values = response.get('translations') if isinstance(response, dict) else None
+    if not isinstance(values, list): raise AnswerMismatch('AI 回傳格式不符，本批未採用。')
+    sent = {str(i) for i, *_ in batch}; mapped = {}; repeated = set()
     for value in values:
-        if not isinstance(value, dict) or not isinstance(value.get('id'), str) or value['id'] in mapped:
-            raise BridgeError('AI 回傳識別碼不符，已停止。')
+        if not isinstance(value, dict) or value.get('id') not in sent: continue
+        if value['id'] in mapped: repeated.add(value['id'])
         mapped[value['id']] = value
-    if set(mapped) != {str(i) for i, *_ in batch}: raise BridgeError('AI 回傳識別碼不符，已停止。')
+    for key in repeated: del mapped[key]
     return mapped
 
 
@@ -593,8 +602,10 @@ def in_groups(client, method, model, remaining, how, request, settle, save, anno
     A group's good batches are settled and saved before its first failure is raised, so quota that
     was spent is never thrown away. A batch the service would not take at the same time as another
     goes back to the front of the queue, and the rest of the run sends one batch at a time.
+    Rows a reply left out (or a reply that could not be read) stop nothing: they are returned, for the
+    caller to ask once more.
     """
-    limit = PARALLEL
+    limit = PARALLEL; missed = []
     while remaining:
         if cancelled(): raise InterruptedError(stopped)
         group = []; size = group_size(client, limit)
@@ -611,13 +622,18 @@ def in_groups(client, method, model, remaining, how, request, settle, save, anno
             try:
                 if isinstance(reply, Exception): raise reply
                 answers = answers_by_id(reply, batch)
+            except AnswerMismatch:
+                answers = {}
             except Exception as exc:
                 failure = failure or exc; continue
-            settle(batch, answers)
+            missed += [(i, row) for i, row, _ in batch if str(i) not in answers]
+            answered = [item for item in batch if str(item[0]) in answers]
+            if answered: settle(answered, answers)
         save()
         if failure: raise failure
         if unsent:
             remaining[0:0] = unsent; limit = 1
+    return missed
 
 
 def review(session, home, selected_model, notify, cancelled=lambda: False, client_factory=CodexClient, checkpoint=lambda _:None):
@@ -684,8 +700,11 @@ def review(session, home, selected_model, notify, cancelled=lambda: False, clien
         with client_factory(home, cancelled) as client:
             model = next((m for m in client.models() if m['model'] == selected_model), None)
             if not model: raise BridgeError('此模型目前不可用，請重新整理模型清單；不會自行換模型。')
-            in_groups(client, 'review', model, remaining, (lambda row: row['en'], lambda row: len(row['en']) + len(row['proposed']), too_long),
-                      request, settle, save, announce, cancelled, '已停止，已核對的結果保留。')
+            how = (lambda row: row['en'], lambda row: len(row['en']) + len(row['proposed']), too_long)
+            missed = in_groups(client, 'review', model, remaining, how, request, settle, save, announce, cancelled, '已停止，已核對的結果保留。')
+            # Doubts a reply left out are asked once more; still unanswered, they stay listed for the next run.
+            if missed:
+                in_groups(client, 'review', model, missed, how, request, settle, save, announce, cancelled, '已停止，已核對的結果保留。')
         session['ai_review_status'] = 'completed'
         session['ai_review_message'] = f"AI 核對完成：{done['confirmed']:,} 筆無誤，改寫 {done['fixed']:,} 筆（列在「AI 補譯」，仍建議抽查）。"
     except Exception as exc:
@@ -811,14 +830,19 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
             quota.update(client=client, start=getattr(client, 'last_quota', None))  # baseline for the measured usage estimate
             if not model: raise BridgeError('此模型目前不可用，請重新整理模型清單；不會自行換模型。')
             how = (original_of, lambda row: len(original_of(row)), too_long)
-            in_groups(client, 'translate', model, remaining, how, request, settle, save, announce, cancelled, '已停止，已完成的 AI 譯文保留。')
-            # Answers the checks turned down are asked once more in the same run, with what was wrong.
-            again, retry_twins = without_repeats([(i, r) for i, r in pending_rows(session) if retryable(r)])
+            missed = {i for i, _ in in_groups(client, 'translate', model, remaining, how, request, settle, save, announce, cancelled, '已停止，已完成的 AI 譯文保留。')}
+            # Answers the checks turned down, and rows a reply left out, are asked once more in the same run.
+            again, retry_twins = without_repeats([(i, r) for i, r in pending_rows(session) if retryable(r) or i in missed])
+            unanswered = []
             if again:
                 twins.clear(); twins.update(retry_twins)
-                in_groups(client, 'translate', model, again, how, request, settle, save, announce, cancelled, '已停止，已完成的 AI 譯文保留。')
+                unanswered = in_groups(client, 'translate', model, again, how, request, settle, save, announce, cancelled, '已停止，已完成的 AI 譯文保留。')
+            for i, row in unanswered:
+                for r in [row] + twins.get(i, []):
+                    r['issue'] = 'AI 這次沒有回覆這一句，下次按「一鍵完整翻譯並套用」會再送。'
         session['ai_status'] = 'completed'; session['ai_message'] = (f"AI 補翻完成，本次產生 {done['completed']} 筆待校對譯文。"
-                                                            + (f"另有 {done['kept']} 筆 AI 判斷不需翻譯（名稱、代碼等），列在「無需翻譯」。" if done['kept'] else ''))
+                                                            + (f"另有 {done['kept']} 筆 AI 判斷不需翻譯（名稱、代碼等），列在「無需翻譯」。" if done['kept'] else '')
+                                                            + (f"有 {len(unanswered)} 句 AI 送了兩次都沒有回覆，下次按「一鍵完整翻譯並套用」會再送。" if unanswered else ''))
     except Exception as exc:
         left = len(pending_rows(session))
         session['ai_status'] = 'paused'
