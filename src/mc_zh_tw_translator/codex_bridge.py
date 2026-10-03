@@ -347,6 +347,9 @@ class CodexClient:
                  '有 lines 欄位時，譯文的換行（\\n）數量必須正好等於 lines，可依中文重新安排斷行位置。'
                  '有 codes 欄位時，裡面每個代碼（格式碼、佔位符、書本巨集如 $(item) 與 $()）都要原樣出現在譯文，次數相同，不可省略、合併或改寫。'
                  '阿拉伯數字照原樣寫出，不改成中文數字、不刪除。'
+                 '有 shape 欄位時，原文是分成好幾段的 JSON 文字元件，shape 是把每段文字清空後的樣子：譯文必須正好是 shape 把每個 "" 填上中文，'
+                 '段數、順序與其他欄位都不可改；中文語序不同時可以把字移到相鄰的段，讓某段留空字串 ""，'
+                 '但不可刪除、合併或新增段落，也不可把有顏色、粗體或點擊的物件改成一般字串。'
                  '有 previous 欄位時，那是上次被退回的譯文，problem 說明退回原因，這次要改正。'
                  '依 key 與模組相對路徑判斷上下文，台灣用語優先。'
                  '人物、NPC、訓練家、寶可夢與地點的名字是玩家看得到的文字，要翻成台灣官方或通行的中文名'
@@ -484,6 +487,12 @@ def rejection_problem(original, rejected):
         return '數字和原文不同：' + (rejected.get('detail') or '請照原文寫出每個阿拉伯數字')
     lines = original.count('\n'); got = str(rejected.get('text') or '').count('\n')
     if lines != got: return f'換行數不符：原文 {lines} 個，上次 {got} 個'
+    from . import embedded_text
+    pieces = embedded_text.text_spans(original) if original.lstrip()[:1] in ('[', '{') else None
+    if pieces and len(pieces) > 1 and embedded_text.blank_words(str(rejected.get('text') or '')) != embedded_text.blank_words(original):
+        answer = embedded_text.text_spans(str(rejected.get('text') or ''))
+        return (f'原文分成 {len(pieces)} 段文字，上次' + (f'回了 {len(answer)} 段或改了其他欄位' if answer is not None else '不是正確的 JSON')
+                + '；請照 shape 逐段填上中文，語序不同時把字移到相鄰的段並讓該段留空字串 ""，不可刪除或合併有顏色、粗體或點擊的段')
     return '格式碼、佔位符或控制字元和原文不同，請逐一照抄'
 
 
@@ -793,6 +802,7 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
                 item['context']='資料包裡照字面顯示的文字（NPC 名稱、商店分類、告示牌、書本、聊天訊息或物品名稱）'
                 if jobs.embedded_text.text_spans(original) is not None and original.lstrip()[:1] in ('[','{'):
                     item['context']+='；這是 JSON 文字元件：只翻譯 text 的值與陣列裡的文字，其餘欄位、順序與標點符號原樣保留'
+                    if len(jobs.embedded_text.text_spans(original)) > 1: item['shape'] = jobs.embedded_text.blank_words(original)
             if '\n' in original: item['lines'] = str(original.count('\n'))
             codes = jobs.required_codes(original)
             if codes: item['codes'] = codes

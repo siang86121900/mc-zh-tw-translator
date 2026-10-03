@@ -323,4 +323,17 @@ class GroupedSupplementTests(unittest.TestCase):
         self.assertEqual(Together.groups,[]);self.assertEqual(len(FakeClient.calls),2)
 
 
+class ComponentShapeTests(unittest.TestCase):
+    # COBBLEVERSE guidebook page 2: AI merged the bold piece into plain text three runs in a row and the page stayed English.
+    PAGE='[["",{"text":"To disable the Level Cap","color":"gold","bold":true}," and ",{"text":"level up your Pokémon","bold":true}," to the maximum level."]]'
+
+    def test_retry_names_the_pieces_and_an_emptied_piece_passes(self):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        merged='[["",{"text":"若要停用等級上限","color":"gold","bold":true},"並讓寶可夢升到最高等級。"]]'
+        self.assertFalse(jobs.validate_text(self.PAGE,merged))
+        self.assertIn('分成 5 段',ai.rejection_problem(self.PAGE,dict(reason='format',text=merged)))
+        moved='[["",{"text":"若要停用等級上限","color":"gold","bold":true},"並讓",{"text":"寶可夢升到最高等級","bold":true},""]]'
+        self.assertTrue(jobs.validate_text(self.PAGE,moved))
+
+
 if __name__=='__main__':unittest.main()
