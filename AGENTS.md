@@ -75,6 +75,7 @@
 - 送去核對的只有讀英文就能判斷的疑點（數值和原文不同、版本不同或跨版本的候選、生態域／結構／維度名稱留有原文英文字或生態域叫法和地圖不同：desktop_jobs.name_doubts）；AI 判斷名稱無誤的記在 ai_memory 的 checked，之後不再列出也不再送；使用者確認過的不送，同一筆不送第二次。AI 的改寫若格式不符或又改動數值就不採用，該筆留在「建議確認」。已套用的譯文被改寫後改回「待套用」，由使用者再套用，AI 不直接寫遊戲檔。
 - 補翻時註明原文換行數。回答沒通過格式或數值檢查的，同一次工作內帶著上次譯文與退回原因再送一次，不送第三次；AI 判斷保留原文的不重送。被退回的譯文存在該筆（ai_rejected）供使用者修改確認，不直接採用。AI 按鈕停用時要說明原因。
 - AI 判斷無誤不等於人工確認：以 ai_review 另外記錄，可移出「建議確認」，但不得標成 manual 或使用者確認，報告要寫出 AI 核對了幾筆。
+- 人物、NPC、訓練家、寶可夢與地點的名字是玩家文字：送 AI 時要求用台灣官方或通行譯名（Misty 是小霞），不能因為是名字就保留原文；只有模組名、品牌、作者與玩家帳號名稱、技術代碼可保留（codex_bridge.TRANSLATE）。AI 補譯記憶涵蓋每一種會送 AI 的文字（含 embedded_text）：整合包被啟動器換回原檔後重跑，沿用先前的譯文，不再送 AI 換一個答案（COBBLEVERSE 2026-10-03 小霞被改回 Misty）。
 - 讓翻譯越用越準靠三種累積，順位不可顛倒：使用者確認的翻譯記憶（最優先）、使用者固定的譯名、先前的 AI 補譯（ai_memory，綁定同模組、同 key、同原文，順位最後並維持 AI 標示）。程式不得把未確認的自動結果當成記憶。
 - 整批確認只作用在使用者當下列出的譯文，確認前說明筆數與影響（順位高於社群參考庫），範圍大時提醒先縮小；每次整批確認都能取消，取消時還原被它取代的舊確認。
 - 尚未解決的實質語意衝突不能只加警告就套用；低信心但通過內容與格式檢查的合理譯法可套用並揭露疑點，不杜撰準確率。
@@ -85,7 +86,7 @@
 - 用途證明可以跟著文字走：交給同一模組檔裡別人無法覆寫的方法（private、static、final）的參數，或存進 private／編譯器產生的欄位（匿名類別的 val$…），每一處用到都只拿去顯示才算（class_text.JarFlow）；經過無條件跳躍（cond ? "Required" : "Optional"）也算。比對、查表、回傳、公開欄位、可被覆寫的方法一律不算。
 - 模組程式要的語系鍵連英文版都顯示原樣時，在翻譯資源包補上（full_translation_audit.unnamed_keys）：程式拿英文句子當語系鍵（Component.translatable("Spawner: %1$s…")）時以那句為鍵；名稱寫在另一個命名空間（註冊為 cobblemon-additions、語系寫 block.bca.…）時補上遊戲查的鍵並沿用原名稱的譯文。原文有遊戲看不懂的佔位符（%2$i、%d）時，譯文改用 %2$s 才會顯示數值，並列入「建議確認」（使用者 2026-10-03 選擇）。
 - 模組 data/<模組>/lang/ 的語系檔（Lenient Death 內嵌 Server Translations API）寫進翻譯資源包的 assets/<模組>/lang/zh_tw.json（desktop_jobs.pack_resource）：該 API 在玩家端先查資源包語系（SystemDelegatedLanguage），送到玩家端的文字保留語系鍵、伺服器文字只當備用（已查 2.3.1）。Forge 的 data/lang 在 assets 已有同鍵時照舊略過（server_lang）。
-- 硬編碼文字改寫僅改已證明用途的字串常數，保留 Modified UTF-8、控制字元、常數索引與其餘 class 位元組；套用前重新驗證用途、原文、Java class 解析及 ZipFS。這類文字只能改寫原模組，不能假稱加語系檔即可生效；不匯出到翻譯分享補丁。重跑須保留原文與 AI 來源並認出已套用。
+- 硬編碼文字改寫僅改已證明用途的字串常數，保留 Modified UTF-8、控制字元、常數索引與其餘 class 位元組；套用前重新驗證用途、原文、Java class 解析及 ZipFS。這類文字只能改寫原模組，不能假稱加語系檔即可生效。使用者 2026-10-03 要求修正分享內容不一致：可在格式 3 分享已套用文字的逐句紀錄，接收端重新證明用途，不能散布 class 位元組；Mixin、CurseForge 管理與用途未確認的轉換仍不放寬。重跑須保留原文與 AI 來源並認出已套用。
 - 例外（使用者 2026-10-01 同意放寬）：用途未證明、但本身是簡體中文的程式字串，在啟動器不會換回的模組檔裡（不在 CurseForge installedAddons、不是內嵌 jar）只在原地轉成台灣繁體，不翻譯、不送 AI。限只被 ldc 載入、不在註解／欄位／其他常數角色的字串（class_text.plain_strings）；同一模組檔任何 class 拿它去比對或查找（equals、switch、Map.get…）就整個模組檔都不轉，Mixin 目標、產生語系檔的工具程式、記錄檔字串照舊不改（desktop_jobs.literal_conversion）。
 - 任何 Mixin（含內嵌在模組裡的小模組）提到的 class 一律不改寫文字、不送 AI：Mixin 可能要找一句指定原文（@ModifyConstant），找不到遊戲就無法啟動（v0.18.0 在 The Foll 把 GoetyRevelation 的設定說明翻掉，RevelationFix 因此讓遊戲停在載入畫面）。先前寫入的改回原文；不知道 Mixin 的舊報告不寫入程式文字（Audit.mixin_targets、session mixin_targets、HELD_MIXIN）。產生語系檔的工具程式（LanguageProvider）在模組附語系檔時列為無需翻譯。
 - CurseForge 管理的整合包（有 minecraftinstance.json）啟動遊戲時會把它自己裝的模組檔（installedAddons 列出的）從官方重新下載蓋回，所以這些模組不寫入 class 文字、也不送 AI 補翻，報告寫明原因；玩家自己放進 mods 的模組 CurseForge 沒有下載來源、蓋不回去，照其他啟動器的方式改寫（desktop_jobs.is_curseforge／managed）。紀錄讀不懂時全部當成 CurseForge 的。
@@ -99,15 +100,15 @@
 - 設定檔裡的檔名（.zip、.nbt…，desktop_jobs.FILE_NAME）不是顯示文字，不轉換、不分享；先前版本轉成繁體而對不上實際檔案的，改回原本的檔名（original_file_name；VEFV2.7.1 的 Paxi 載入順序、SDMShop 的建築檔名）。
 - 結構名稱和地圖一致（使用者 2026-10-02 要求「這邊是沼澤，那邊也要顯示沼澤」）：探險家指南針清單、它加的 Xaero 路標與小地圖都讀同一個名稱；名稱裡的生態域用官方繁中（小地圖顯示的那個），已知的簡中叫法在英文確有該生態域時直接換（desktop_jobs.MAP_BIOME_WORDS：熱帶草原→莽原…），其餘不同的列入「建議確認」交 AI 核對；模組自己的生態域本身就是地圖上的名字，不比對；太常見的字（grove、ocean、forest…，PLAIN_BIOME_WORDS）不比對。官方生態域名稱也提供給 AI 補翻當用詞。
 - 書本檢查不能只看有沒有 zh_tw：其他語言的書頁（books/tok/ 這種非 xx_yy 的語言代碼資料夾，以「同路徑有 en_us」判斷）和模型檔的 credit 不是要翻的英文；整合包的每本書要以遊戲實際讀的那份（翻譯資源包或模組 zh_tw）核對沒有英文句子與簡體字。
-- 資料包裡照字面顯示的文字（使用者 2026-10-03 要求「NPC 對話、系統說話也要中文」；mc_zh_tw_translator.embedded_text）：結構檔 .nbt 的 NPC／方塊名稱（CustomName）、CobbleDollars 商店分類（CobbleMerchantShop.Category，ShopScreen 直接畫字串）、告示牌、放在結構裡的書（pages／title／author）、命令方塊指令；函式 .mcfunction 的 tellraw／title 與給玩家的書、物品名稱；戰利品表與進度裡寫死的名稱與說明；RCT 訓練家名稱（rctapi Text：沒寫 translatable 就照字面顯示）。只改字，其他位元組不動；有多段文字的 JSON 元件整段送 AI，格式（顏色、點擊、順序）必須完全相同（blank_words）。寫在原檔（整合包的資料包、CurseForge 不會換回的模組）；CurseForge 會換回的模組列為「無法寫入」、不送 AI。結構只影響之後新生成的地方，已生成的在存檔裡不改。
+- 資料包裡照字面顯示的文字（使用者 2026-10-03 要求「NPC 對話、系統說話也要中文」；mc_zh_tw_translator.embedded_text）：結構檔 .nbt 的 NPC／方塊名稱（CustomName）、CobbleDollars 商店分類（CobbleMerchantShop.Category，ShopScreen 直接畫字串）、告示牌、放在結構裡的書（pages／title／author）、命令方塊指令；函式 .mcfunction 的 tellraw／title 與給玩家的書、物品名稱；戰利品表與進度裡寫死的名稱與說明；RCT 訓練家名稱（rctapi Text：沒寫 translatable 就照字面顯示）；VillagerConfig 交易（data/<ns>/trades）與戰利品表 set_name／set_lore、進度 display.title／description 直接寫的字串；Treasure Bags 寶藏袋名稱（treasurebags_types 的 displayName）；REI 自訂分組名稱（config/roughlyenoughitems/collapsible.json5，Component.literal）；結構裡 1.20.5 以前格式的書（Book.tag.title／pages）；Capsule 從 config/capsule/（loot、starters、prefabs、rewards）放出的建築。只改字，其他位元組不動；有多段文字的 JSON 元件整段送 AI，格式（顏色、點擊、順序）必須完全相同（blank_words）。寫在原檔（整合包的資料包、CurseForge 不會換回的模組）；CurseForge 會換回的模組列為「無法寫入」、不送 AI。結構只影響之後新生成的地方，已生成的在存檔裡不改。
 - 防止整類漏掃也包含模組檔裡面：模組（含資料包、OpenLoader 壓縮檔）的 data/<模組>/<種類>/ JSON 在 title、description 等顯示欄位有中文或三個字以上的英文句子（ENGLISH_WORDS，2026-10-03 起英文也列）、又沒有讀取器負責時，每個資料夾列一筆「格式尚未支援」紅字（Audit.unsupported_data）；只看顯示欄位，標籤檔的 __comment 等開發者註記不列。
-- 模組 assets 也一樣：assets/<模組>/<種類>/ 的 JSON、txt、md 有句子卻沒有讀取器產生條目時，每個資料夾列一筆「格式尚未支援」紅字（Audit.unsupported_assets）；models、sounds、font 等遊戲資料種類與其他語言的副本不讀。光影包 shaderpacks/ 的 shaders/lang 也掃描（Iris／Oculus 依遊戲語言讀 zh_tw.lang），寫在光影包同一資料夾，不放進分享補丁。
+- 模組 assets 也一樣：assets/<模組>/<種類>/ 的 JSON、txt、md 有句子卻沒有讀取器產生條目時，每個資料夾列一筆「格式尚未支援」紅字（Audit.unsupported_assets）；models、sounds、font 等遊戲資料種類與其他語言的副本不讀。光影包 shaderpacks/ 的 shaders/lang 也掃描（Iris／Oculus 依遊戲語言讀 zh_tw.lang），寫在光影包同一資料夾；格式 3 只分享語系文字的逐句紀錄，不帶光影程式。
 - 資料檔命名、卻沒有任何語系檔定義的語系鍵（戰利品表的物品名與說明、進度標題：{"translate": 鍵, "fallback": 英文}，或拿英文句子當鍵）一律補成語系條目寫進翻譯資源包（Audit.data_keys）；資料包在 mods 以外（OpenLoader、datapacks）時借同命名空間的模組檔（沒有就第一個有語系檔的模組檔）記錄。模組把資料檔的英文句子交給 Component.translatable 當鍵的格式（Pixelmon NPC 台詞、Cobblemon 對話、Apotheosis 小頭目名字，DATA_KEY_SENTENCES）也以句子為鍵補條目；新增格式前先查模組程式，依據寫在 docs/translation-reference.md。
 - 模組自己的書與百科格式（冰與火圖鑑 lang/bestiary/<語言>_0、Saint's Dragons 的 codex/<語言>/、Chrono Dawn 的 {"en_us": …} 並列多語言、foxablazeaqzl_wiki 顯示 zh_cn 欄位）寫進翻譯資源包；並列多語言要寫哪個欄位以 full_translation_audit.INLINE_FIELDS 為準。查證發現模組用自己的點陣字型畫、字型沒有中文時保留英文，報告以灰字寫原因（desktop_jobs.KEEP_ENGLISH_FORMATS，例如 Beyond Adventures）。
 - 使用者回報畫面上的漏翻時，除了修好那一類文字，同時查清楚掃描為什麼沒發現、報告為什麼沒有紅字，補上防漏檢查（讓同類格式以後一定會被列出）與測試；只修單一檔案不算完成。新增讀取器前先拆模組程式確認它怎麼顯示這段文字（照字面 Component.literal 或查語系鍵）、從哪裡讀（資源包、資料包、存檔），依據寫在程式註解。
 - 模組照字面顯示、從資料包讀的文字（full_translation_audit.DATA_TEXT_FORMATS 列出每種格式與欄位：Whispering Quests 的 tasks|chapters、Slime Throne Extras 的 st_quests 名稱、Monster Expansion 的 quest_data 與 monsterology）：簡中轉台灣用語、英文照一般順序與 AI 補翻，連同該檔其餘內容複製進翻譯資料包 config/openloader/data/zz-MCTranslator-zh_tw.zip（desktop_jobs.DATA_PACK_FILE；OpenLoader 19 以 Pack.Position.TOP、必載並自動加入既有世界，依名稱排序所以名稱排最後），模組檔不修改，CurseForge 模組也適用。同一個檔案有多份時翻遊戲讀的那份（OpenLoader > datapacks > 模組）。資料包每次都從目前的原檔重建，只放回原句仍相同的譯文，原檔變了（模組更新）就重做，不讓舊複本蓋掉新任務內容。OpenLoader 21（NeoForge 1.21.1）改讀 config/openloader/packs，翻譯資料包放那裡（desktop_jobs.data_pack_file；options.json 的 load_data_packs 關閉時不寫入）。沒有 OpenLoader（或其資料包停用）時不寫入，報告寫明原因（HELD_NO_DATAPACK）。任務進度只記 id、不記文字（已查 QuestManager），改文字不影響存檔。
 - 同一段文字並列多種語言的格式（{"en_us": …, "zh_cn": …}，例如 Ponderer 的 config/ponderer/scripts）：在同一段加上 zh_tw，不改其他語言。英文可能被整合包作者截斷未寫完，有完整的簡中時照一般順序先用簡中轉台灣用語，英文只作比對。寫入前必須先在模組程式裡確認它會依遊戲語言讀 zh_tw（記在 desktop_jobs.INLINE_ZH_TW 並註明依據）；未確認的格式不寫入、不算進完成率，報告寫明「還沒確認這個模組會讀繁中」。
-- 設定檔與任務檔裡直接寫的中文（config、defaultconfigs、kubejs 的 json／snbt／toml／txt／yaml 字串值、Forge 舊式 .cfg 的值與清單行、.properties 的值（KubeJS 視窗標題）、FancyMenu 版面檔的 label／hoverlabel／description／source 等顯示欄位、KubeJS 腳本 .js 與 CraftTweaker 腳本 scripts/*.zs 的字串、內容包 JSON 顯示欄位，例如 FTB Quests 1.20.1 寫在 chapters 裡的任務文字、Text.of('…')）：簡體一律在原檔轉成台灣用語，只改那個字串、其餘位元組不動（desktop_jobs.convertible／rewrite_literals）；鍵名（腳本裡只有開頭、{ 或逗號後接冒號的才算鍵名，三元運算的文字照轉）、註解行（含腳本的 /* */ 區塊）、其他語言的檔案（lang 資料夾、zh_cn 等語言代碼命名）與遊戲不讀的 quests-backup 不改。英文仍列待查；例外是 FancyMenu 版面的英文按鈕、說明與 source_mode = direct 的文字元件，照一般順序與 AI 補翻後原地寫入（embedded_text.fancymenu_units），佔位符、顏色碼、%n% 與連結目標必須原樣保留，圖片路徑不是文字；英文改中文不是只改中文字，所以不放進分享補丁。
+- 設定檔與任務檔裡直接寫的中文（config、defaultconfigs、kubejs 的 json／snbt／toml／txt／yaml 字串值、Forge 舊式 .cfg 的值與清單行、.properties 的值（KubeJS 視窗標題）、FancyMenu 版面檔的 label／hoverlabel／description／source 等顯示欄位、KubeJS 腳本 .js 與 CraftTweaker 腳本 scripts/*.zs 的字串、內容包 JSON 顯示欄位，例如 FTB Quests 1.20.1 寫在 chapters 裡的任務文字、Text.of('…')）：簡體一律在原檔轉成台灣用語，只改那個字串、其餘位元組不動（desktop_jobs.convertible／rewrite_literals）；鍵名（腳本裡只有開頭、{ 或逗號後接冒號的才算鍵名，三元運算的文字照轉）、註解行（含腳本的 /* */ 區塊）、其他語言的檔案（lang 資料夾、zh_cn 等語言代碼命名）與遊戲不讀的 quests-backup 不改。英文仍列待查；例外是 FancyMenu 版面的英文按鈕、說明與 source_mode = direct 的文字元件，照一般順序與 AI 補翻後原地寫入（embedded_text.fancymenu_units），佔位符、顏色碼、%n% 與連結目標必須原樣保留，圖片路徑不是文字；英文改中文以格式 3 的有用途證明逐句紀錄分享，不帶整份版面檔。
 - FTB Quests 的任務文字在 config/ftbquests/quests/lang/<語言>.snbt（mc_zh_tw_translator.quest_lang），當成語系檔處理：說明清單逐行成為一筆，簡中清單行數和英文不同時不逐行對應；寫出 zh_tw.snbt 時沿用英文檔的排版，圖片與換頁行原樣保留，英文檔不修改。
 - 新增支援的格式前，用真實整合包列出「有玩家文字卻沒產生任何一筆」的檔案，確認新格式涵蓋它們；參考其他翻譯工具的支援範圍時只讀其內容，不執行不明程式。
 - 附帶語言包裡未安裝模組的文字略過。判定已安裝要有模組本身（宣告的 modId）、它的語系檔或世界生成資料；其他模組附的相容材質、配方不算。
@@ -118,6 +119,9 @@
 - 重跑同一包不應再寫入任何東西：本程式先前套用的文字（含改放到 KubeJS 的內嵌函式庫文字）要被認出是已套用，保留原本的來源標記，也不被同一套用語替換反覆改寫；用語規則新增後，舊版寫入的大陸用語只修正一次並列入「建議確認」，之後重跑不再變動。重跑仍有變動時視為錯誤追查。
 - 完成前複查英文殘留、中英混雜、簡體、同概念名稱不一致、漏句、數量／條件／否定及格式錯誤，合理英文須有用途判定。
 - missing=0、掃完全部檔案或 verify 通過不等於整包翻完；分開呈現掃描覆蓋、已套用、疑點、未支援與實測範圍。
+- 一鍵流程另外執行 text_inventory 的文字涵蓋檢查；同一檔案已有條目不代表整份涵蓋，必須對照文字位置與原文，包含短名稱。新候選只是診斷，不自動取得寫入或送 AI 的資格；解析、讀取、大小或層數限制必須保存原因，不能當成零漏翻。
+- 文字涵蓋快取綁定原檔雜湊、位置與規則版本；讀取失敗不快取，每次仍重新對照掃描結果。變更枚舉規則或共用解析器時遞增 text_inventory.RULES_VERSION。未支援範圍、未讀完與具體疑點直接出現在主畫面及完成提示，不以使用者逐筆查看報告為前提。
+- 使用者 2026-10-03 表明不會逐筆查看建議確認：AI 來源、自動統一名稱與例行用字修正只保留來源／修正紀錄，不因此新增建議確認；本規則優先於前文要求修字列入建議確認的舊規定。數值、名稱、版本、顯示格式或核對被退回等具體疑點仍保留；自動採用與 AI 核對都不冒充人工確認。
 
 ## 檔案安全、遊戲偵測與還原
 - 只寫入使用者當次指定並確認的目標。開發測試預設用隔離 fixture／暫存 instance，不以真實遊戲資料當寫入測試場。
@@ -196,7 +200,10 @@
 - 補丁由 mc_zh_tw_translator.patches 產生／套用，只收已套用且未被後續改動的必要翻譯文字，綁定原檔 SHA-256；JAR／ZIP 不散布整個模組、class 或腳本。
 - 排除存檔、交易／進度、帳號、options.txt、伺服器清單、日誌及個人材質／光影。僅允許受支援路徑與文字類型，防止路徑穿越與越界寫入。
 - 補丁只能寫入繁體中文語系檔（lang/zh_tw.json、lang/zh_tw.lang）、zh_tw 書本頁、FTB Quests 的 config/ftbquests/quests/lang/zh_tw.snbt，以及翻譯資源包裡的這些檔案；英文或簡中語系檔、配方、戰利品表一律拒絕。例外（使用者 2026-10-02 同意，讓安裝者也全是繁體）：設定檔與腳本（patches.LITERAL_ROOTS，含 scripts、FancyMenu、KubeJS）裡原地轉換的文字，以逐句修改（補丁格式 mctranslator-patch-2 的 literals）分享，從不帶整份檔案；每處修改只能改中文字，中文以外的字元（英文、數字、引號、跳脫字元）必須完全相同（patches.edit_safe），接收端的檔案雜湊等於翻譯者的原檔才套用，套用後雜湊須等於翻譯者的結果。沒有逐句修改的補丁仍寫成格式 1，讓舊版程式能安裝。解開後的單檔與總大小有上限，先檢查再解開。
-- 翻譯資料包含有模組任務檔的完整複本（不只文字），不放進分享補丁（匯出時列為略過並說明）；要分享時須改成只帶逐句修改並經使用者同意放寬。
+- 翻譯資料包含有模組任務檔的完整複本（不只文字），完整複本不放進分享補丁。使用者 2026-10-03 要求修正分享內容不一致，格式 3 只帶已套用的逐句修改；接收端核對原檔後用自己的任務檔重建，任務 ID、獎勵、座標與其他資料不從補丁取得。沒有支援讀取器、原文不符或沒啟用 OpenLoader 時不寫入並明列原因。
+- 格式 3 的逐句修改另涵蓋有用途證明的 FancyMenu 英文按鈕／說明、結構 NBT／函式／資料包顯示文字、光影語系及並列多語言書本，取代下方與舊段落的分享排除限制；只分享文字，不帶圖片、光影程式、整份建築、class、設定或腳本。外部補丁不能供應 supported、用途證明或寫入路徑，接收端以本機掃描重新判定。未確認用途的原地轉換不分享。
+- 接收者維持一次「安裝」並確認，不要求重新翻譯、呼叫 AI 或搬檔。先核對相同模組版本，再經備份、驗證、套用與讀回；缺少無可信下載來源的模組、原檔變動、分享者省略內容或啟用失敗時，結果明列為部分，不能宣稱雙方一致。舊格式缺少完整證據時列為尚未核對。分享範圍的檔案核對不等於遊戲畫面、逐句語意或整包全部翻完。
+- 結構生成時照字面複製到存檔的 NPC／告示牌／書本，安裝後只影響之後新生成的來源；存檔裡使用語系鍵的內容可隨語系更新。安裝確認與結果寫清楚差別，不直接修改存檔、交易或任務進度。
 - 翻譯資源包分享時，每個翻譯檔帶著它所屬模組檔的 SHA-256 與大小；對方的模組資料夾裡有相同雜湊的檔案才放進對方的資源包，否則列出是哪個模組版本不同。
 - 讓別人「一次裝好」的做法是由 CurseForge 安裝官方整合包、本程式接著套用翻譯；不把模組檔、設定檔或整個 instance 放進目錄或儲存庫，也不把使用者的雲端硬碟當成發布位置（例外：沒有 CurseForge 編號的整合包，見下方「整包分享」）。等待安裝時以檔案是否到齊且大小相符判斷，逾時或取消都要說明之後怎麼接著做。
 - 分享者用 CurseForge 加裝的模組（整合包清單以外的專案）只在補丁與目錄記下專案、檔案、大小與未翻譯原檔的 SHA-256，不放檔案。對方按下安裝的確認（確認畫面列出會一起加入的模組，不另外詢問）後由程式從 CurseForge 的檔案伺服器（edge.forgecdn.net、mediafilez.forgecdn.net）下載，大小與 SHA-256 相符才放進 mods，並以一個可還原的批次記錄；轉址到其他網域、校驗不符或不是壓縮檔一律不安裝。
@@ -245,7 +252,7 @@
 - 改動翻譯規則或套用流程後，在真實整合包的副本上跑一次完整流程並核對：套用檔案與清冊一致、重跑沒有新寫入、還原後與原始檔逐位元相同。
 - UI 改動檢查亮／暗主題、小視窗、高 DPI、長文字與下拉選單；打包改動檢查 EXE 啟動、圖示、必要資源及不需 Python 的使用情境。
 - 測試使用隔離資料，不能用 mock 成功冒充真實帳號、遊戲內或公開更新實測；未能執行的驗證及原因須列出。
-- 發布前用 scripts/inventory_text.py 對使用者電腦上跑過的整合包（只讀）做反向盤點，--compare 上一次的 categories.json，新出現或變多的類別逐一判斷是不是玩家文字：是就補讀取器與測試，不是就寫進 docs/translation-reference.md 的「不是玩家文字」。沒有跑或有未判斷的類別不發布，更新說明寫出盤點了哪些整合包。
+- 發布前用 scripts/inventory_text.py 對這次要上架或更新上架的整合包（只讀）做反向盤點；其他整合包不必每次發布都跑，使用者要翻譯時一鍵流程本身會做同樣的涵蓋檢查並在畫面列出未支援的格式（使用者 2026-10-03 同意放寬；新增讀取器或改盤點規則後，仍要在至少一個用得到的真實整合包上驗證）。盤點時 --compare 上一次的 categories.json；比較文字位置、內容與原檔雜湊，筆數相同但內容改變也必須重判。加 --check 時未涵蓋、已列出的未支援文字或讀取失敗均回傳失敗；非玩家文字的逐筆決策須有理由並綁定 fingerprint，原文或上下文變動失效。是玩家文字就補讀取器與測試，不是就寫進 docs/translation-reference.md 的「不是玩家文字」。沒有跑或有未判斷的類別不發布，更新說明寫出盤點了哪些整合包。這是開發驗收工具，目前尚未自動連接發布工作流程；通過也不等於遊戲畫面或語意實測。
 - 推送發布標籤前，另外用短檔名的暫存資料夾（TEMP／TMP 指向 8.3 短路徑，GitHub 的建置環境就是這樣）跑一次完整測試；測試裡比對路徑一律先 resolve()。建置失敗時不改寫已推送的標籤，修正後用下一個小版號發布。
 - 本機測試用 .venv-desktop 的 Python，設定 PYTHONPATH=src;scripts、QT_QPA_PLATFORM=offscreen 後執行 python -m unittest discover -s tests；Windows 市集的 python 捷徑在沙箱中會直接失敗。打包用 scripts/package_desktop.py，EXE 可用 --smoke-test <資料夾> 截圖並自動結束。
 - 使用方式、功能範圍、費用／資料傳送說明或更新行為改變時同步 README；開發原則改變同步本文件，不另建 AGENT.md 造成兩份規則。

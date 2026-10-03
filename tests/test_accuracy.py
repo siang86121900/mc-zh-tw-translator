@@ -70,7 +70,7 @@ class AiReviewTests(Base):
         # rewritten: an AI translation that remembers what it replaced
         self.assertEqual((rows['a']['origin'],rows['a']['proposed'],rows['a']['previous_origin'],rows['a']['previous_proposed']),
                          ('ai_translation','獲得 20 點經驗','same_source_zh_cn','獲得 10 點經驗'))
-        self.assertTrue(jobs.needs_check(rows['a']));self.assertFalse(rows['a'].get('number_doubt'))
+        self.assertFalse(jobs.needs_check(rows['a']));self.assertFalse(rows['a'].get('number_doubt'))
         # found correct: the source stays, the review is noted beside it, and it leaves the check list
         self.assertEqual((rows['b']['origin'],rows['b']['ai_review']['verdict'],rows['b']['proposed']),('same_source_zh_cn','ok','花費 8 顆寶石'))
         self.assertFalse(jobs.needs_check(rows['b']))
@@ -250,7 +250,7 @@ class AiReviewTests(Base):
         self.assertEqual(self.written(instance)['n'],'下界傳送門')
         again=self.make_plan(instance);rows={r['key']:r for r in again['rows']}
         self.assertEqual((rows['n']['proposed'],rows['n']['origin'],rows['n'].get('installed')),('地獄傳送門','same_source_zh_cn',None))
-        self.assertIn('台灣用語',rows['n']['issue']);self.assertTrue(jobs.needs_check(rows['n']))
+        self.assertIn('台灣用語',rows['n']['issue']);self.assertFalse(jobs.needs_check(rows['n']))
         jobs.auto_confirm_safe(again)
         for r in again['rows']:
             if r['supported'] and r['changed'] and not r.get('installed'):r['reviewed']=True
@@ -389,7 +389,7 @@ class AiMemoryTests(Base):
         rows={r['key']:r for r in self.make_plan(second)['rows']}
         self.assertEqual((rows['d']['origin'],rows['d']['proposed'],rows['d']['ai_reused']),('ai_translation','未知的東西',True))
         self.assertIn('沿用',rows['d']['issue']);self.assertEqual(rows['d']['ai_model'],'account-model')
-        self.assertTrue(jobs.needs_check(dict(rows['d'],changed=True)))  # still AI work: listed for checking
+        self.assertFalse(jobs.needs_check(dict(rows['d'],changed=True)))  # AI origin is preserved, not itself a doubt
         self.assertEqual(rows['x']['origin'],'untranslated')
         self.assertEqual([r['key'] for _,r in ai.pending_rows(dict(rows=list(rows.values())))],['x'])
 

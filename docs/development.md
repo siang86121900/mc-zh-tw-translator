@@ -78,6 +78,10 @@ python -m mc_zh_tw_translator verify 'tmp/pack/batch/mods' --input 'C:/path/inst
 
 - `export_patch(instance, home)`：從該 instance 仍為 `installed` 的備份清冊收集翻譯檔，輸出到 `output/<instance>/分享/*.zip`。ZIP 內含 `manifest.json`（格式 `mctranslator-patch-1`、整合包 projectID／fileID、每檔原 SHA-256 與項目雜湊）、`payload/` 與 `授權與來源.txt`。
 - `apply_patch(instance, zip, home)`：驗證清冊與路徑白名單，只改雜湊與原檔相符的檔案，經 `apply_reviewed` 備份與寫回。
+- 格式 3 的 `text_units` 只收已套用、讀回相符、有用途證明的原句與譯文。`shared_text.prepare` 使用本機 `plan` 的讀取器、Mixin／啟動器限制與來源校驗；外部清冊不能授予 kind、supported、用途證明或寫入路徑。安裝已翻好的內容不查參考庫、不呼叫 AI。沿用 `stage_and_apply(stage_only=True)` 的格式、Java class／ZipFS 驗證，再與舊格式 payload 合為一次備份部署。
+- 資料包任務只分享逐句修改，以對方目前的原始任務檔重建，任務 ID、獎勵和座標不從補丁取得；程式字串只分享常數位置與文字、不帶 class 位元組。壓縮項目沿用原 ZipInfo，新項目使用固定時間，讓相同原檔與譯文產生相同結果。
+- `required_mods` 核對分享者的模組集合；`sharing_status`、`sender_omitted`、本機略過項、讀回核對與啟用狀態決定 `consistency`（matched／partial／unknown）。matched 僅表示分享範圍的檔案核對，存檔與遊戲畫面實測不在其中。舊補丁沒有完整資料，保留 unknown；部分安裝不能被卡片顯示成完整一致。
+- `source_versions` 是本機通過逐句用途檢查後產生的原檔／結果校驗紀錄，仍符合結果雜湊才沿用；只用於辨識先前安裝的文字修改，不接受遠端寫入本機校驗紀錄。分享者確認的來源不匯入本機翻譯記憶，也不標成本機使用者確認。
 - `fetch_catalog()` 讀 `https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/index.json`；404 視為尚無公開翻譯。補丁下載網址必須是本專案的 GitHub Release 附件，並驗 SHA-256 與大小。
 - CurseForge 整合包由 `%APPDATA%/CurseForge/agent/GameInstances/MinecraftGameInstance.json` 偵測（含自訂位置），整合包身分讀 `minecraftinstance.json`；「用 CurseForge 安裝」開啟 `curseforge://install?addonId=<projectID>&fileId=<fileID>`，無反應時請使用者手動搜尋。
 
@@ -103,6 +107,14 @@ python -m mc_zh_tw_translator verify 'tmp/pack/batch/mods' --input 'C:/path/inst
 ```
 
 ## 注意
+
+文字涵蓋檢查由 `text_inventory.py` 在一般掃描後另外枚舉候選，對照相對路徑、文字位置與原文。`covered` 只代表掃描有相應條目；`listed` 代表既有未支援診斷，`uncovered` 代表新缺口，都不代表已翻譯。讀取／解析／範圍限制另存 `errors`。一鍵流程不因新候選自動取得 AI 或寫入資格。主畫面與完成提示由 `completion_notes` 顯示未完成範圍。
+
+開發者可用 `scripts/inventory_text.py <instance> --output <本機資料夾> --check` 驗收涵蓋情況；傳回 1 代表有未涵蓋、已知未支援或檢查失敗，2 代表工具本身未完成。`--compare` 比較文字與檔案內容的 fingerprint；`--decisions` 只接受逐筆有理由的非玩家文字判定，原文或上下文改變即失效。不能用它忽略真正的玩家文字。一般玩家不用執行這些指令。
+
+枚舉快取依原檔雜湊與規則版本沿用，重新核對覆蓋關係；不快取失敗。初次掃描明細壓縮保存，套用後複查只保存統計與未完成原因。發布工作流程目前沒有自動執行真實整合包驗收，仍須依 AGENTS.md 完成盤點與判定後才發布；CLI 通過不代表遊戲內或逐句語意已驗過。
+
+本機測試建置可指定 `scripts/package_desktop.py --output-dir <資料夾>` 保留既有 EXE。`build-info.json` 記錄版本、EXE 雜湊及原始碼雜湊；建置途中原始碼改變就拒絕產生新版本證明。`--checksum-only` 只更新 EXE 校驗檔，不為已有 EXE 宣稱目前原始碼版本。
 
 - 報告把 AI 補譯、簡中轉繁、參考庫命中與人工確認分開；沒有使用外部翻譯 API 就記為 0 筆。
 - 舊參考庫更新腳本固定選 CFPA 1.20 資產；其他版本須核對適用版本、namespace 與英文語意。

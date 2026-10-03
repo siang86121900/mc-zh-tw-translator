@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import patches
-from .deployment import contained, file_hash
+from .deployment import contained, file_hash, when_free
 from .updater import VERSION
 
 FORMAT = 'mctranslator-fullpack-1'
@@ -457,6 +457,12 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
     listing=Path(listing) if listing else curseforge_list()
     if not listing.is_file():
         raise ValueError('這台電腦沒有 CurseForge（或從來沒有開過）。請先安裝 CurseForge 並開啟一次，再回來按「安裝」。')
+    # Reject malformed records before falling back to the real default instance folder.
+    # Previously this was only checked at registration, after downloads and staging writes.
+    try:listed=json.loads(listing.read_text(encoding='utf-8-sig'))
+    except (ValueError,UnicodeError) as exc:
+        raise ValueError('CurseForge 的整合包清單格式看不懂，沒有修改。') from exc
+    if not isinstance(listed,list):raise ValueError('CurseForge 的整合包清單格式看不懂，沒有修改。')
     root=curseforge_root(listing);root.mkdir(parents=True,exist_ok=True)
     linked=[e for e in manifest['files'] if e['source']=='curseforge']
     need=manifest['totalSize']+jobs.SPACE_MARGIN
@@ -496,7 +502,10 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
             notify(95,'請關閉 CurseForge','整合包已準備好；CurseForge 開著時無法加入新的設定檔，關閉後會自動繼續（包含右下角的小圖示）')
             pause(3)
         folder=new_folder(root,manifest['name'])
-        work.rename(folder);moved=folder
+        # Files just written are often opened for a moment by an antivirus scan or the Windows indexer, and Windows
+        # then refuses to rename the folder holding them: wait and try again (deployment.when_free).
+        when_free(lambda:work.rename(folder),folder.name,lambda name:notify(96,'等待其他程式放開檔案','防毒或索引程式正在檢查剛下載的檔案：'+name))
+        moved=folder
         record=new_record(manifest,folder)
         stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
         register(listing,folder,record,home/'output'/folder.name/'CurseForge紀錄備份'/stamp)

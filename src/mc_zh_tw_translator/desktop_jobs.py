@@ -28,6 +28,7 @@ from . import embedded_text
 from .verifier import VerifyResult, check_java_zipfs
 
 SOURCE_NAMES = {'same_source_zh_cn':'同檔簡中', 'instance_zh_cn':'模組包中文',
+                'shared_translation':'分享者的譯文（未經本機使用者確認）',
                 'reference_pack_or_cfpa':'參考庫', 'glossary':'術語表',
                 'translation_memory':'已確認記憶', 'existing_zh_tw':'既有繁中',
                 'ai_translation':'AI 補譯', 'manual':'使用者修訂', 'untranslated':'缺少來源',
@@ -66,9 +67,18 @@ NO_CHINESE_FONT ='這個模組用自己的字型顯示介面（{}），字型裡
 # Text the scan lists as a format no reader covers that stays English on purpose, with the reason checked in the mod.
 # Beyond Adventures 1.1.9 draws its quest names (MissionsScreen) and its summon guide (InfoScreen, info_text/text.txt)
 # in its own bitmap fonts (assets/beyond_gacha_c/font/tensura_*.json), which hold Latin letters and digits only.
+# Better Pokédex Scanner 1.0.0 (VariantLabelLoader) reads every pack's variant_labels with listResourceStacks, lowest
+# pack first, and VariantLabelRegistry.findMappedLabel returns the first group that matches: the mod's own English is
+# always found before a resource pack's copy, so only the mod file itself could change it (COBBLEVERSE 2026-10-03).
 KEEP_ENGLISH_FORMATS = [
     (re.compile(r'!/(?:data/beyond_gacha_c/quests|assets/beyond_gacha_c/info_text)/'),
      'Beyond Adventures 用自己的像素字型畫任務名稱與說明頁，字型裡只有英文字母，翻成中文會變成方框'),
+    (re.compile(r'!/assets/better_pokedex_scanner/(?:variant_labels|entity_accessor_labels)/'),
+     'Better Pokédex Scanner 的型態標籤會先讀模組自己的英文，翻譯資源包蓋不過去；只有改模組檔本身才能換掉，程式不修改模組檔的這類資源'),
+    # Music Notification 3.0 (MusicResourceReloadListener) shows each track's "title", "author" and "album" as written;
+    # random.json is not read by its program at all.
+    (re.compile(r'!/assets/musicnotification/(?:musics|random)\.json$'),
+     '音樂通知顯示的是曲名、作者與專輯名稱，屬於作品名稱，比照 Minecraft 官方繁中的唱片名保留英文'),
 ]
 
 
@@ -542,7 +552,9 @@ class AiMemory:
             entry=dict(text=original if r.get('ai_keep') else r['proposed'],original=original,model=model,
                        made_at=datetime.now().isoformat(timespec='seconds'))
             if r.get('ai_keep'):entry.update(keep=True,reason=r.get('evidence') or '')
-            if original and r.get('kind') in ('class_display','inline_lang','data_text'):
+            # embedded_text too: a launcher that puts the original data pack back (COBBLEVERSE 2026-10-03) must not
+            # send its NPC names to AI again, where a second answer kept 小霞 as Misty.
+            if original and r.get('kind') in ('class_display','inline_lang','data_text','embedded_text'):
                 self.entries[TranslationMemory.ident(r['source'],r['key'],original)]=entry
             if ns and original and r.get('kind')=='language':
                 self.entries[TranslationMemory.ident(ns,r['key'],original)]=entry
@@ -710,20 +722,15 @@ class Provenance:
 
 
 def needs_check(row):
-    """Applied anyway, but worth a look: AI, other-version references, converted old zh_tw, unified names.
-
-    Ordinary simplified-to-traditional conversions are not listed; there are tens of thousands and they
-    come from the mod's own Chinese text.
-    """
+    """Concrete unresolved doubts. Origin and automatic repairs stay in source details;
+    their presence alone is not evidence that the player must inspect the sentence."""
     if str(row.get('review_method') or '').startswith('user_confirmed'):return False  # the user has looked at it
     if (row.get('ai_review') or {}).get('verdict')=='ok':return False  # AI read it against the English and agreed
     if row.get('supported') and row.get('number_doubt') and row.get('origin') not in ('untranslated','keep_original'):return True
     if row.get('supported') and (row.get('name_doubt') or row.get('map_word')) and row.get('origin') not in ('untranslated','keep_original'):return True
     if row.get('supported') and row.get('format_fixed') and row.get('origin') not in ('untranslated','keep_original'):return True
-    return bool(row.get('supported') and (row.get('changed') or row.get('recovered')) and (
-        row.get('origin') in UNCERTAIN_ORIGINS or row.get('unified_from') is not None
-        or str(row.get('issue') or '').startswith('既有繁中') or '大陸用語改為台灣用語' in str(row.get('issue') or '')
-        or '已修正轉換用字' in str(row.get('issue') or '')))
+    if row.get('supported') and (row.get('ai_review') or {}).get('verdict')=='rejected':return True
+    return bool(row.get('supported') and row.get('origin') in ('stale_reference','cross_version_reference'))
 
 
 # Unambiguous mainland words that some mods' "zh_tw" keeps after a character-only conversion.
@@ -758,7 +765,8 @@ def unsupported_note(session):
     # stays in the list below without a red line.
     files=sorted({r['source'] for r in session.get('rows',[]) if r.get('kind')=='unsupported_config_text'
                   and r.get('origin')!='keep_original'  # checked and kept English on purpose (KEEP_ENGLISH_FORMATS)
-                  and (HAN.search(r.get('current') or '') or '/lang/' in r['source'])})
+                  and (HAN.search(r.get('current') or '') or '/lang/' in r['source']
+                       or r.get('inventory_gap') or re.search(r'[A-Za-z]{2,}',r.get('current') or ''))})
     if not files:return ''
     shown='、'.join(files[:3])+('…' if len(files)>3 else '')
     return (f'有 {len(files):,} 個檔案可能含有玩家看得到的文字，但程式還不會讀這種格式，遊戲裡可能仍是英文或簡體'
@@ -767,6 +775,15 @@ def unsupported_note(session):
 
 IMAGE_BUTTON = re.compile(r'^\s*(?:source|backgroundnormal)\s*=\s*\[source:local\][^\n]*button[^\n]*\.(?:png|gif|apng|jpe?g)\s*$',re.M|re.I)
 BUTTON_LABEL = re.compile(r'^\s*label\s*=\s*\S',re.M)
+
+
+def inventory_note(session):
+    """Incomplete reads are not silently treated as a clean scan."""
+    info=session.get('text_inventory') or {};errors=info.get('errors') or []
+    if not errors:return ''
+    examples='、'.join(e['source'] for e in errors[:3])
+    return (f'有 {len(errors):,} 項文字涵蓋檢查未完成（{examples}），這些內容沒有被此檢查證明已涵蓋。'
+            '已完成的譯文照常保留；讀取原因已保存在本機報告。')
 
 
 def image_menus(instance):
@@ -820,10 +837,11 @@ def report_overview(session):
     check=collections.Counter()
     for r in rows:
         if needs_check(r):
-            check['AI 補譯' if r['origin']=='ai_translation' else '自動統一譯名' if r.get('unified_from') is not None
-                  else '版本待確認的參考' if r['origin'] in ('stale_reference','cross_version_reference')
-                  else '數值和原文不同' if r.get('number_doubt') else '名稱和地圖或原文不一致' if r.get('name_doubt') or r.get('map_word') else '修正轉換用字' if '已修正轉換用字' in str(r.get('issue') or '')
-                  else '改成台灣用語']+=1
+            check['數值和原文不同' if r.get('number_doubt')
+                  else '名稱和地圖或原文不一致' if r.get('name_doubt') or r.get('map_word')
+                  else '原文顯示格式已修正' if r.get('format_fixed')
+                  else 'AI 改寫未通過檢查' if (r.get('ai_review') or {}).get('verdict')=='rejected'
+                  else '版本待確認的參考']+=1
     after=session.get('after_counts')
     return dict(applied=applied,not_applied=reasons,context=context,held=held,check=sum(check.values()),check_kinds=check.most_common(),
                 backup=session.get('backup'),rechecked=after is not None,renamed=session.get('renamed_count',0),
@@ -1380,7 +1398,9 @@ def present_mods(z, depth=0):
 # scan-17: program text followed through helper methods and fields (JarFlow); keys a mod's program asks for (extra_keys)
 # scan-19: keys data files name (data_keys), FancyMenu English, shader packs, bestiary/codex/inline books, more quest
 #          formats (DATA_TEXT_FORMATS), resource text no reader covers (unsupported_assets)
-SCAN_CACHE_VERSION = 'scan-19'
+# scan-20: data sentence keys retain their exact JSON position for independent coverage checks
+# scan-21: VillagerConfig trades and plain-string set_name / set_lore, REI custom group names, owo rich language listed
+SCAN_CACHE_VERSION = 'scan-21'
 
 
 def scan_cache(home, instance):
@@ -1484,6 +1504,22 @@ def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
     audit.loose(instance)
     audit.missing_keys()  # keys a mod's program asks for that its language files miss
     audit.missing_names(audit.present_mods)  # biome, structure and dimension names no language file has
+    # A reader finding two strings in a file does not prove it covered the rest.
+    # Independent enumeration is diagnostic only: it grants no write or AI permissions.
+    from . import text_inventory
+    notify(44,'檢查文字涵蓋範圍','核對尚未產生條目的文字位置，包含短名稱與按鈕')
+    inventory=text_inventory.reconcile(text_inventory.collect(instance,cancelled,
+        lambda name:notify(44,'檢查文字涵蓋範圍',name),
+        cache=cache/'text-inventory' if cache else None,source_hashes=audit.source_hashes),audit.rows)
+    audit.text_inventory=inventory
+    with gzip.open(report/'text-inventory.json.gz','wt',encoding='utf-8',compresslevel=3) as f:
+        json.dump(inventory if details!='summary' else {k:v for k,v in inventory.items() if k!='candidates'},
+                  f,ensure_ascii=True)
+    for item in inventory['candidates']:
+        if item['state']!='uncovered':continue
+        audit.add(item['source'],item['key'],None,item['text'],kind='unsupported_config_text')
+        audit.rows[-1]['inventory_gap']=True
+        audit.counts['inventory_uncovered']+=1
     for r in audit.rows:
         # Files read outside the folders above (Audit.unscanned) are written too: record them so a change is noticed.
         name=r['source'].removeprefix('instance!/')
@@ -1507,7 +1543,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 errors=[],source_counts={},backup=None,installed_count=0,limits=[
                     'AI 補翻需另行連接 ChatGPT 並同意使用原方案 Codex 額度；不使用付費翻譯 API。',
                     '程式字串、腳本和非語系設定需確認顯示用途；掃描候選不等於漏翻。',
-                    '譯文需在介面校對後才能套用；結構檢查不代表遊戲內實測。'])
+                    '一鍵流程會自動檢查並套用合格譯文；不需逐筆人工確認，檔案檢查不代表遊戲內實測。'])
     def publish():
         write_json(report/'session.json',result)
         checkpoint(result)
@@ -1521,6 +1557,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         return result
     result['audit_counts']=dict(audit.counts)
     result['source_hashes']=audit.source_hashes
+    result['text_inventory']={k:v for k,v in audit.text_inventory.items() if k!='candidates'}
     result['errors']=audit.errors
     result['repairs']=audit.repairs
     result['rows']=[dict(r,proposed=r.get('current') or r.get('en') or r.get('zh_cn') or '',
@@ -2013,7 +2050,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             result['status']='blocked';result['errors'].append([name,'掃描途中檔案有變動（遊戲或啟動器可能正在更新），請稍後重新按「一鍵完整翻譯並套用」。'])
             break
     publish()
-    notify(100,'來源整理完成','尚未套用；請在報告中核對譯文。')
+    notify(100,'來源整理完成','尚未套用；合格譯文可由一鍵流程自動檢查與套用。')
     return result
 
 
@@ -2333,10 +2370,10 @@ def check_shown(instance, rows):
     """Read back, from the files the game reads, the text of each row just written; mark rows['shown'].
 
     Mod text is read from the translation resource pack (which must be switched on in options.txt), other
-    text from its own file. Program text was already checked by Java and is taken as written.
+    text from its own file. Program text is read back from the actual class constant.
     Returns how many rows the files do not hold.
     """
-    instance=Path(instance);files={};missing=0;places=collections.defaultdict(list)
+    instance=Path(instance);files={};missing=0;places=collections.defaultdict(list);curseforge=is_curseforge(instance)
     options=instance/'options.txt'
     pack_on=RESOURCE_PACK_ID in (enabled_packs(options.read_text(encoding='utf-8')) or []) if options.is_file() else False
     pack,_=read_resource_pack(instance)
@@ -2353,14 +2390,21 @@ def check_shown(instance, rows):
         files[where]=data;return data
 
     for r in rows:
-        if r.get('kind')=='class_display' and r.get('tooltips') and write_route(r,is_curseforge(instance))=='pack':
+        if r.get('kind')=='class_display' and r.get('tooltips') and write_route(r,curseforge)=='pack':
             # A config comment written as '<key>.tooltip': every key it went to must hold this line.
             found=[]
             for key,part,parts,resource in r['tooltips']:
                 data=load(('pack',resource),pack.get(resource),resource) if pack_on else None
                 found.append(isinstance(data,dict) and tooltip_part(data.get(key),part,parts)==r['proposed'])
             r['shown']=any(found);missing+=not r['shown'];continue
-        if r.get('kind')=='class_display':r['shown']=True;continue
+        if r.get('kind')=='class_display':
+            from .class_text import ClassFile
+            try:
+                path,entry=target_for(r);where=('class',path,entry)
+                if where not in files:files[where]=ClassFile(read_archive_entry(instance,path,entry)).utf
+                r['shown']=files[where].get(int(r['key']))==r['proposed']
+            except (OSError,ValueError,TypeError,KeyError,zipfile.BadZipFile):r['shown']=False
+            missing+=not r['shown'];continue
         if r.get('kind')=='embedded_text':
             # Written into the data-pack file itself: that file's unit at this place now reads so.
             path,entry=target_for(r);where=('embedded',path,entry)
@@ -2406,9 +2450,11 @@ def check_shown(instance, rows):
             if route=='pack':
                 name=title[0] if title else pack_resource(entry);where=('pack',name);data=load(where,pack.get(name),name) if pack_on else None
             elif entry is None:
-                p=contained(instance,path);name=path;where=('file',path);data=load(where,p.read_bytes() if p.is_file() else None,path)
+                p=contained(instance,path);name=path;where=('file',path)
+                data=files[where] if where in files else load(where,p.read_bytes() if p.is_file() else None,path)
             else:
-                name=entry.split('!/')[-1];where=('archive',path,entry);data=load(where,read_archive_entry(instance,path,entry),name)
+                name=entry.split('!/')[-1];where=('archive',path,entry)
+                data=files[where] if where in files else load(where,read_archive_entry(instance,path,entry),name)
         except (OSError,ValueError,KeyError,zipfile.BadZipFile):data=None
         if isinstance(data,str):text=data
         elif not isinstance(data,dict):text=None
@@ -2439,6 +2485,19 @@ def rate_text(rate):
 HOME_CARDS = ('中文化完成率','還缺中文')
 
 
+def completion_notes(session):
+    """Surface unfinished scope without requiring the player to inspect individual rows."""
+    rows=session.get('rows',[]);info=session.get('text_inventory') or {}
+    notes=[]
+    unsupported={r['source'] for r in rows if r.get('kind')=='unsupported_config_text'}
+    if unsupported:notes.append(f'另有 {len(unsupported):,} 個檔案或資料夾含尚未支援的文字；仍可能在遊戲中看到原文。')
+    if info.get('errors'):notes.append(f"有 {len(info['errors']):,} 項文字檢查沒讀完，這部分尚未確認。")
+    doubts=sum(needs_check(r) for r in rows)
+    if doubts:notes.append(f'還有 {doubts:,} 筆具體翻譯疑點，尚未解決；詳情已保存在報告。')
+    if session.get('errors'):notes.append('本次有部分操作未完成，已完成的結果與原因保存在報告。')
+    return notes
+
+
 def home_cards(session):
     """The start page: two numbers where 100% / 0 means every player line found is Chinese, and one line on
     what this run wrote. {'cards': [(number, explanation)] in HOME_CARDS order, 'written': text}.
@@ -2452,10 +2511,14 @@ def home_cards(session):
     elif wrote and rate_text(before)!=now:written=f'這次從 {rate_text(before)} 提升到 {now}。'
     elif wrote:written=f'完成率維持 {now}；這次改寫了部分譯文（可在「備份與還原」復原）。'
     else:written=f'和翻譯前一樣是 {now}，這次沒有修改任何遊戲檔案。'
+    notes=completion_notes(session)
+    warning={'warning':'這次仍有未完成內容，不能視為整包翻完。\n'+'\n'.join(notes)} if notes else {}
+    if notes:written+='\n'+'\n'.join(notes)
+    written=written.strip()
     if not cov['total']:
-        return dict(cards=[('—','完成比對後計算')]*2,written=written)
+        return dict(cards=[('—','尚無可計算的已辨識玩家文字')]*2,written=written,**warning)
     english=cov['total']-cov['done']
-    rate=(f"{cov['done']:,}／{cov['total']:,} 句玩家文字已是中文"
+    rate=(f"已辨識範圍中 {cov['done']:,}／{cov['total']:,} 句在檔案裡已是中文；尚非遊戲畫面實測"
           +(f"；另有 {cov['candidates']:,} 條程式字串無法確認是否顯示，未計入" if cov.get('candidates') else ''))
     parts=[]
     if cov.get('missing'):parts.append(f"{cov['missing']:,} 句找不到中文來源"+('（可勾選 AI 補翻）' if not session.get('ai_translation') else ''))
@@ -2463,7 +2526,7 @@ def home_cards(session):
     if cov.get('unwritable'):parts.append(f"{cov['unwritable']:,} 句無法寫入，遊戲中是英文（多半寫在模組程式裡，CurseForge 會換回改過的模組）")
     if cov.get('unconfirmed'):parts.append(f"{cov['unconfirmed']:,} 句寫入後在遊戲檔案裡讀不到")
     left='、'.join(parts) if english else '找得到的玩家文字都已是中文'
-    return dict(cards=[(rate_text(cov['rate']),rate),(f'{english:,}',left)],written=written)
+    return dict(cards=[(rate_text(cov['rate']),rate),(f'{english:,}',left)],written=written,**warning)
 
 
 def applicable_count(session):
@@ -2492,7 +2555,7 @@ def auto_confirm_safe(session):
                 and not row.get('installed') and not row.get('reviewed') and row_fits(row)):
             row['reviewed'] = True
             row['review_method'] = 'auto_validated_one_click'
-            row['auto_review_reason'] = '來源優先順序、格式碼、佔位符、換行與數值檢查通過'
+            row['auto_review_reason'] = '已完成來源比對與格式檢查；具體疑點另外列出，不代表人工或遊戲內驗收'
             count += 1
     session['auto_confirmed_count'] = count
     session['automatic_apply_notice'] = ('已自動套用通過格式與來源檢查的玩家文字；'
@@ -3005,7 +3068,7 @@ def read_resource_pack(instance):
     return files,sources
 
 
-def build_pack(instance, staged, pack_rows, session, notify):
+def build_pack(instance, staged, pack_rows, session, notify, pack_base=None):
     """Stage the text of mod files as one resource pack instead of rewriting the mods.
 
     CurseForge puts back the original of any mod file that changed, so translations written into
@@ -3017,7 +3080,7 @@ def build_pack(instance, staged, pack_rows, session, notify):
     resources=collections.defaultdict(list)
     for outer,entry,row in pack_rows:
         resources[pack_resource(entry)].append((outer,entry,row))
-    existing,sources=read_resource_pack(instance)
+    existing,sources=read_resource_pack(instance) if pack_base is None else pack_base
     repaired={n for _,n,*_ in session.get('repairs',[])}
     built={};hashes={}
     for i,(resource,items) in enumerate(sorted(resources.items())):
@@ -3092,7 +3155,11 @@ def rewrite_archive(z, dst, modified, label):
                 # the directory as empty avoids Python's false "possible zip bomb" without weakening checks
                 # for overlapping file data.
                 w.writestr(copy.copy(info),b'' if info.is_dir() else z.read(info.filename))
-        for n,b in modified.items():w.writestr(n,b)
+        for n,b in modified.items():
+            # Retain entry metadata; new entries get a fixed timestamp. The same text
+            # recipe and original archive must produce the same result on both computers.
+            info=copy.copy(z.getinfo(n)) if n in z.namelist() else zipfile.ZipInfo(n,(2020,1,1,0,0,0))
+            w.writestr(info,b)
     with zipfile.ZipFile(dst) as check:
         if check.testzip():raise ValueError('ZIP 完整性驗證失敗：'+label)
         for n in z.namelist():
@@ -3286,7 +3353,7 @@ def apply_session(session, home, notify):
         for folder in work:shutil.rmtree(folder,ignore_errors=True)
 
 
-def stage_and_apply(session, home, notify, work):
+def stage_and_apply(session, home, notify, work, stage_only=False, pack_base=None):
     instance=Path(session['instance']); report=Path(session['report'])
     ready=[r for r in session['rows'] if r.get('reviewed') and r.get('supported') and r.get('changed') and not r.get('installed')]
     curseforge=is_curseforge(instance);routes={id(r):write_route(r,curseforge) for r in ready}
@@ -3334,7 +3401,7 @@ def stage_and_apply(session, home, notify, work):
     if staged.exists():
         staged=report/('staged-'+uuid.uuid4().hex[:8])
     staged.mkdir();work.append(staged)
-    records=build_pack(instance,staged,pack_rows,session,notify) if pack_rows else []
+    records=build_pack(instance,staged,pack_rows,session,notify,pack_base) if pack_rows else []
     if data_rows:records+=build_data_pack(instance,home,staged,data_rows)
     changed_classes=[]
     for i,(path,edits) in enumerate(changes.items()):
@@ -3435,13 +3502,17 @@ def stage_and_apply(session, home, notify, work):
         notify(72,'檢查模組檔完整性',f'用 Java 檢查 {len(jars):,} 個修改過的模組檔，可能需要一兩分鐘')
         vr=VerifyResult();check_java_zipfs(jars,vr)
         if not vr.ok:raise ValueError('Java 驗證未通過：'+'; '.join(vr.errors))
+    if stage_only:
+        # Sharing reuses the live scanner's routes and every normal format / Java check.
+        # The caller keeps these working files until one combined, reversible deployment.
+        return dict(staged=staged,records=records,rows=selected,held=dict(held))
     notify(80,'備份與套用','先保存所有原檔，再寫入已校對文字')
     ensure_game_closed(instance)
     # Nothing on disk differs (the resource pack already holds exactly this text): nothing to back up or write.
     backup=apply_reviewed(instance,staged,records,home/'output',waiting_note(notify)) if records else None
     for row in selected:row['installed']=True
     # Written is not the same as shown: read every line back from the files the game reads.
-    notify(90,'核對遊戲實際顯示','重新讀取資源包與遊戲檔案，確認每一句都是剛寫入的中文')
+    notify(90,'讀回核對寫入內容','重新讀取翻譯資源包與原檔核對譯文；這不是遊戲畫面實測')
     session['shown_mismatch']=check_shown(instance,selected)
     try:Provenance(home,instance).record(selected);record_translated(home,instance)
     except OSError as exc:session['errors'].append(['來源紀錄',str(exc)])
@@ -3455,6 +3526,7 @@ def stage_and_apply(session, home, notify, work):
     try:
         after=scan(instance,report/'after',lambda *_:None,lambda:False,scan_cache(home,instance),details='summary')
         session['after_counts']=dict(after.counts)
+        session['text_inventory']={k:v for k,v in after.text_inventory.items() if k!='candidates'}
     except Exception as exc:
         session['errors'].append(['套用後稽核',explain_error(exc)])
     write_json(report/'session.json',session)

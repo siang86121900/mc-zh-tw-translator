@@ -33,6 +33,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
+from . import shared_text
 from .deployment import apply_reviewed, contained, file_hash
 from .translator import is_jar_signature_file
 from .updater import REPOSITORY, VERSION, release_url
@@ -42,7 +43,7 @@ PATCH_FORMAT = 'mctranslator-patch-1'
 # Format 2 adds per-string edits of config files and scripts (item 'literals'); a patch without them is
 # still written as format 1 so that older versions of the program can install it.
 PATCH_FORMAT_LITERALS = 'mctranslator-patch-2'
-READABLE_FORMATS = (PATCH_FORMAT, PATCH_FORMAT_LITERALS)
+READABLE_FORMATS = (PATCH_FORMAT, PATCH_FORMAT_LITERALS, shared_text.FORMAT)
 # Where a patch may change strings in place: the folders the program converts (desktop_jobs.LOOSE_TEXT_ROOTS).
 LITERAL_ROOTS = ('config/', 'defaultconfigs/', 'kubejs/', 'scripts/', 'tacz/', 'tlm_custom_pack/')
 LITERAL_SUFFIXES = ('.json', '.snbt', '.toml', '.txt', '.yaml', '.yml', '.cfg', '.properties', '.js', '.zs')
@@ -315,7 +316,7 @@ def added_mods(instance: Path, originals=None):
         known.add(name.casefold())
         if project in official:
             if official[project]!=file and (instance/'mods'/name).is_file():
-                left.append(dict(name=label,reason='整合包原有的模組被換成別的版本；對方保留整合包的版本，這個模組的翻譯會略過'))
+                left.append(dict(name=label,fileName=name,reason='整合包原有的模組被換成別的版本；對方保留整合包的版本，這個模組的翻譯會略過'))
             continue
         if ((addon.get('categorySection') or {}).get('path') or 'mods')!='mods' or not name.lower().endswith('.jar'):continue
         path=instance/'mods'/name
@@ -333,7 +334,7 @@ def added_mods(instance: Path, originals=None):
     try:
         for p in sorted((instance/'mods').iterdir()):
             if p.is_file() and p.suffix.lower()=='.jar' and p.name.casefold() not in known and 'mods/'+p.name!=jobs.PACK_MOD_FILE:
-                left.append(dict(name=p.name,reason='不是從 CurseForge 安裝的模組，對方無法自動下載'))
+                left.append(dict(name=p.name,fileName=p.name,reason='不是從 CurseForge 安裝的模組，對方無法自動下載'))
     except OSError:pass
     if len(mods)>MAX_ADDED_MODS:
         left+=[dict(name=m['name'],reason=f'加裝的模組超過 {MAX_ADDED_MODS} 個，超出的不分享') for m in mods[MAX_ADDED_MODS:]];mods=mods[:MAX_ADDED_MODS]
@@ -405,15 +406,26 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     for backup,record in batches:
         for row in record['files']:
             item=files.setdefault(row['file'],dict(before=row['before'],backup=backup))
+            if row['before'] is None and row['file'].endswith('.jar') and 'created_sha' not in item:item['created_sha']=row['after']
             item['after']=row['after']
     identity=instance_identity(instance)
-    mods,left_out=added_mods(instance,{file:item['before'] for file,item in files.items() if item['before']})
+    originals={file:item.get('before') or item.get('created_sha') for file,item in files.items() if item.get('before') or item.get('created_sha')}
+    mods,left_out=added_mods(instance,originals)
+    original_sizes={file:contained(item['backup'],file).stat().st_size for file,item in files.items() if item.get('before') and file.endswith('.jar')}
+    original_sizes.update({'mods/'+m['fileName']:m['size'] for m in mods})
     stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
     folder=home/'output'/instance.name/'分享';folder.mkdir(parents=True,exist_ok=True)
     safe=re.sub(r'[\\/:*?"<>|]+','_',identity['name']).strip() or 'modpack'
     out=folder/f'{safe}{"-"+identity["version"] if identity["version"] else ""}-繁中翻譯-{stamp}.zip'
     manifest=dict(format=PATCH_FORMAT,app_version=VERSION,created=datetime.now().isoformat(timespec='seconds'),
                   modpack=identity,files=[],added_mods=mods,left_out_mods=left_out)
+    groups,unit_omissions=shared_text.collect(instance,home,files)
+    restricted={s['file'] for s in unit_omissions if '用途未確認' in s['reason']}
+    units=[];recipe_targets=set()
+    def text_recipe(file):
+        if not groups.get(file):return False
+        units.extend(groups[file]);recipe_targets.add(file);manifest['format']=shared_text.FORMAT
+        return True
     skipped=[]
     tmp=out.with_suffix('.partial')
     try:
@@ -426,35 +438,59 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 if file==jobs.DEFAULT_OPTIONS_FILE:continue  # the pack switched on again; installing redoes it
                 if item['after'] is None:continue  # removed by a whole-modpack update; nothing to share
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
+                if file in restricted:
+                    text_recipe(file)
+                    skipped.append((file,'用途未確認的轉換不分享；僅分享有用途證明的文字'))
+                    continue
                 if file in jobs.DATA_PACK_FILES:
-                    # It holds whole copies of a mod's data files (quests), not only text: never shared.
-                    skipped.append((file,'翻譯資料包含有模組任務檔的完整複本，不分享；安裝的人用本程式翻譯一次就會產生'));continue
+                    if not text_recipe(file):skipped.append((file,'翻譯資料包缺少可重建的逐句翻譯紀錄'))
+                    continue
                 if not allowed_file(file,archive) and not archive and literal_file(file) and item['before']:
                     # A config file or script converted in place: the changed strings only, never the file.
                     original=contained(item['backup'],file).read_bytes()
                     if sha256(original)!=item['before']:skipped.append((file,'備份內容與清冊不符'));continue
                     try:edits=literal_edits(file,original,path.read_bytes())
-                    except ValueError as exc:skipped.append((file,'不是只有轉換中文：'+str(exc)));continue
+                    except ValueError as exc:
+                        if not text_recipe(file):skipped.append((file,'缺少可分享的逐句翻譯：'+str(exc)))
+                        continue
                     manifest['files'].append(dict(file=file,archive=False,literals=edits,before=item['before'],after=item['after']))
-                    manifest['format']=PATCH_FORMAT_LITERALS
+                    if manifest['format']!=shared_text.FORMAT:manifest['format']=PATCH_FORMAT_LITERALS
                     continue
-                if not allowed_file(file,archive):skipped.append((file,'不是可分享的翻譯檔'));continue
+                if not allowed_file(file,archive):
+                    if not text_recipe(file):skipped.append((file,'不是可分享的翻譯檔，或缺少已套用的逐句紀錄'))
+                    continue
                 current=path.read_bytes()
                 if file==jobs.RESOURCE_PACK_FILE:
                     entries,requires=pack_entries(current)
-                    if not entries:skipped.append((file,'翻譯資源包裡沒有可對應到模組版本的翻譯'));continue
+                    # Inline multilingual books may not use a zh_tw directory. Share only their
+                    # known text positions, reconstructed by the receiver's own reader.
+                    extra=[r for r in groups.get(file,[]) if r['kind']!='class_display' and not allowed_entry(jobs.pack_resource(jobs.target_for(r)[1]) or '')]
+                    if extra:units.extend(extra);recipe_targets.add(file);manifest['format']=shared_text.FORMAT
+                    with zipfile.ZipFile(io.BytesIO(current)) as current_pack:
+                        unknown={n for n in current_pack.namelist() if n.startswith('assets/') and not n.endswith('/') and not allowed_entry(n)}
+                    covered={jobs.pack_resource(jobs.target_for(u)[1]) for u in extra}
+                    if unknown-covered:skipped.append((file,'部分資源尚無可分享的逐句紀錄：'+'、'.join(sorted(unknown-covered)[:8])))
+                    if not entries:
+                        if not extra:skipped.append((file,'翻譯資源包裡沒有可對應到模組版本的翻譯'))
+                        continue
+                    requires={n:{jar:originals.get(jar) or h for jar,h in mods.items()} for n,mods in requires.items()}
                     for name,data in entries.items():w.writestr(f'payload/{file}/{name}',data)
                     jars={jar for mods in requires.values() for jar in mods}
-                    sizes={jar:contained(instance,jar).stat().st_size for jar in sorted(jars) if contained(instance,jar).is_file()}
+                    sizes={jar:original_sizes.get(jar) or contained(instance,jar).stat().st_size for jar in sorted(jars) if contained(instance,jar).is_file()}
                     manifest['files'].append(dict(file=file,archive=True,pack=True,before=None,
                                                   entries={n:sha256(d) for n,d in entries.items()},requires=requires,sizes=sizes))
                     continue
                 if archive:
-                    if item['before'] is None:skipped.append((file,'翻譯新增的整個模組檔不分享'));continue
+                    if item['before'] is None:
+                        if text_recipe(file):continue
+                        if any('mods/'+m['fileName']==file and m['sha256']==item['after'] for m in mods):continue
+                        skipped.append((file,'新增的模組沒有可信下載來源或逐句修改紀錄'));continue
                     original=contained(item['backup'],file).read_bytes()
                     if sha256(original)!=item['before']:skipped.append((file,'備份內容與清冊不符'));continue
                     try:changed=archive_changes(original,current,file)
-                    except (ValueError,zipfile.BadZipFile) as exc:skipped.append((file,str(exc)));continue
+                    except (ValueError,zipfile.BadZipFile) as exc:
+                        if not text_recipe(file):skipped.append((file,str(exc)))
+                        continue
                     entries={}
                     for name,data in changed.items():
                         w.writestr(f'payload/{file}/{name}',data);entries[name]=sha256(data)
@@ -462,8 +498,24 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 else:
                     w.writestr(f'payload/{file}',current)
                     manifest['files'].append(dict(file=file,archive=False,before=item['before'],after=item['after']))
-            if not manifest['files']:raise ValueError('沒有可分享的翻譯檔。'+('；'.join(f'{f}：{r}' for f,r in skipped[:5])))
+            if not manifest['files'] and not units:raise ValueError('沒有可分享的翻譯檔。'+('；'.join(f'{f}：{r}' for f,r in skipped[:5])))
             manifest['skipped']=[dict(file=f,reason=r) for f,r in skipped]
+            omitted_files={s['file'] for s in manifest['skipped']}
+            manifest['text_omissions']=[]
+            for s in unit_omissions:
+                if s['file']==jobs.RESOURCE_PACK_FILE and allowed_entry(s.get('resource') or ''):continue
+                if s['file'] in recipe_targets:
+                    manifest['text_omissions'].append(s)
+                    if s['file'] not in omitted_files:
+                        manifest['skipped'].append(s);omitted_files.add(s['file'])
+            manifest['text_units']=units
+            shared_text.validate(units,clean_path)
+            manifest['required_mods']=[dict(file='mods/'+p.name,before=originals.get('mods/'+p.name) or file_hash(p),
+                after=file_hash(p),size=original_sizes.get('mods/'+p.name) or p.stat().st_size) for p in sorted((instance/'mods').glob('*.jar')) if 'mods/'+p.name!=jobs.PACK_MOD_FILE]
+            manifest['source_hash_aliases']={u['source_after']:h for u in units for h in u['requires'].values() if u['source_after']!=h}
+            manifest['sharing_status']='partial' if manifest['skipped'] else 'ready'
+            manifest['save_note']=shared_text.SAVE_NOTE
+            manifest['minimum_app_version']='0.32.0'
             w.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
             w.writestr('授權與來源.txt',ATTRIBUTION)
             # Per-string sources (AI, converted, reference), so the receiver's report keeps the same labels.
@@ -473,7 +525,7 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
         tmp.unlink(missing_ok=True)
     notify(100,'翻譯補丁已匯出',str(out))
     return dict(path=str(out),files=len(manifest['files']),skipped=manifest['skipped'],modpack=identity,sha256=file_hash(out),size=out.stat().st_size,
-                added_mods=mods,left_out_mods=left_out)
+                added_mods=mods,left_out_mods=left_out,text_units=len(units),sharing_status=manifest['sharing_status'])
 
 
 def read_patch(path: Path):
@@ -484,6 +536,8 @@ def read_patch(path: Path):
     try:
         manifest=json.loads(z.read('manifest.json').decode('utf-8'))
         if manifest.get('format') not in READABLE_FORMATS:raise ValueError('不是 MC Translator 翻譯補丁，或需要更新程式才能讀取。')
+        if not isinstance(manifest.get('files'),list) or len(manifest['files'])>20000:
+            raise ValueError('補丁的翻譯檔清單不合理。')
         # Sizes are checked before anything is unpacked, so a small download cannot expand without limit.
         if any(i.file_size>MAX_ENTRY_SIZE for i in z.infolist()) or sum(i.file_size for i in z.infolist())>MAX_UNPACKED_SIZE:
             raise ValueError('補丁解開後的大小超過上限，已拒絕。')
@@ -493,7 +547,7 @@ def read_patch(path: Path):
             if 'literals' in item:
                 # Strings changed in place: only Chinese may change, in an allowed file the receiver already has.
                 edits=item['literals']
-                if (manifest['format']!=PATCH_FORMAT_LITERALS or archive or not literal_file(file) or not isinstance(edits,list)
+                if (manifest['format'] not in (PATCH_FORMAT_LITERALS,shared_text.FORMAT) or archive or not literal_file(file) or not isinstance(edits,list)
                         or not 0<len(edits)<=MAX_LITERAL_EDITS or not item.get('before') or not item.get('after')):
                     raise ValueError('補丁的文字修改資料不合理：'+file)
                 for e in edits:
@@ -528,6 +582,30 @@ def read_patch(path: Path):
                     if not allowed_entry(name):raise ValueError(f'補丁包含不允許的內容：{file} / {name}')
                     if f'payload/{file}/{name}' not in names:raise ValueError(f'補丁缺少內容：{file} / {name}')
             elif 'literals' not in item and (f'payload/{file}' not in names or not item.get('after')):raise ValueError('補丁缺少內容：'+file)
+        units=manifest.get('text_units') or []
+        if not manifest['files'] and not units:raise ValueError('補丁裡沒有可安裝的翻譯。')
+        if units and manifest['format']!=shared_text.FORMAT:raise ValueError('逐句翻譯需要新版補丁格式。')
+        shared_text.validate(units,clean_path)
+        for field in ('skipped','text_omissions'):
+            entries=manifest.get(field) or []
+            if not isinstance(entries,list) or len(entries)>shared_text.MAX_UNITS:
+                raise ValueError('補丁的省略說明格式不正確。')
+            for e in entries:
+                if not isinstance(e,dict) or any(not isinstance(e.get(k),str) for k in ('file','reason')):
+                    raise ValueError('補丁的省略說明格式不正確。')
+                if any(v is not None and (not isinstance(v,str) or len(v)>shared_text.MAX_TEXT) for v in e.values()):
+                    raise ValueError('補丁的省略說明格式不正確。')
+        aliases=manifest.get('source_hash_aliases') or {}
+        valid_aliases={u['source_after']:h for u in units for h in u['requires'].values() if u['source_after']!=h}
+        if not isinstance(aliases,dict) or aliases!=valid_aliases:raise ValueError('補丁的原檔對照不合理。')
+        required=manifest.get('required_mods') or []
+        if not isinstance(required,list) or len(required)>5000:raise ValueError('補丁的模組版本清單不合理。')
+        for m in required:
+            if (not isinstance(m,dict) or not isinstance(m.get('file'),str) or not re.fullmatch(r'mods/[^/]+\.jar',clean_path(m['file']),re.I)
+                    or any(not re.fullmatch('[0-9a-f]{64}',str(m.get(f))) for f in ('before','after'))):
+                raise ValueError('補丁的模組版本清單不合理。')
+            if m.get('size') is not None and (not isinstance(m['size'],int) or isinstance(m['size'],bool) or not 0<m['size']<=MAX_MOD_SIZE):
+                raise ValueError('補丁的模組大小不合理。')
         mods=manifest.get('added_mods') or []
         if not isinstance(mods,list) or len(mods)>MAX_ADDED_MODS:raise ValueError('補丁的加裝模組清單不合理，已拒絕。')
         manifest['added_mods']=[checked_mod(m) for m in mods]
@@ -558,14 +636,17 @@ def archive_has(path: Path, z, item) -> bool:
         return False
 
 
-def plan_patch(instance: Path, z, manifest):
+def plan_patch(instance: Path, z, manifest, local_versions=None):
     """Decide per file: apply, already translated, or skip (different version or edited)."""
     plan=[];index=None
     for item in manifest['files']:
         path=contained(instance,item['file'])
         if item.get('pack'):
             # Only the files whose mods are exactly the versions they were translated from.
-            if index is None:index=mods_by_hash(instance)
+            if index is None:
+                index=mods_by_hash(instance)
+                for path,pair in (local_versions or {}).items():
+                    if pair['after'] in index:index.setdefault(pair['before'],index[pair['after']])
             # A mod file counts when any file in the receiver's mods folder has its exact SHA-256 (renamed copies too).
             use=[name for name,mods in item['requires'].items() if all(h in index for h in mods.values())]
             item['use']=use
@@ -605,7 +686,8 @@ def mod_states(instance: Path, mods):
     for mod in mods:
         path=instance/'mods'/mod['fileName']
         same=[p for p,size in sizes.items() if size==mod['size'] and file_hash(p)==mod['sha256']]
-        if same or path.exists():state='present'  # a file of that name with other content is its translated copy
+        if same:state='present'
+        elif path.exists():state='other_version'
         elif mod['projectID'] in have and (instance/'mods'/have[mod['projectID']]).exists():state='other_version'
         elif not mod['url']:state='manual'
         else:state='install'
@@ -708,16 +790,23 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
     if not jobs.is_instance(instance):raise ValueError('找不到模組包資料夾（需要有 mods、config 或 kubejs）。')
     z,manifest=read_patch(patch)
     staged=home/'tmp'/('patch-'+uuid.uuid4().hex[:8])
+    work=[]
+    raw_notify=notify;last_progress=0
+    def notify(percent,title,detail=''):
+        nonlocal last_progress
+        last_progress=max(last_progress,min(99,percent))
+        raw_notify(last_progress,title,detail)
     try:
         jobs.ensure_game_closed(instance)
-        mods=install_mods(instance,manifest['added_mods'],home,notify,cancelled,session) if add_mods and manifest['added_mods'] else None
+        mods=install_mods(instance,manifest['added_mods'],home,lambda p,t,d='':notify(int(p*.15),t,d),cancelled,session) if add_mods and manifest['added_mods'] else None
         if cancelled():raise InterruptedError('已停止，翻譯還沒有寫入。'+('加裝的模組已放進模組資料夾，可在「備份與還原」移除。' if mods and mods['installed'] else ''))
-        plan=plan_patch(instance,z,manifest)
+        versions=shared_text.local_versions(instance,home)
+        plan=plan_patch(instance,z,manifest,versions)
         staged.mkdir(parents=True)
         records=[];applied=[]
         todo=[p for p in plan if p[1]=='apply']
         for i,(item,_,target,_) in enumerate(todo):
-            notify(int(70*i/max(1,len(todo))),'準備套用翻譯',item['file'])
+            notify(15+int(40*i/max(1,len(todo))),'準備套用翻譯',item['file'])
             relative=target.relative_to(instance).as_posix()
             dst=contained(staged,relative);dst.parent.mkdir(parents=True,exist_ok=True)
             if item.get('pack'):
@@ -750,9 +839,17 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                 dst.write_bytes(data)
             records.append(dict(file=relative,before=item['before'],after=file_hash(dst),reviewed=True,verified=True))
             applied.append(relative)
+        pack_base=jobs.read_resource_pack(staged) if (staged/jobs.RESOURCE_PACK_FILE).is_file() else None
+        prepared=shared_text.prepare(instance,home,manifest.get('text_units') or [],
+            lambda p,t,d='':notify(55+int(p*.20),t,d),work,cancelled,pack_base)
+        shared_text.copy_staged(prepared,staged,records)
+        applied=sorted(set(applied)|{r['file'] for r in prepared['records'] if r['file'] not in ('options.txt',jobs.DEFAULT_OPTIONS_FILE)})
         uses_pack=any(r['file']==jobs.RESOURCE_PACK_FILE for r in records) or (instance/jobs.RESOURCE_PACK_FILE).is_file()
+        activation_error=''
         try:record=jobs.options_record(instance,staged,set_language,uses_pack)
-        except ValueError:record=jobs.options_record(instance,staged,set_language,False)
+        except ValueError:
+            record=jobs.options_record(instance,staged,set_language,False)
+            activation_error='翻譯資源包未能自動啟用，請在遊戲的資源包設定啟用 MC Translator 繁體中文翻譯。'
         if record:records.append(record)
         if uses_pack and (record:=jobs.default_packs_record(instance,staged)):records.append(record)
         jobs.require_space(instance,home,applied)
@@ -770,17 +867,53 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],
                     language_set=bool(set_language),mods=mods,
                     mods_offered=[m['name'] for m in manifest['added_mods']] if mods is None else [])
-        record_applied(home,instance,manifest,file_hash(Path(patch)))
+        result['skipped']+=prepared['skipped']
+        result['text_already']=prepared['already']
+        result['sender_omitted']=manifest.get('skipped') or []
+        result['sender_text_omissions']=manifest.get('text_omissions') or []
+        result['save_note']=shared_text.SAVE_NOTE
+        notify(90,'讀回核對分享內容','確認寫入的檔案與逐句譯文；這不是遊戲畫面實測')
+        index=mods_by_hash(instance)
+        unit_index={(u['source'],u['key'],u['kind']):u for u in manifest.get('text_units') or []}
+        receipt_hashes={}
+        expected_hashes={r['file']:r['after'] for r in records}
+        for row in prepared['rows']:
+            source=shared_text.source_file(row['source'])
+            unit=unit_index[(row['source'],row['key'],row['kind'])]
+            if source not in receipt_hashes:receipt_hashes[source]=file_hash(contained(instance,source))
+            actual=receipt_hashes[source]
+            expected=expected_hashes.get(source,prepared['session']['source_hashes'].get(source))
+            if actual==expected:versions[source]=dict(before=unit['requires'][source],after=actual)
+        for path,pair in versions.items():
+            if pair['after'] in index:index.setdefault(pair['before'],index[pair['after']])
+        result['missing_mods']=[m['file'] for m in manifest.get('required_mods') or [] if m['before'] not in index and m['after'] not in index]
+        result['readback_mismatch']=jobs.check_shown(instance,prepared['rows'])
+        result['activation_error']=activation_error
+        result['file_mismatch']=[r['file'] for r in records if (file_hash(contained(instance,r['file'])) if contained(instance,r['file']).is_file() else None)!=r['after']]
+        known=manifest.get('sharing_status') in ('ready','partial') and 'required_mods' in manifest
+        result['consistency']='unknown' if not known else 'partial' if (
+            manifest.get('sharing_status')=='partial' or result['sender_omitted'] or result['sender_text_omissions'] or result['skipped'] or result['missing_mods'] or result['readback_mismatch']
+            or result['file_mismatch'] or activation_error or result['mods_offered'] or (mods or {}).get('skipped')) else 'matched'
+        record_applied(home,instance,manifest,file_hash(Path(patch)),result['consistency'],versions)
         if applied or result_already(plan):jobs.record_translated(home,instance)
         merge_provenance(home,instance,z)
+        if prepared['rows']:jobs.Provenance(home,instance).record(prepared['rows'])
+        if prepared['rows']:
+            recipe_session=prepared['session']
+            for row in prepared['rows']:row['installed']=True
+            recipe_session.update(status='installed',backup=backup,backups=[backup] if backup else [],
+                installed_count=len(prepared['rows']),shown_mismatch=result['readback_mismatch'])
+            jobs.write_json(Path(recipe_session['report'])/'session.json',recipe_session)
         report=home/'output'/instance.name/'報告'/('補丁-'+datetime.now().strftime('%Y%m%d-%H%M%S'))
         report.mkdir(parents=True,exist_ok=True)
         jobs.write_json(report/'patch_result.json',result)
-        notify(100,'翻譯補丁已套用',f'套用 {len(applied)} 個檔案，略過 {len(result["skipped"])} 個')
+        raw_notify(100,'翻譯安裝完成' if result['consistency']=='matched' else '翻譯安裝完成，仍有需要留意的內容',
+            f'套用 {len(applied)} 個檔案，略過 {len(result["skipped"])} 個')
         return result
     finally:
         z.close()
         shutil.rmtree(staged,ignore_errors=True)
+        for folder in work:shutil.rmtree(folder,ignore_errors=True)
 
 
 def result_already(plan):
@@ -795,6 +928,7 @@ def merge_provenance(home: Path, instance: Path, z):
     for key,e in (incoming.items() if isinstance(incoming,dict) else ()):
         if isinstance(key,str) and isinstance(e,dict) and isinstance(e.get('origin'),str) and isinstance(e.get('text'),str):
             store.entries[key]={f:e.get(f) for f in fields if e.get(f) is None or isinstance(e.get(f),str)}
+            if store.entries[key]['origin'] in jobs.USER_ORIGINS:store.entries[key]['origin']='shared_translation'
     store.path.parent.mkdir(parents=True,exist_ok=True);jobs.write_json(store.path,store.entries)
 
 
@@ -804,10 +938,10 @@ def applied_patches(home: Path) -> dict:
     except (OSError,ValueError):return {}
 
 
-def record_applied(home: Path, instance: Path, manifest, digest):
+def record_applied(home: Path, instance: Path, manifest, digest, consistency='unknown',source_versions=None):
     data=applied_patches(home);pack=manifest.get('modpack') or {}
     data[str(Path(instance).resolve()).casefold()]=dict(sha256=digest,projectID=pack.get('projectID',0),fileID=pack.get('fileID',0),
-                                                      version=pack.get('version',''),applied=datetime.now().isoformat(timespec='seconds'))
+                                                      version=pack.get('version',''),consistency=consistency,source_versions=source_versions or {},applied=datetime.now().isoformat(timespec='seconds'))
     jobs.write_json(home/'applied_patches.json',data)
 
 
@@ -843,6 +977,7 @@ def fetch_catalog(session=None):
                               translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),
                               modpackDate=str(x.get('modpackDate') or '')[:10],revision=max(1,int(x.get('revision') or 1)),
                               notes=str(x.get('notes') or '')[:600],recommendedRam=ram_mb(x.get('recommendedRam')),url=x['url'],sha256=x['sha256'],size=int(x['size']),
+                              sharingStatus=str(x.get('sharingStatus') or 'unknown'),minimumAppVersion=str(x.get('minimumAppVersion') or ''),
                               addedMods=[dict(name=str(m['name'])[:120],size=int(m['size'])) for m in (x.get('addedMods') or [])[:MAX_ADDED_MODS]
                                          if isinstance(m,dict) and m.get('name') and 0<int(m.get('size') or 0)<=MAX_MOD_SIZE]))
         except (KeyError,TypeError,ValueError):continue
@@ -893,15 +1028,19 @@ def match_catalog(packs, instances, applied=None, installed_full=None):
         mine=[x for x in instances if versions[0]['projectID'] and x['projectID']==versions[0]['projectID']]
         exact=[(p,x) for p in versions for x in mine if x['fileID']==p['fileID']]
         pack,status=(exact[0][0],'exact') if exact else (versions[0],'other_version' if mine else 'not_installed')
+        consistency='unknown'
         targets=[x for p,x in exact if p is pack] or mine
         if status=='exact':
             # Already applied here? Then it is either current or the published translation was updated.
             done=[(applied or {}).get(str(Path(x['path']).resolve()).casefold()) for x in targets]
             done=[d for d in done if d and d.get('fileID')==pack['fileID']]
-            if done:status='applied' if any(d['sha256']==pack['sha256'] for d in done) else 'update'
+            if done:
+                current=[d for d in done if d['sha256']==pack['sha256']]
+                status='applied' if current else 'update'
+                if current:consistency=current[0].get('consistency','unknown')
         # Older catalog entries lack the memory figure; the installed modpack's own manifest has it.
         ram=pack.get('recommendedRam') or next((r for r in (instance_identity(Path(x['path']))['recommendedRam'] for x in targets) if r),0)
-        rows.append(dict(pack,status=status,instances=targets,versions=len(versions),latest=pack is versions[0],
+        rows.append(dict(pack,status=status,instances=targets,versions=len(versions),latest=pack is versions[0],consistency=consistency,
                          newest_version=versions[0]['version'],recommendedRam=ram))
     rows.sort(key=lambda r:({'update':0,'exact':1,'applied':2,'other_version':3}.get(r['status'],4),r['name'].casefold()))
     return rows+sorted(match_full(full,installed_full),key=lambda r:r['name'].casefold())
@@ -913,22 +1052,35 @@ def modpack_files_ready(instance: Path, manifest):
     A mod file counts once it is there at its full size; a file the translation replaces counts
     once it exists. Sizes are compared instead of hashes so that checking every few seconds is cheap.
     """
-    present=needed=0;added={'mods/'+m['fileName'].casefold() for m in manifest.get('added_mods') or []}
+    present=needed=0;seen=set();added={'mods/'+m['fileName'].casefold() for m in manifest.get('added_mods') or []}
+    # These files do not arrive with the official pack. Installation reports them later,
+    # rather than waiting forever for CurseForge to download a file it does not know.
+    added|={'mods/'+str(m.get('fileName') or m.get('name') or '').casefold() for m in manifest.get('left_out_mods') or []}
     for item in manifest['files']:
         if item.get('pack'):
             # The translation resource pack is made here; what must be in place are the mods it translates.
             for jar,size in sorted((item.get('sizes') or {}).items()):
-                if jar.casefold() in added:continue
+                if jar.casefold() in added or jar.casefold() in seen:continue
+                seen.add(jar.casefold())
                 needed+=1
                 try:present+=contained(instance,jar).stat().st_size==size
                 except (OSError,ValueError):pass
             continue
         if not item['archive'] and item.get('before') is None:continue  # a file the translation adds
-        if item['file'].casefold() in added:continue  # a mod the translator added; it is installed afterwards
+        if item['file'].casefold() in added or item['file'].casefold() in seen:continue
+        seen.add(item['file'].casefold())
         needed+=1
         try:
             size=contained(instance,item['file']).stat().st_size
             if not item['archive'] or size==item.get('size'):present+=1
+        except (OSError,ValueError):pass
+    for mod in manifest.get('required_mods') or []:
+        if mod['file'].casefold() in added or mod['file'].casefold() in seen:continue
+        seen.add(mod['file'].casefold())
+        needed+=1
+        try:
+            target=contained(instance,mod['file'])
+            present+=target.is_file() and (not mod.get('size') or target.stat().st_size==mod['size'])
         except (OSError,ValueError):pass
     return present,needed
 

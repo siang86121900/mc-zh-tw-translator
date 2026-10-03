@@ -44,7 +44,87 @@ LOOT = json.dumps({'pools': [{'entries': [{'type': 'item', 'name': 'minecraft:ma
     {'function': 'minecraft:set_lore', 'lore': [{'text': 'Find the gym leader.'}]}]}]}]}, indent=2, ensure_ascii=False)
 
 
+TRADES = json.dumps({'tiers': [{'groups': [{'num_to_select': 8.0, 'trades': [{
+    'cost_a': {'type': 'minecraft:item', 'name': 'lumymon:onyx_stone'},
+    'result': {'type': 'minecraft:item', 'name': 'minecraft:map', 'functions': [
+        {'decoration': 'lumymon:ground_gym', 'destination': 'cobbleverse:kanto_brock_gym', 'function': 'minecraft:exploration_map'},
+        {'function': 'minecraft:set_name', 'name': "§7Brock's Gym", 'target': 'item_name'},
+        {'function': 'minecraft:set_lore', 'lore': ['Leads to the gym.', {'text': 'Pewter City'}]}]}}]}]}]},
+    indent=2, ensure_ascii=False)
+
+
 class EmbeddedTextTests(unittest.TestCase):
+    def test_structure_without_the_gzip_trailer_is_read_and_written(self):
+        # Oh The Biomes We've Gone 1.5.11: the gzip stream lacks its 8-byte trailer; the game reads it anyway.
+        cut = nbt(SHOP)[:-8]
+        found = dict(et.units('data/bwg/structure/shop.nbt', cut))
+        self.assertIn('Cobble Balls', found.values())
+        key = next(k for k, v in found.items() if v == 'Cobble Balls')
+        written = et.rewrite('data/bwg/structure/shop.nbt', cut, {key: ('Cobble Balls', '精靈球')})
+        self.assertIn('精靈球', dict(et.units('data/bwg/structure/shop.nbt', written)).values())
+        with self.assertRaises((ValueError, struct.error)):  # content that is really cut short still fails
+            et.units('data/bwg/structure/shop.nbt', nbt(SHOP)[:-40])
+
+    def test_names_saved_as_bare_words_are_written_back_as_json_strings(self):
+        shop = {'entities': [{'pos': [0, 0, 0], 'nbt': {'id': 'cobbledollars:cobble_merchant', 'CustomName': 'Arborist'}}]}
+        found = dict(et.units('data/bca/structure/stores/shopkeeper.nbt', nbt(shop)))
+        self.assertEqual(list(found.values()), ['Arborist'])
+        key = next(iter(found))
+        written = et.rewrite('data/bca/structure/stores/shopkeeper.nbt', nbt(shop), {key: ('Arborist', '樹果商人')})
+        from full_translation_audit import parse_binary_nbt
+        self.assertEqual(parse_binary_nbt(written)['entities'][0]['nbt']['CustomName'], '"樹果商人"')
+        self.assertEqual(dict(et.units('data/bca/structure/stores/shopkeeper.nbt', written)), {key: '樹果商人'})
+        # CTOV's "[Energy Detector]" looks like a list but is not JSON; Dungeons Arise pages hold several quotes.
+        odd = {'blocks': [{'pos': [0, 0, 0], 'nbt': {'CustomName': '[Energy Detector]'}},
+                          {'pos': [1, 0, 0], 'nbt': {'Book': {'tag': {'pages': ['"In the treasury of life."\n\n"Let it shine."']}}}}]}
+        self.assertEqual(set(dict(et.units('data/ctov/structures/lab.nbt', nbt(odd))).values()),
+                         {'[Energy Detector]', '"In the treasury of life."\n\n"Let it shine."'})
+
+    def test_capsule_templates_in_config_are_structures(self):
+        self.assertTrue(et.is_file('config/capsule/loot/common/_common_blueprint_discovery.nbt'))
+        self.assertTrue(et.is_file('/config/capsule/loot/common/_common_blueprint_discovery.nbt'))  # how the scan asks
+        self.assertFalse(et.is_file('config/othermod/loot/a.nbt'))
+        self.assertFalse(et.is_file('/mods/x.jar!/config/capsule/loot/a.nbt'))
+        self.assertIn('Cobble Balls', dict(et.units('config/capsule/rewards/shop.nbt', nbt(SHOP))).values())
+
+    def test_books_saved_in_the_old_tag_format(self):
+        # Pixelmon 9.4.1 boat_pirate.nbt: a lectern book from before 1.20.5, pages as plain text or JSON.
+        old = {'blocks': [{'pos': [0, 0, 0], 'nbt': {'id': 'minecraft:lectern', 'Book': {'id': 'minecraft:written_book', 'tag': {
+            'title': 'Pirate Secrets', 'author': 'Captain Tauros',
+            'pages': ['  - Pirate Secrets -\n A Journal By: Captain Tauros', '{"text":"Greetings, wise adventurer."}']}}}}]}
+        found = dict(et.units('data/pixelmon/structure/boats/boat_pirate.nbt', nbt(old)))
+        self.assertEqual(set(found.values()), {'Pirate Secrets', 'Captain Tauros', '  - Pirate Secrets -\n A Journal By: Captain Tauros',
+                                               'Greetings, wise adventurer.'})
+        changes = {k: (v, {'Pirate Secrets': '海盜的祕密', 'Greetings, wise adventurer.': '你好，睿智的冒險者。'}.get(v, v)) for k, v in found.items()}
+        written = dict(et.units('x/data/p/structure/b.nbt', et.rewrite('data/pixelmon/structure/boats/boat_pirate.nbt', nbt(old), changes)))
+        self.assertIn('海盜的祕密', written.values()); self.assertIn('你好，睿智的冒險者。', written.values())
+        self.assertIn('Captain Tauros', written.values())
+
+    def test_plain_string_names_and_lore_of_trades_and_loot_tables(self):
+        # VillagerConfig trades (COBBLEVERSE kanto_cartographer) name their maps with a plain string, shown as written.
+        found = dict(et.units('data/lumymon/trades/kanto_cartographer.json', TRADES.encode()))
+        self.assertEqual(found, {'[0]': 'Pewter City', '["plain", 0]': "§7Brock's Gym", '["plain", 1]': 'Leads to the gym.'})
+        # Ids, the map's destination and its decoration are not words.
+        self.assertNotIn('minecraft:map', found.values()); self.assertNotIn('cobbleverse:kanto_brock_gym', found.values())
+        out = et.rewrite('data/lumymon/trades/kanto_cartographer.json', TRADES.encode(), {
+            '["plain", 0]': ("§7Brock's Gym", '§7小剛的道館'), '[0]': ('Pewter City', '尼比市')}).decode()
+        self.assertEqual(json.loads(out)['tiers'][0]['groups'][0]['trades'][0]['result']['functions'][1]['name'], '§7小剛的道館')
+        self.assertEqual(out.replace('§7小剛的道館', "§7Brock's Gym").replace('尼比市', 'Pewter City'), TRADES)
+        with self.assertRaises(ValueError):
+            et.rewrite('data/lumymon/trades/kanto_cartographer.json', TRADES.encode(), {'["plain", 0]': ('Old name', '新')})
+        # Beautify: an advancement's title and description written as plain strings.
+        adv = json.dumps({'display': {'icon': {'item': 'beautify:blinds'}, 'title': 'Blinded by the lights',
+                                      'description': {'text': 'Craft blinds'}, 'frame': 'task'}, 'criteria': {'c': {'trigger': 'x'}}})
+        self.assertEqual(set(dict(et.units('data/beautify/advancements/progression/blinds.json', adv.encode())).values()),
+                         {'Blinded by the lights', 'Craft blinds'})
+        # Treasure Bags: the bag's name is a component read with Component.Serializer.
+        bag = json.dumps({'displayName': {'text': 'Treasure Bag'}, 'rarity': 'common', 'lootTable': 'treasurebags:bags/default'})
+        self.assertEqual(dict(et.units('data/treasurebags/treasurebags_types/default.json', bag.encode())), {'[0]': 'Treasure Bag'})
+        # A loot table's own {"text"} pieces keep the keys earlier versions wrote.
+        self.assertEqual(dict(et.units('data/x/loot_table/a.json', LOOT.encode())),
+                         {'[0]': '§eFirst Gym §c[KANTO]', '[1]': 'Find the gym leader.'})
+
+
     def test_units_of_each_kind_and_the_rest_of_the_file_stays(self):
         found = dict(et.units('data/bca/structure/shop.nbt', nbt(SHOP)))
         self.assertEqual(set(found.values()), {'Poké Trader', 'Cobble Balls', 'Healing Items', 'Employees ', 'Only', 'Kanto Map Guide'})
@@ -116,6 +196,36 @@ class EmbeddedTextTests(unittest.TestCase):
         return Client
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_rei_group_names_and_trade_names_are_translated_in_place(self, _):
+        refs = ([{}, {}], {'sources': ['tw', 'cn']})
+        rei = ('{\n\t"disabledGroups": [],\n\t"customGroups": [\n\t\t{\n\t\t\t"id": "custom:3671dae0",\n\t\t\t"name": "Lights",\n'
+               '\t\t\t"stacks": ["{count:1,id:\\"minecraft:light\\"}"]\n\t\t}\n\t]\n}')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); instance = root / 'instance'; home = root / 'app'
+            (instance / 'config/roughlyenoughitems').mkdir(parents=True); (instance / 'datapacks').mkdir(); (instance / 'mods').mkdir()
+            groups = instance / 'config/roughlyenoughitems/collapsible.json5'; groups.write_text(rei, encoding='utf-8')
+            with zipfile.ZipFile(instance / 'datapacks/dp.zip', 'w') as z:
+                z.writestr('pack.mcmeta', '{"pack":{"pack_format":48,"description":"x"}}')
+                z.writestr('data/lumymon/trades/kanto_cartographer.json', TRADES)
+            before = (groups.read_bytes(), (instance / 'datapacks/dp.zip').read_bytes())
+            session = jobs.plan(instance, home, lambda *_: None, references=refs)
+            sent = {r['current'] for _, r in ai.pending_rows(session)}
+            self.assertTrue({'Lights', "§7Brock's Gym", 'Leads to the gym.'} <= sent, sent)
+            self.assertFalse({'custom:3671dae0', 'minecraft:map'} & sent)
+            ai.supplement(session, home, 'test-model', lambda *_: None, client_factory=self.client(
+                {'Lights': '光源', "§7Brock's Gym": '§7小剛的道館', 'Leads to the gym.': '通往道館。', 'Pewter City': '尼比市'}))
+            jobs.prepare_to_apply(session)
+            done = jobs.apply_session(session, home, lambda *_: None)
+            self.assertEqual(session['shown_mismatch'], 0)
+            self.assertEqual(json.loads(groups.read_text(encoding='utf-8'))['customGroups'][0]['name'], '光源')
+            self.assertEqual(groups.read_text(encoding='utf-8').replace('光源', 'Lights'), rei)  # nothing else moved
+            with zipfile.ZipFile(instance / 'datapacks/dp.zip') as z:
+                self.assertIn('§7小剛的道館', z.read('data/lumymon/trades/kanto_cartographer.json').decode())
+            self.assertEqual(jobs.applicable_count(jobs.plan(instance, home, lambda *_: None, references=refs)), 0)
+            jobs.restore_backup(Path(done['backup']), instance)
+            self.assertEqual((groups.read_bytes(), (instance / 'datapacks/dp.zip').read_bytes()), before)
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_data_pack_words_are_translated_in_place_and_restored(self, _):
         refs = ([{}, {}], {'sources': ['tw', 'cn']})
         answers = {'Poké Trader': '寶可夢商人', 'Cobble Balls': '精靈球', 'Healing Items': '回復道具', 'Employees ': '員工',
@@ -164,6 +274,11 @@ class EmbeddedTextTests(unittest.TestCase):
             self.assertEqual((back['origin'], back['en_ref']), ('ai_translation', 'Cobble Balls'))
             jobs.restore_backup(Path(done['backup']), instance)
             self.assertEqual(pack.read_bytes(), before)
+            # The original pack is back (CurseForge reinstalled it): earlier AI work is reused, nothing goes to AI again.
+            reset = jobs.plan(instance, home, lambda *_: None, references=refs)
+            shop_row = next(r for r in reset['rows'] if r['kind'] == 'embedded_text' and r['current'] == 'Cobble Balls')
+            self.assertEqual((shop_row['origin'], shop_row['proposed'], shop_row.get('ai_reused')), ('ai_translation', '精靈球', True))
+            self.assertFalse([r for _, r in ai.pending_rows(reset) if r['kind'] == 'embedded_text'])
 
 
 if __name__ == '__main__':unittest.main()

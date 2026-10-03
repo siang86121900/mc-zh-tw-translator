@@ -451,6 +451,7 @@ class MainWindow(QMainWindow):
         self.set_language.toggled.connect(lambda v:self.settings.setValue('set_language','true' if v else 'false'));b.addWidget(self.set_language)
         actions=QHBoxLayout();self.full_start=button('一鍵完整翻譯並套用',self.full_translation_job,True);self.cancel=button('停止',self.cancel_job);self.cancel.setEnabled(False)
         actions.addWidget(self.full_start);actions.addWidget(self.cancel);actions.addStretch();b.addLayout(actions);box.addWidget(f)
+        self.scope_warning=label('','warn');self.scope_warning.hide();box.addWidget(self.scope_warning)
         stats=QHBoxLayout();stats.setSpacing(12);self.stats=[];self.stat_notes=[]
         for title,accent in zip(jobs.HOME_CARDS,('done','todo')):
             f,b=card();strip=QFrame();strip.setObjectName('accent_'+accent);strip.setFixedHeight(3);b.insertWidget(0,strip)
@@ -565,7 +566,7 @@ class MainWindow(QMainWindow):
         for b in (self.review_btn,self.confirm_all_btn,self.ai_run_btn,self.ai_check_btn,self.undo_confirm_btn):tools.addWidget(b)
         actions.addLayout(tools,1);actions.addWidget(self.apply_btn,0,Qt.AlignTop|Qt.AlignRight);box.addLayout(actions)
         self.ai_run_hint=label('','sub');self.ai_run_hint.setVisible(False);box.addWidget(self.ai_run_hint)
-        box.addWidget(label('雙擊一列可以修正譯文；按「確認這筆」後會記住，下次翻譯自動使用。「建議確認」只列 AI 補譯、版本待確認的參考譯文、數值和原文不同的譯文與自動統一的譯名。','sub'))
+        box.addWidget(label('不需要逐筆確認才能完成一鍵翻譯。「建議確認」列數值、名稱、版本與顯示格式等具體疑點；AI 來源和自動用字修正保留在來源明細。雙擊一列可以修正譯文；按「確認這筆」後會記住，下次優先使用。','sub'))
 
     def make_backups(self):
         box=self.page('備份與還原','每次套用都保留原檔。還原前會檢查後續修改，避免蓋掉你的檔案。')
@@ -735,6 +736,12 @@ class MainWindow(QMainWindow):
             translation='　·　'.join(x for x in (f"翻譯第 {pack['revision']} 版",pack['updated'] and pack['updated'][:10]+' 更新',
                                                   pack['translator'] and '翻譯：'+pack['translator']) if x)
             b.addWidget(label(modpack,'muted'));b.addWidget(label(translation,'sub'))
+            if pack.get('kind')!='full':
+                sharing_note=('已安裝的分享內容經檔案核對一致；舊存檔文字另有範圍限制。' if pack.get('consistency')=='matched'
+                    else '目前只安裝了部分翻譯，內容尚未與分享者一致。' if pack.get('consistency')=='partial'
+                    else '這份補丁未提供完整的一致性核對資料，安裝成功不代表取得分享者的所有翻譯。' if pack.get('sharingStatus','unknown')=='unknown'
+                    else '分享者有部分內容未包含在補丁裡，安裝後仍可能看到英文。' if pack.get('sharingStatus')=='partial' else '')
+                if sharing_note:b.addWidget(label(sharing_note,'warn' if pack.get('consistency')!='matched' else 'sub'))
             newer=(f"整合包已有新版本 {pack['newest_version']} 的翻譯，在 CurseForge 更新整合包後即可安裝。"
                    if pack['status'] in ('exact','applied','update') and not pack['latest'] else '')
             extra=pack.get('addedMods') or []
@@ -790,7 +797,7 @@ class MainWindow(QMainWindow):
     def confirm_patch(self,target,pack,other_version):
         warn='\n\n整合包版本和翻譯時不同：只會翻譯檔案完全相同的模組，其餘略過（不會覆蓋）。' if other_version else ''
         language='，並把遊戲語言設為繁體中文' if self.set_language.isChecked() else ''
-        return self.ask_install('安裝翻譯',f"將把「{pack['name']}」的翻譯安裝到{language}：\n{target}\n\n會先備份要修改的原檔，之後可在「備份與還原」復原。請先關閉這個整合包的遊戲。{warn}",pack)
+        return self.ask_install('安裝翻譯',f"將把「{pack['name']}」的翻譯安裝到{language}：\n{target}\n\n會先備份要修改的原檔，之後可在「備份與還原」復原。請先關閉這個整合包的遊戲。{warn}\n\n{patches.shared_text.SAVE_NOTE}",pack)
 
     def apply_catalog_patch(self,pack):
         if pack['projectID'] and not any(x['projectID']==pack['projectID'] for x in jobs.curseforge_instances()):
@@ -915,6 +922,18 @@ class MainWindow(QMainWindow):
     def patch_applied(self,result):
         self.refresh_backups();self.refresh_catalog();self.check_outdated()
         lines=[f"已翻譯 {len(result['applied']):,} 個檔案。" if result['applied'] else '沒有需要更新的檔案。']
+        consistency=result.get('consistency','unknown')
+        lines.insert(0,{'matched':'分享的翻譯內容已通過檔案核對；這不是遊戲畫面實測。',
+            'partial':'目前只裝好部分翻譯，尚未與分享者一致。',
+            'unknown':'這是舊補丁，沒有完整的一致性核對資料。安裝成功不代表取得分享者的所有翻譯。'}[consistency])
+        if result.get('sender_omitted'):
+            lines.append('分享者未放進補丁的內容：')
+            lines+=['・'+s['file']+'：'+s['reason'] for s in result['sender_omitted'][:8]]
+        if result.get('sender_text_omissions'):
+            lines.append(f"分享者另有 {len(result['sender_text_omissions']):,} 筆已套用紀錄未通過分享檢查，未納入補丁；逐句原因已保存在報告。")
+        if result.get('missing_mods'):lines.append('缺少或版本不同的模組：'+'、'.join(result['missing_mods'][:8]))
+        if result.get('activation_error'):lines.append(result['activation_error'])
+        if result.get('readback_mismatch') or result.get('file_mismatch'):lines.append('部分內容寫入後核對未通過，請保留這次報告以便查明。')
         if result.get('installed_modpack'):lines.insert(0,'整合包已由 CurseForge 裝好：'+Path(result['instance']).name)
         mods=result.get('mods') or {}
         if mods.get('installed'):lines.append(f"已加入翻譯者加裝的 {len(mods['installed'])} 個模組："+'、'.join(mods['installed'][:8])+('…' if len(mods['installed'])>8 else ''))
@@ -924,16 +943,18 @@ class MainWindow(QMainWindow):
         if result.get('mods_offered'):lines.append(f"沒有加入翻譯者加裝的 {len(result['mods_offered'])} 個模組，它們的翻譯已略過。")
         if result['already']:lines.append(f"{len(result['already']):,} 個檔案先前已翻譯。")
         if result['skipped']:
-            lines.append(f"略過 {len(result['skipped']):,} 個和翻譯時版本不同的檔案（未修改）：")
-            lines+=['・'+s['file'] for s in result['skipped'][:8]]+(['…'] if len(result['skipped'])>8 else [])
+            lines.append(f"有 {len(result['skipped']):,} 項翻譯略過，原因如下：")
+            lines+=['・'+s['file']+'：'+s['reason'] for s in result['skipped'][:8]]+(['…'] if len(result['skipped'])>8 else [])
         if result['backup']:lines.append('原檔已備份，可在「備份與還原」復原。')
         lines.append('遊戲語言已設為繁體中文（台灣）。' if result['language_set'] else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
         if result.get('notes'):lines+=['','翻譯者的說明：',result['notes']]
+        lines+=['',result.get('save_note') or patches.shared_text.SAVE_NOTE]
         memory=self.memory_advice(dict(recommendedRam=patches.instance_identity(Path(result['instance']))['recommendedRam'],
                                        instances=[dict(path=result['instance'])]))
         if memory:lines+=['',memory['line']]+[memory[k] for k in ('now','warning') if memory[k]]+['（在「已翻譯整合包」按「怎麼調整記憶體」看步驟）']
-        self.patch_status.setText('');self.notify_finished('翻譯已安裝',lines[0])
-        QMessageBox.information(self,'翻譯已安裝','\n'.join(lines))
+        title='翻譯已安裝' if consistency=='matched' else '翻譯已安裝，仍有需要留意的內容'
+        self.patch_status.setText('');self.notify_finished(title,lines[0])
+        QMessageBox.information(self,title,'\n'.join(lines))
 
     def server_parent(self,instance,pack_name):
         """Ask where the server goes; the folder may be chosen or pasted. Returns the parent folder or None."""
@@ -1621,16 +1642,20 @@ class MainWindow(QMainWindow):
         # The same two numbers as the start page, read back from the game's files, plus what this run changed.
         view=jobs.home_cards(result);(rate,rate_note),(english,english_note)=view['cards']
         summary=f'中文化完成率 {rate}（{rate_note}）\n還缺中文 {english} 句：{english_note}'+('\n'+view['written'] if view['written'] else '')
-        if result['status'] in ('installed','needs_review'):self.notify_finished('翻譯完成',f'中文化完成率 {rate}，還缺中文 {english} 句。')
+        unfinished=bool(jobs.completion_notes(result) or jobs.coverage(result)['total']-jobs.coverage(result)['done'])
+        title='本次處理結束，仍有未完成內容' if unfinished else '本次處理完成'
+        if result['status'] in ('installed','needs_review'):self.notify_finished(title,f'已辨識範圍中文化 {rate}，還缺中文 {english} 句。'+(' 尚有未解決內容。' if unfinished else ''))
         else:self.notify_finished('翻譯已停止，需要處理',result.get('apply_error') or '請查看翻譯報告。')
         if result['status']=='installed':
             notes='\n'.join(self.applied_notes(result));waiting=self.unapplied_count()
             if waiting:notes=f'另有 {waiting:,} 筆已翻好但還沒寫入，可在報告頁按「備份並套用譯文」。'+('\n'+notes if notes else '')
-            QMessageBox.information(self,'本次處理完成',summary+('\n\n'+notes if notes else '')+'\n\n重新啟動遊戲後生效。')
+            QMessageBox.information(self,title,summary+('\n\n'+notes if notes else '')+'\n\n重新啟動遊戲後生效。')
         elif result['status']=='awaiting_game':
             QMessageBox.information(self,'譯文已保存，等待套用',result['apply_error'])
         elif self.nothing_new(result):
             QMessageBox.information(self,'沒有需要寫入的內容',summary)
+        elif result['status']=='needs_review':
+            QMessageBox.information(self,title,summary)
 
     def nothing_new(self,session):
         """A modpack translated before and unchanged since: everything is still applied, nothing waits."""
@@ -1654,6 +1679,7 @@ class MainWindow(QMainWindow):
         self.step.setText(self.status.text());self.append_activity(self.status.text())
 
     def show_cards(self,view):
+        self.scope_warning.setText(view.get('warning',''));self.scope_warning.setVisible(bool(view.get('warning')))
         for (number,note),n,sub in zip(view['cards'],self.stats,self.stat_notes):n.setText(number);sub.setText(note)
         self.written_note.setText(view.get('written',''))
 
@@ -1838,6 +1864,7 @@ class MainWindow(QMainWindow):
         # Red is only for what still needs the player; broken files the game skips too and rebuilt files are notes.
         problems=[jobs.describe_error(e) for e in self.session.get('errors',[]) if not jobs.broken_source_file(e)]
         if jobs.unsupported_note(self.session):problems.insert(0,jobs.unsupported_note(self.session))
+        if jobs.inventory_note(self.session):problems.insert(0,jobs.inventory_note(self.session))
         self.report_errors.setVisible(bool(problems))
         self.report_errors.setText('需要留意：\n'+'\n'.join('• '+p for p in problems[:5])+(f'\n另有 {len(problems)-5} 項，詳見報告資料夾。' if len(problems)>5 else ''))
 
@@ -1859,7 +1886,7 @@ class MainWindow(QMainWindow):
         if cards['written']:notes.append(cards['written'])
         if o['applied']:notes.append(f"這一批寫入 {o['applied']:,} 筆譯文"+(f"（含先前套用 {o['recovered']:,} 筆）" if o['recovered'] else ''))
         if o['not_applied']:notes.append('沒有寫入：'+'、'.join(f'{n:,} 筆{why}' for n,why in o['not_applied']))
-        if o['rechecked']:notes.append('套用後已重新掃描整合包確認寫入')
+        if o['rechecked']:notes.append('套用後已重新掃描檔案；尚非遊戲畫面實測')
         if o['context']:notes.append(f"另有 {o['context']:,} 筆程式或設定裡的文字，需確認是否顯示在遊戲中（見「無法確定是否顯示」）")
         if o['renamed']:notes.append(f"{o['renamed']:,} 筆是整合包改過名稱的文字，只採用符合新名稱的來源")
         if self.session.get('ai_checked'):notes.append(f"AI 對照英文核對過 {self.session['ai_checked']:,} 筆有疑點的譯文，判斷無誤")

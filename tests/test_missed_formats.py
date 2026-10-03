@@ -94,6 +94,26 @@ class MissedFormatTests(unittest.TestCase):
               '  element_type = image\n}\n\nelement {\n  source = %#FF5500%Hold%#% **T** for {"placeholder":"mcversion"}%n%to fix\n'
               '  source_mode = direct\n  element_type = text_v2\n}\n\nelement {\n  label = 開始遊戲\n}\n')
 
+    def test_short_labels_are_listed_and_a_checked_format_says_why_it_stays_english(self):
+        labels = {'groups': [{'headerLabel': 'Regional Variation', 'aspectLabels': {'chimera-a': 'Chimera A'}}]}
+        self.jar('scanner.jar', {'fabric.mod.json': {'schemaVersion': 1, 'id': 'better_pokedex_scanner'},
+                                 'assets/better_pokedex_scanner/variant_labels/cobblemon.json': labels,
+                                 'assets/other_mod/labels/a.json': labels})
+        rows = {r['source'].split('!/')[-1]: r for r in self.make_plan()['rows'] if r['kind'] == 'unsupported_config_text'}
+        kept = rows['assets/better_pokedex_scanner/variant_labels/']
+        self.assertEqual(kept['origin'], 'keep_original'); self.assertIn('Better Pokédex Scanner', kept['issue'])
+        self.assertEqual(rows['assets/other_mod/labels/']['origin'], 'untranslated')  # unknown formats stay red
+
+    def test_rich_language_values_are_listed_not_dropped(self):
+        # owo-lib: a value may be a text component; such rows used to vanish without a red line in the report.
+        self.jar('owo.jar', {'fabric.mod.json': {'schemaVersion': 1, 'id': 'owo'},
+                             'assets/owo/lang/en_us.json': {'text.owo.select_hint': {'text': 'Shift-click to select multiple', 'color': 'gray'},
+                                                            'text.owo.save': 'Save'}})
+        rows = self.make_plan()['rows']
+        listed = [r for r in rows if r['kind'] == 'unsupported_config_text' and r['key'] == 'rich_language']
+        self.assertEqual(len(listed), 1); self.assertIn('Shift-click to select multiple', listed[0]['current'])
+        self.assertTrue(any(r['key'] == 'text.owo.save' and r['kind'] == 'language' for r in rows))  # plain values as before
+
     def test_fancymenu_units_are_shown_words_only(self):
         units = dict(embedded_text.units('config/fancymenu/customization/menu.txt', self.LAYOUT.encode()))
         self.assertEqual(sorted(units.values()), sorted(['[Ad] Need a server? Get one!', 'Start a Server', '開始遊戲',
@@ -103,6 +123,12 @@ class MissedFormatTests(unittest.TestCase):
             embedded_text.rewrite('config/fancymenu/customization/menu.txt', self.LAYOUT.encode(), {key: (units[key], '按住 T 修正')})
         self.assertFalse(jobs.same_format(units[key], '按住 T 修正'))
         self.assertTrue(jobs.same_format(units[key], '%#FF5500%按住%#% **T** 兩秒{"placeholder":"mcversion"}%n%即可修正'))
+        # Pixelmon: a placeholder's own source (…/update.json) does not make the shown line a file path.
+        version = ('element {\n  source = |||%n%Installed Pixelmon: {"placeholder":"modversion","values":{"modid":"pixelmon"}}%n%'
+                   'Latest Pixelmon: {"placeholder":"json","values":{"json_path":".promos","source":"https://reforged.gg/forge/update.json"}}%n%|||\n'
+                   '  source_mode = direct\n}\nelement {\n  source = /config/fancymenu/assets/text.txt\n  source_mode = resource\n}\n')
+        found = list(dict(embedded_text.units('config/fancymenu/customization/v.txt', version.encode())).values())
+        self.assertEqual(len(found), 1); self.assertIn('Installed Pixelmon', found[0])
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_fancymenu_english_labels_are_translated_in_place(self, _):

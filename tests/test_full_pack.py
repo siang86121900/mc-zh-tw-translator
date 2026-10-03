@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from mc_zh_tw_translator import full_pack, patches
 
@@ -142,6 +143,18 @@ class FullPackTests(unittest.TestCase):
         self.assertEqual(self.listing.read_bytes(),listing)
         self.assertFalse((self.instances/'My Pack (2)').exists());self.assertFalse(list(self.instances.glob('.mctranslator-*')))
 
+    def test_folder_held_by_a_scanner_for_a_moment_is_renamed_after_waiting(self):
+        # Antivirus or the Windows indexer opening files just written makes the folder rename fail for a moment.
+        real=Path.rename;refused={'n':0}
+        def rename(path,target):
+            if path.name.startswith('.mctranslator-') and refused['n']<2:
+                refused['n']+=1;raise PermissionError(5,'存取被拒',str(path))
+            return real(path,target)
+        with patch.object(Path,'rename',rename),patch('mc_zh_tw_translator.deployment.time.sleep'):
+            self.install()
+        self.assertEqual(refused['n'],2);self.assertTrue((self.instances/'My Pack').is_dir())
+        self.assertFalse(list(self.instances.glob('.mctranslator-*')))
+
     def test_a_different_curseforge_file_stops_before_anything_is_registered(self):
         self.server.files[url(1,'served.jar')]=jar('someone replaced it')
         with self.assertRaises(ValueError):self.install()
@@ -150,7 +163,9 @@ class FullPackTests(unittest.TestCase):
 
     def test_unreadable_curseforge_list_is_not_changed(self):
         self.listing.write_bytes(b'{"not":"a list"}')
-        with self.assertRaisesRegex(ValueError,'看不懂'):self.install()
+        with patch.object(full_pack,'curseforge_root') as choose_root:
+            with self.assertRaisesRegex(ValueError,'看不懂'):self.install()
+            choose_root.assert_not_called()  # reject before the real fallback path can create a staging folder
         self.assertEqual(self.listing.read_bytes(),b'{"not":"a list"}')
         self.assertEqual([p.name for p in self.instances.iterdir()],['Other Pack'])
 

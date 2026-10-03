@@ -16,11 +16,15 @@ import re
 import struct
 
 
-STRUCTURE = re.compile(r'(?:^|/)data/[^/]+/structures?/.+\.nbt$')
+# Capsule 1.20.1 (capsule-common.toml lootTemplatesPaths, starterTemplatesPath, prefabsTemplatesPath,
+# rewardTemplatesPath) places the structures in config/capsule/ when a capsule is deployed, books and signs included.
+STRUCTURE = re.compile(r'(?:^|/)data/[^/]+/structures?/.+\.nbt$|^/?config/capsule/(?:loot|starters|prefabs|rewards)/.+\.nbt$')
 FUNCTION = re.compile(r'(?:^|/)data/[^/]+/functions?/.+\.mcfunction$')
-LOOT = re.compile(r'(?:^|/)data/[^/]+/(?:loot_tables?|advancements?|item_modifiers?)/.+\.json$')
-# What makes such a file show words: an item named or given lore, an advancement with a display.
-LOOT_WORDS = re.compile(r'"(?:minecraft:)?set_(?:name|lore)"|"display"\s*:')
+# trades: VillagerConfig 4.5 (TradeManager) loads data/<ns>/trades/*.json, whose results are vanilla loot item entries.
+# treasurebags_types: Treasure Bags 1.9 (BagType$Serializer) reads "displayName" with Component.Serializer, the bag's name.
+LOOT = re.compile(r'(?:^|/)data/[^/]+/(?:loot_tables?|advancements?|item_modifiers?|trades|treasurebags_types)/.+\.json$')
+# What makes such a file show words: an item named or given lore, an advancement with a display, a bag's name.
+LOOT_WORDS = re.compile(r'"(?:minecraft:)?set_(?:name|lore)"|"display"\s*:|"displayName"\s*:')
 WORDS = re.compile(r'[A-Za-z]{2}|[\u3400-\u9fff]')
 HAN = re.compile('[\u3400-\u9fff]')
 
@@ -33,7 +37,7 @@ PLAIN_FIELDS = {'Category', 'author'}
 
 def is_file(name):
     return bool(STRUCTURE.search(name) or FUNCTION.search(name) or LOOT.search(name) or RCT_TRAINER.search(name)
-                or FANCYMENU.search(name))
+                or FANCYMENU.search(name) or REI_GROUPS.search(name))
 
 
 # --- JSON text components -------------------------------------------------------------------------------------
@@ -142,15 +146,29 @@ def nbt_units(raw):
     for path, field, value in nbt_strings(raw):
         if not isinstance(value, str) or not WORDS.search(value):continue
         keys = [p for p in path if isinstance(p, str)]
-        if field in PLAIN_FIELDS or (field == 'raw' and 'title' in keys):
+        # A book saved before 1.20.5 keeps "tag": {"title", "pages": [...]} (Pixelmon's boat_pirate journal); the
+        # game's data fixer turns it into written_book_content, reading a page that is not JSON as literal text.
+        old_book = 'tag' in keys and field in ('title', 'pages')
+        if field in PLAIN_FIELDS or (field == 'raw' and 'title' in keys) or (old_book and field == 'title'):
             units.append((json.dumps(list(path), ensure_ascii=False), value, (path, ('plain', None))))
-        elif field in JSON_FIELDS or (field == 'raw' and 'pages' in keys) or (field in ('Name', 'Lore') and 'display' in keys):
+        elif field in JSON_FIELDS or (field == 'raw' and 'pages' in keys) or (field in ('Name', 'Lore') and 'display' in keys) or old_book:
             unit = component_unit(value)
             if unit:units.append((json.dumps(list(path), ensure_ascii=False), unit[0], (path, unit[1])))
+            elif not_json(value):
+                # Text that is not JSON is read as written: an old book's page ('"In the treasury…"\n\n"Let the…"',
+                # Dungeons Arise), a name saved as bare words (cobblemon-additions' shopkeeper "Arborist", CTOV's
+                # "[Energy Detector]"). A page stays plain text; a name is written back as a JSON string.
+                units.append((json.dumps(list(path), ensure_ascii=False), value, (path, ('plain' if old_book else 'quote', None))))
         elif field == 'Command':
             for k, (text, how) in enumerate(command_units(value)):
                 units.append((json.dumps(list(path) + [k], ensure_ascii=False), text, (path, ('command', k))))
     return units
+
+
+def not_json(value):
+    try:json.loads(value)
+    except ValueError:return True
+    return False
 
 
 def rewrite_nbt(raw, changes):
@@ -165,6 +183,7 @@ def rewrite_nbt(raw, changes):
         path, how = places[key][1]; path = tuple(path)
         old = replace.get(path, (values[path], values[path]))
         if how[0] == 'plain':value = new
+        elif how[0] == 'quote':value = json.dumps(new, ensure_ascii=False)
         elif how[0] == 'command':value = put_command(old[1], how[1], new)
         else:value = put_component(old[1], how, new)
         replace[path] = (values[path], value)
@@ -271,24 +290,104 @@ def rewrite_function(text, changes):
 
 # --- loot tables -----------------------------------------------------------------------------------------------
 
+class _Str(str):
+    """A JSON string value that remembers where it sits in the file (plain_loot_spans)."""
+
+
+def _positioned(raw):
+    """The JSON value of `raw` with every string a _Str carrying .start and .end; raises ValueError when not JSON."""
+    i = [0]; n = len(raw)
+
+    def skip():
+        while i[0] < n and raw[i[0]] in ' \t\r\n':i[0] += 1
+
+    def value():
+        skip()
+        if i[0] >= n:raise ValueError('unexpected end')
+        c = raw[i[0]]
+        if c == '"':
+            start = i[0]; i[0] += 1
+            while i[0] < n and raw[i[0]] != '"':i[0] += 2 if raw[i[0]] == '\\' else 1
+            if i[0] >= n:raise ValueError('unterminated string')
+            i[0] += 1
+            s = _Str(json.loads(raw[start:i[0]])); s.start, s.end = start, i[0]
+            return s
+        if c in '{[':
+            i[0] += 1; skip(); close = '}' if c == '{' else ']'
+            out = {} if c == '{' else []
+            if raw[i[0]] == close:i[0] += 1;return out
+            while True:
+                if c == '{':
+                    key = value(); skip()
+                    if raw[i[0]] != ':':raise ValueError('expected :')
+                    i[0] += 1; out[str(key)] = value()
+                else:out.append(value())
+                skip()
+                if raw[i[0]] == ',':i[0] += 1;continue
+                if raw[i[0]] == close:i[0] += 1;return out
+                raise ValueError('bad JSON')
+        m = re.compile(r'-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null').match(raw, i[0])
+        if not m:raise ValueError('bad JSON value')
+        i[0] = m.end()
+        return None
+
+    found = value(); skip()
+    if i[0] != n:raise ValueError('trailing data')
+    return found
+
+
+def plain_loot_spans(raw):
+    """(start, end, value) of item names and lore written as plain strings, in file order: the vanilla set_name
+    function's "name": "§7Brock's Gym" and set_lore's "lore": ["…"]. A plain string is a literal text component, shown
+    as written (VillagerConfig trades hand these functions to vanilla loot, COBBLEVERSE kanto_cartographer); the item
+    entry's own "name" (minecraft:map) is an id and is never one of them."""
+    try:tree = _positioned(raw)
+    except (ValueError, IndexError):return []
+    spans = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            function = str(node.get('function') or '').removeprefix('minecraft:')
+            if function == 'set_name' and isinstance(node.get('name'), _Str):spans.append(node['name'])
+            if function == 'set_lore' and isinstance(node.get('lore'), list):
+                spans.extend(x for x in node['lore'] if isinstance(x, _Str))
+            # An advancement's "display": {"title": "Blinded by the lights"} (Beautify 2.0.2, VEFV2.7.1): a plain string
+            # is a literal component, as with set_name.
+            display = node.get('display')
+            if isinstance(display, dict) and ('icon' in display or 'frame' in display):
+                spans.extend(display[k] for k in ('title', 'description') if isinstance(display.get(k), _Str))
+            for x in node.values():walk(x)
+        elif isinstance(node, list):
+            for x in node:walk(x)
+    walk(tree)
+    return sorted(((s.start, s.end, str(s)) for s in spans), key=lambda x: x[0])
+
+
 def loot_units(raw):
     """[(key, text, index)]: each "text" value of the components a loot table gives its items (set_name, set_lore)
     or an advancement shows (display title and description), one piece at a time, so the rest of the file keeps its
-    bytes. Components written as a language key ("translate") have no words here."""
+    bytes. Components written as a language key ("translate") have no words here. Names and lore written as plain
+    strings follow with keys ["plain", n], so the keys of the "text" pieces stay what earlier runs wrote."""
     if not LOOT_WORDS.search(raw):return []
     spans = text_spans(raw)
-    return [(json.dumps([k]), v, k) for k, (_, _, v) in enumerate(spans or []) if WORDS.search(v)]
+    units = [(json.dumps([k]), v, k) for k, (_, _, v) in enumerate(spans or []) if WORDS.search(v)]
+    return units + [(json.dumps(['plain', k]), v, ('plain', k)) for k, (_, _, v) in enumerate(plain_loot_spans(raw))
+                    if WORDS.search(v)]
 
 
 def rewrite_loot(raw, changes):
-    spans = text_spans(raw); places = {key: (text, k) for key, text, k in loot_units(raw)}
+    spans = text_spans(raw) or []; plain = plain_loot_spans(raw)
+    places = {key: (text, k) for key, text, k in loot_units(raw)}
     edits = {}
     for key, (expected, new) in changes.items():
         if key not in places or places[key][0] != expected:raise ValueError('戰利品表的文字已變動，請重新翻譯')
-        edits[places[key][1]] = new
+        k = places[key][1]
+        start, end, _ = plain[k[1]] if isinstance(k, tuple) else spans[k]
+        edits[start] = (end, new)
     out = []; last = 0
-    for k, (start, end, _) in enumerate(spans):
-        if k in edits:out += [raw[last:start], json.dumps(edits[k], ensure_ascii=False)]; last = end
+    for start in sorted(edits):
+        end, new = edits[start]
+        out += [raw[last:start], json.dumps(new, ensure_ascii=False)]; last = end
     return ''.join(out + [raw[last:]])
 
 
@@ -367,7 +466,9 @@ def fancymenu_units(text):
         for i, m in block:
             field, value = m[2], m[4]
             if not (field in FANCYMENU_FIELDS or (field == 'source' and (direct or HAN.search(value)))):continue
-            if value.startswith('[source:') or re.match(r'(?i)https?://', value) or (field == 'source' and FANCYMENU_FILE.search(value)):continue
+            # A placeholder's own arguments are not the value (Pixelmon: "Latest Pixelmon: {…"source":"…/update.json"}").
+            if (value.startswith('[source:') or re.match(r'(?i)https?://', value)
+                    or (field == 'source' and FANCYMENU_FILE.search(FANCYMENU_MARK.sub(' ', value)))):continue
             # Words a player reads once the marks are taken out (a version line of placeholders only is not).
             if not WORDS.search(FANCYMENU_MARK.sub(' ', value)):continue
             start = starts[i] + m.start(4)
@@ -386,6 +487,36 @@ def rewrite_fancymenu(text, changes):
     return text
 
 
+# --- REI custom collapsible groups -----------------------------------------------------------------------------------
+
+# REI 16 (CollapsibleEntryRegistryImpl) turns each custom group's "name" into Component.literal: the title shown over a
+# collapsed stack. The group is known by its "id" (custom:<uuid>), so the name is words only (COBBLEVERSE: 271 groups).
+REI_GROUPS = re.compile(r'(?:^|/)config/roughlyenoughitems/collapsible\.json5?$')
+
+
+def rei_spans(raw):
+    """(start, end, value) of each custom group's name; [] when the file is not plain JSON (json5 comments)."""
+    try:tree = _positioned(raw)
+    except (ValueError, IndexError):return []
+    groups = tree.get('customGroups') if isinstance(tree, dict) else None
+    return [(g['name'].start, g['name'].end, str(g['name'])) for g in groups or []
+            if isinstance(g, dict) and isinstance(g.get('name'), _Str)]
+
+
+def rei_units(raw):
+    return [(json.dumps(['customGroups', k, 'name']), v, k) for k, (_, _, v) in enumerate(rei_spans(raw)) if WORDS.search(v)]
+
+
+def rewrite_rei(raw, changes):
+    spans = rei_spans(raw); places = {key: (text, k) for key, text, k in rei_units(raw)}
+    out = []; last = 0
+    for key, (expected, new) in sorted(changes.items(), key=lambda x: places.get(x[0], ('', -1))[1]):
+        if key not in places or places[key][0] != expected:raise ValueError('REI 分組名稱已變動，請重新翻譯')
+        start, end, _ = spans[places[key][1]]
+        out += [raw[last:start], json.dumps(new, ensure_ascii=False)]; last = end
+    return ''.join(out + [raw[last:]])
+
+
 # --- one entry point ---------------------------------------------------------------------------------------------
 
 def units(name, raw):
@@ -395,6 +526,7 @@ def units(name, raw):
     if LOOT.search(name):return [(k, t) for k, t, _ in loot_units(raw.decode('utf-8-sig'))]
     if RCT_TRAINER.search(name):return [(k, t) for k, t, _ in trainer_units(raw.decode('utf-8-sig'))]
     if FANCYMENU.search(name):return [(k, t) for k, t, _ in fancymenu_units(raw.decode('utf-8-sig'))]
+    if REI_GROUPS.search(name):return [(k, t) for k, t, _ in rei_units(raw.decode('utf-8-sig'))]
     return []
 
 
@@ -408,5 +540,6 @@ def rewrite(name, raw, changes):
     elif LOOT.search(name):out = rewrite_loot(text, changes)
     elif RCT_TRAINER.search(name):out = rewrite_trainer(text, changes)
     elif FANCYMENU.search(name):out = rewrite_fancymenu(text, changes)
+    elif REI_GROUPS.search(name):out = rewrite_rei(text, changes)
     else:raise ValueError('不支援的檔案：' + name)
     return (b'\xef\xbb\xbf' if bom else b'') + out.encode('utf-8')

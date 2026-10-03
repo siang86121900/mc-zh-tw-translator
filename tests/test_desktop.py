@@ -383,7 +383,7 @@ class WorkflowTests(unittest.TestCase):
         from mc_zh_tw_translator.desktop_jobs import home_cards
         # "還缺中文 0" is what says the translation is finished; how much a run wrote is only a note
         finished=dict(rows=[],already_chinese=10,installed_count=0,status='needs_review',rate_before=1.0)
-        self.assertEqual(home_cards(finished),dict(cards=[('100.0%','10／10 句玩家文字已是中文'),('0','找得到的玩家文字都已是中文')],
+        self.assertEqual(home_cards(finished),dict(cards=[('100.0%','已辨識範圍中 10／10 句在檔案裡已是中文；尚非遊戲畫面實測'),('0','找得到的玩家文字都已是中文')],
                                                    written='和翻譯前一樣是 100.0%，這次沒有修改任何遊戲檔案。'))
         left=dict(rows=[dict(origin='untranslated',supported=True,proposed='Hello')],already_chinese=10,installed_count=0,status='needs_review',rate_before=10/11)
         self.assertEqual([n for n,_ in home_cards(left)['cards']],['90.9%','1'])  # rounded down: 100% only when nothing is left
@@ -617,7 +617,8 @@ class WorkflowTests(unittest.TestCase):
         result=self.make_plan()
         tip=next(r for r in result['rows'] if r['source']=='scripts/bhc.zs' and '魂心' in (r['current'] or ''))
         self.assertTrue(jobs.convertible(tip))
-        self.assertFalse([r for r in result['rows'] if r['kind']=='unsupported_config_text'])
+        gaps=[r for r in result['rows'] if r['kind']=='unsupported_config_text']
+        self.assertEqual([(r['source'],r['current']) for r in gaps],[('config/apotheosis/names.cfg','Aries')])
         jobs.auto_confirm_safe(result)
         done=apply_session(result,self.home,lambda *_:None)
         self.assertEqual((scripts/'bhc.zs').read_text(encoding='utf-8'),
@@ -650,7 +651,8 @@ class WorkflowTests(unittest.TestCase):
         (note/'blacklist.txt').write_text('# 黑名单说明\nwine_fox\n',encoding='utf-8')  # Chinese only in comments: a settings file
         before={p:p.read_bytes() for p in (menu/'title_screen_layout.txt',props/'client.properties',note/'welcome.txt',note/'notice.txt')}
         result=self.make_plan()
-        self.assertFalse([r for r in result['rows'] if r['kind']=='unsupported_config_text'])
+        gaps=[r for r in result['rows'] if r['kind']=='unsupported_config_text']
+        self.assertEqual([(r['source'],r['current']) for r in gaps],[('config/ymktn/welcome.txt','This modpack is still updated.')])
         unverified={r['source'] for r in result['rows'] if r.get('unverified')}
         self.assertEqual(unverified,{'config/ymktn/welcome.txt'})  # FancyMenu and KubeJS are known readers
         jobs.auto_confirm_safe(result);done=apply_session(result,self.home,lambda *_:None)

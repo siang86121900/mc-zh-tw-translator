@@ -356,7 +356,7 @@ class OneClickTests(unittest.TestCase):
         rows=[dict(origin='untranslated',supported=True,changed=False),dict(origin='ai_translation',supported=True,changed=True,installed=True),
               dict(origin='same_source_zh_cn',supported=True,changed=True,installed=True)]
         o=report_overview(dict(rows=rows,installed_count=2,backup='x/20260929-120000-000000-abc',ai_translation=1))
-        self.assertEqual((o['applied'],o['check'],o['not_applied']),(2,1,[(1,'找不到中文來源')]))
+        self.assertEqual((o['applied'],o['check'],o['not_applied']),(2,0,[(1,'找不到中文來源')]))
 
     def test_mainland_wording_in_mod_zh_tw_is_fixed_conservatively(self):
         from mc_zh_tw_translator.desktop_jobs import taiwan_wording
@@ -374,7 +374,7 @@ class OneClickTests(unittest.TestCase):
         self.assertEqual(unify_suggested_terms(session),2)
         self.assertEqual({r['proposed'] for r in rows},{'棕櫚原木'})
         self.assertEqual(rows[2]['unified_from'],'棕櫚木原木')
-        self.assertEqual([needs_check(r) for r in rows],[False,True,True])
+        self.assertEqual([needs_check(r) for r in rows],[False,False,False])
 
 
 if __name__=='__main__':unittest.main()

@@ -229,6 +229,7 @@ def main():
                  gameVersion=pack.get('gameVersion', ''),
                  translator=args.translator, updated=date.today().isoformat(), notes=args.notes,
                  recommendedRam=args.ram or int(pack.get('recommendedRam') or 0),
+                 sharingStatus=manifest.get('sharing_status','unknown'),minimumAppVersion=manifest.get('minimum_app_version',''),
                  addedMods=[dict(name=m['name'], size=m['size']) for m in manifest['added_mods']],
                  url=RAW+relative, sha256=digest, size=len(data))
     update_catalog(entry, lambda p: p.get('projectID') == pack['projectID'] and p.get('fileID') == pack['fileID'],

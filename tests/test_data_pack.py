@@ -129,7 +129,7 @@ class DataPackTests(unittest.TestCase):
         result = self.make_plan()
         fixed = [r for r in result['rows'] if r.get('changed') and not r.get('installed')]
         self.assertEqual(sorted(r['proposed'] for r in fixed if '殭屍' in r['proposed']), ['擊殺 3 隻殭屍', '擊殺 3 隻殭屍'])
-        self.assertTrue(all('已修正轉換用字' in r['issue'] and jobs.needs_check(r) for r in fixed if '殭屍' in r['proposed']))
+        self.assertTrue(all('已修正轉換用字' in r['issue'] and not jobs.needs_check(r) for r in fixed if '殭屍' in r['proposed']))
         apply_session(self.confirm_all(result), self.home, lambda *_: None)
         self.assertEqual(json.loads(self.pack()['data/demo/whisperingquests/tasks/main/kill.json'])['objectives'][1]['text'], '擊殺 3 隻殭屍')
         self.assertEqual(json.loads(loose.read_text(encoding='utf-8'))['title'], '擊殺 3 隻殭屍')

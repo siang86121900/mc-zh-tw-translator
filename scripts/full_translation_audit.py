@@ -1,5 +1,5 @@
 """Read-only inventory and fail-closed, fingerprinted translation review gate."""
-import argparse, hashlib, json, re, struct, zipfile, gzip, io
+import argparse, hashlib, json, re, struct, zipfile, gzip, io, zlib
 from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
 from mc_zh_tw_translator.translator import CTE2QuestTranslator, PATCHOULI_SKIP_FIELDS
@@ -62,9 +62,17 @@ def mutf8(b):
     s=b.replace(bytes([0xc0,0x80]),bytes([0])).decode('utf-8','surrogatepass')
     return s.encode('utf-16-le','surrogatepass').decode('utf-16-le','replace')
 
+def gunzip(data):
+    """Gzipped NBT as the game reads it. Some files lack the gzip trailer although the stream is whole (Oh The Biomes
+    We've Gone 1.5.11, Dungeons Arise 2.1.58: 211 structures in VEFV2.7.1); the game's NbtIo stops once the NBT ends,
+    so it reads them, and so do we. The NBT parse still fails if the content itself is cut short."""
+    try:return gzip.decompress(data)
+    except EOFError:return zlib.decompressobj(31).decompress(data)
+
+
 def parse_binary_nbt(data):
     """Read configuration NBT without changing numeric types or writing it back."""
-    if data.startswith(b'\x1f\x8b'):data=gzip.decompress(data)
+    if data.startswith(b'\x1f\x8b'):data=gunzip(data)
     f=io.BytesIO(data)
     def number(fmt):return struct.unpack('>'+fmt,f.read(struct.calcsize('>'+fmt)))[0]
     def string():return mutf8(f.read(number('H')))
@@ -73,7 +81,7 @@ def parse_binary_nbt(data):
         if tag==8:return string()
         if tag==9:
             kind,count=number('B'),number('i')
-            if not 0<=count<=1000000:raise ValueError('invalid NBT list length')
+            if not 0<=count<=len(data):raise ValueError('invalid NBT list length')
             return [value(kind) for _ in range(count)]
         if tag==10:
             result={}
@@ -83,7 +91,7 @@ def parse_binary_nbt(data):
                 key=string();result[key]=value(kind)
         if tag in (7,11,12):
             count=number('i')
-            if not 0<=count<=1000000:raise ValueError('invalid NBT array length')
+            if not 0<=count<=len(data):raise ValueError('invalid NBT array length')
             return [number({7:'b',11:'i',12:'q'}[tag]) for _ in range(count)]
         raise ValueError('unsupported NBT tag '+str(tag))
     tag=number('B');string();result=value(tag)
@@ -97,7 +105,7 @@ def rewrite_binary_nbt(data,replacements):
     values, arrays, keys, list types and their byte representation stay untouched. Every requested path must
     exist once and still contain the value seen by the scan; otherwise the write fails closed.
     """
-    compressed=data.startswith(b'\x1f\x8b');raw=gzip.decompress(data) if compressed else data
+    compressed=data.startswith(b'\x1f\x8b');raw=gunzip(data) if compressed else data
     f=io.BytesIO(raw);found=set()
     def take(n):
         value=f.read(n)
@@ -119,7 +127,7 @@ def rewrite_binary_nbt(data,replacements):
             found.add(path);return struct.pack('>H',len(new))+new
         if tag==9:
             head=take(1);count_raw,count=number('i')
-            if not 0<=count<=1000000:raise ValueError('invalid NBT list length')
+            if not 0<=count<=len(raw):raise ValueError('invalid NBT list length')
             return head+count_raw+b''.join(value(head[0],path+(i,)) for i in range(count))
         if tag==10:
             out=b''
@@ -130,7 +138,7 @@ def rewrite_binary_nbt(data,replacements):
                 out+=name+value(kind[0],path+(key,))
         if tag in (7,11,12):
             head,count=number('i')
-            if not 0<=count<=1000000:raise ValueError('invalid NBT array length')
+            if not 0<=count<=len(raw):raise ValueError('invalid NBT array length')
             return head+take(count*{7:1,11:4,12:8}[tag])
         raise ValueError('unsupported NBT tag '+str(tag))
     tag=take(1);name=string_bytes();rewritten=tag+name+value(tag[0],())
@@ -714,6 +722,14 @@ class Audit:
                 source=label+'!/'+langs.get('en_us',langs.get('zh_tw',langs.get('zh_cn')))
                 for k in sorted(set(en)|set(tw)|set(cn)):
                     self.add(source,k,en.get(k),tw.get(k),cn.get(k))
+                # owo-lib's rich translations: a value may be a text component ({"text": …, "color": "gray"}). add()
+                # keeps strings only, so these were dropped without a word (COBBLEVERSE owo 0.12); listed instead.
+                rich=[(k,[v for _,f,v in leaves(en[k]) if f=='text' and LATIN.search(v)]) for k in sorted(en)
+                      if isinstance(en[k],(dict,list)) and not isinstance(tw.get(k),(str,dict,list))]
+                rich=[(k,words) for k,words in rich if words]
+                if rich:
+                    self.add(source,'rich_language',None,f'{len(rich)} 句語系文字是帶格式的 JSON 元件，尚未支援翻譯，'
+                             f'例如 {rich[0][0]}：{" ".join(rich[0][1])[:200]}',kind='unsupported_config_text')
             except Exception as e:self.errors.append([label,langs,str(e)])
         for row in self.rows[first:] if font else ():
             if row['kind']=='language':row['no_chinese_font']=label+'!/'+font
@@ -807,7 +823,8 @@ class Audit:
                 for path,field,value in leaves(data) if data is not None else ():
                     # "/name": only the file's own top-level field (a miniboss's gear has names of its own)
                     if (field in fields or (len(path)==1 and '/'+field in fields)) and shown_as_key(value):
-                        self.extra_keys.append([source_of(m[1]),value,value,None,dict(key_from_data=where,key_sentence=True)])
+                        self.extra_keys.append([source_of(m[1]),value,value,None,dict(key_from_data=where,
+                            key_from_data_path=json.dumps(path),key_sentence=True)])
             for key,fallback in data_key_refs(text):
                 if not isinstance(key,str) or not key.strip() or not re.search('[A-Za-z]',key) or '\n' in key:continue
                 en=fallback if isinstance(fallback,str) and fallback.strip() else key if sentence_key(key) else None
@@ -850,10 +867,16 @@ class Audit:
                 raw=read(n)
                 if len(raw)>4*1024*1024:continue
                 text=decode(raw)
-                values=[v for _,f,v in leaves(parse(raw)) if not str(f).startswith('_') and not NOT_TEXT_FIELD.search(str(f))] \
+                data=parse(raw) if n.endswith('.json') else None
+                values=[v for _,f,v in leaves(data) if not str(f).startswith('_') and not NOT_TEXT_FIELD.search(str(f))] \
                        if n.endswith('.json') else text.splitlines()
+                # Short labels count too where the field says so (Better Pokédex Scanner: "headerLabel": "Regional
+                # Variation", "aspectLabels": {...}): two words are not a sentence, but they are shown.
+                labels=[v for path,f,v in leaves(data) if LATIN.search(v) and (str(f).endswith('Label') or
+                        (len(path)>1 and str(path[-2]).endswith('Labels')))] if data is not None else []
             except Exception:continue
-            hit=next((v for v in values if (len(HAN.findall(v))>=2 and not other_language(n)) or ASSET_SENTENCE.search(v)),None)
+            hit=next((v for v in values if (len(HAN.findall(v))>=2 and not other_language(n)) or ASSET_SENTENCE.search(v)),None) \
+                or next(iter(labels),None)
             if hit:found[f'assets/{m[1]}/{m[2]}/'].append((n,hit))
         for folder,files in found.items():
             n,value=files[0]
