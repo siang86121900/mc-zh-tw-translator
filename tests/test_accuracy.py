@@ -401,6 +401,19 @@ class AiMemoryTests(Base):
         changed=self.pack('第三包',{'c':'Plain text, reworded'},{'z':'无关'})
         self.assertEqual({r['key']:r for r in self.make_plan(changed)['rows']}['c']['origin'],'untranslated')  # other English, no reuse
 
+    def test_an_old_answer_that_kept_a_name_is_used_and_asked_again(self):
+        # LumyMon (COBBLEVERSE 2026-10-04): 定位 §eMisty§r 道館 came back from memory in every run after names were to be translated.
+        memory=jobs.AiMemory(self.home)
+        memory.entries[jobs.TranslationMemory.ident('demo','d','Unknown thing')]=dict(text='Unknown 東西',made_at='2026-10-02T22:55:05',model='old')
+        jobs.write_json(memory.path,dict(format=1,entries=memory.entries))
+        rows={r['key']:r for r in self.make_plan()['rows']}
+        self.assertEqual((rows['d']['origin'],rows['d']['proposed'],rows['d']['ai_redo']),('ai_translation','Unknown 東西',['Unknown']))
+        FakeClient.translations={'Unknown thing':'未知的東西'}
+        done={r['key']:r for r in ai.supplement(dict(self.make_plan(),rows=list(rows.values())),self.home,'account-model',lambda *_:None,client_factory=FakeClient)['rows']}
+        self.assertEqual(done['d']['proposed'],'未知的東西')
+        again={r['key']:r for r in self.make_plan()['rows']}['d']
+        self.assertEqual((again['proposed'],again.get('ai_redo')),('未知的東西',None))  # the new answer is remembered; not asked a third time
+
 
 class ConfirmManyTests(Base):
     def test_batch_can_be_undone_and_gives_back_what_it_replaced(self):

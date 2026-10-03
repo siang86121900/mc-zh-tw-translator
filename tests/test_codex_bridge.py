@@ -336,4 +336,41 @@ class ComponentShapeTests(unittest.TestCase):
         self.assertTrue(jobs.validate_text(self.PAGE,moved))
 
 
+class NamesLeftInEnglishTests(unittest.TestCase):
+    # LumyMon's gym items (COBBLEVERSE 2026-10-04): AI answers from before the names rule kept 定位 §eMisty§r 道館 and were reused every run.
+    EN="Required item to locate §eMisty§r's Gym"
+    OLD='定位 §eMisty§r 道館的必要道具'
+
+    def memory(self,made_at,**extra):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        home=Path(tempfile.mkdtemp());memory=jobs.AiMemory(home)
+        memory.entries[jobs.TranslationMemory.ident('lumymon','tooltip.lumymon.cerulean_star',self.EN)]=dict(text=self.OLD,made_at=made_at,**extra)
+        return memory.lookup('lumymon','tooltip.lumymon.cerulean_star',self.EN)
+
+    def test_only_old_answers_that_kept_a_name_are_asked_again(self):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        self.assertEqual(jobs.english_names_left(self.EN,self.OLD),['Misty'])
+        self.assertEqual(jobs.english_names_left(self.EN,'定位§e小霞§r道館的必要道具'),[])
+        self.assertEqual(jobs.english_names_left('Restart Minecraft to apply','重新啟動 Minecraft 才會套用'),[])
+        self.assertEqual(self.memory('2026-10-02T22:55:05')['redo'],['Misty'])
+        self.assertNotIn('redo',self.memory('2026-10-04T05:00:00'))  # asked after the rule: AI kept it on purpose
+        self.assertNotIn('redo',self.memory('2026-10-02T22:55:05',keep=True))
+
+    def row(self):
+        return dict(source='mods/LumyMon.jar!/assets/lumymon/lang/en_us.json',key='tooltip.lumymon.cerulean_star',kind='language',
+                    en=self.EN,current=None,proposed=self.OLD,origin='ai_translation',supported=True,ai_reused=True,ai_redo=['Misty'])
+
+    def test_the_earlier_text_stays_until_a_new_answer_passes(self):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        session=dict(rows=[self.row()])
+        self.assertEqual(len(ai.pending_rows(session)),1)
+        good=session['rows'][0]
+        self.assertTrue(ai.adopt(session,good,self.EN,dict(translation='定位§e小霞§r道館的必要道具',note=''),'m',jobs))
+        self.assertEqual(good['proposed'],'定位§e小霞§r道館的必要道具');self.assertNotIn('ai_redo',good);self.assertNotIn('ai_reused',good)
+        self.assertEqual(ai.pending_rows(session),[])
+        for answer in ('定位小霞道館','Required item to locate §eMisty§r\'s Gym'):  # loses §e / keeps the English sentence
+            row=self.row();ai.adopt(dict(rows=[row]),row,self.EN,dict(translation=answer,note=''),'m',jobs)
+            self.assertEqual((row['proposed'],row['origin']),(self.OLD,'ai_translation'))
+
+
 if __name__=='__main__':unittest.main()

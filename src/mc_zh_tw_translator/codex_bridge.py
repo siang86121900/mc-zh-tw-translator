@@ -470,9 +470,10 @@ def retryable(row):
 
 
 def pending_rows(session):
-    return [(i, r) for i, r in enumerate(session['rows']) if r.get('supported') and
-            r.get('origin') == 'untranslated' and not r.get('reviewed') and not r.get('installed')
-            and (not r.get('ai_attempted') or retryable(r))]
+    # An earlier AI answer that left a name in English (ai_redo) stays in use until this asks for it again.
+    return [(i, r) for i, r in enumerate(session['rows']) if r.get('supported') and not r.get('reviewed')
+            and ((r.get('origin') == 'untranslated' and not r.get('installed') and (not r.get('ai_attempted') or retryable(r)))
+                 or (r.get('origin') == 'ai_translation' and r.get('ai_redo') and not r.get('ai_attempted')))]
 
 
 def asked_rows(session):
@@ -736,6 +737,8 @@ def adopt(session, row, original, value, selected_model, jobs, shared=''):
     text = value.get('translation')
     if row.get('ai_attempted'): row['ai_retried'] = True  # this was the one retry
     row.pop('ai_rejected', None)
+    # An earlier answer that left a name in English is asked again; until a new one passes, the earlier stays.
+    redo = row.pop('ai_redo', None); kept = '先前的 AI 譯文名字留有英文，重新翻譯的答案沒有通過檢查，繼續使用先前的譯文。'
     row.update(ai_attempted=True, ai_model=selected_model, ai_provider='codex_chatgpt',
                ai_original_sha256=hashlib.sha256(original.encode()).hexdigest())
     refit = ''
@@ -745,11 +748,17 @@ def adopt(session, row, original, value, selected_model, jobs, shared=''):
     if not isinstance(value.get('note'), str) or not isinstance(text, str) or not text or not jobs.validate_text(original, text):
         # The rejected answer is kept beside the row so the user can see it, fix it and confirm it.
         if isinstance(text, str) and text: row['ai_rejected'] = dict(reason='format', text=text, model=selected_model)
+        if redo: row['issue'] = kept; return False
         row['issue'] = REJECTED['format'] + (' 已再試一次，仍不符。' if row.get('ai_retried') else ''); return False
     doubt = jobs.number_doubt(original, text) or jobs.added_numbers(original, text)
     if doubt:
         row['ai_rejected'] = dict(reason='number', text=text, model=selected_model, detail=doubt)
+        if redo: row['issue'] = kept; return False
         row['issue'] = REJECTED['number'] + doubt + (' 已再試一次，仍不符。' if row.get('ai_retried') else ''); return False
+    if text == original and redo:
+        # The whole sentence in English is not better than the earlier Chinese; it is remembered again so it is not asked a third time.
+        row.update(evidence='ChatGPT/Codex: '+selected_model, issue='AI 判斷名字保留原文：' + (value['note'] or '無需翻譯'))
+        return True
     if text == original:
         # AI read it and found nothing to translate (a name, a code, a format example): it is listed under
         # 無需翻譯 with AI's reason, is not sent again, and is remembered so later runs do not ask again.
@@ -766,6 +775,8 @@ def adopt(session, row, original, value, selected_model, jobs, shared=''):
     row.update(proposed=text, origin='ai_translation', evidence='ChatGPT/Codex: '+selected_model,
                reviewed=False, changed=text != row.get('current'),
                issue='AI 補譯，尚未人工校對。' + refit + shared + value['note'])
+    row.pop('ai_reused', None)
+    if redo: return True  # it was counted as an AI translation already
     counts = session.setdefault('source_counts', {})
     counts['untranslated'] = max(0, counts.get('untranslated', 0)-1)
     counts['ai_translation'] = counts.get('ai_translation', 0)+1
@@ -809,6 +820,9 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
             rejected = row.get('ai_rejected') or {}
             if rejected.get('text'): item.update(previous=rejected['text'], problem=rejection_problem(original, rejected))
             elif retryable(row): item['problem'] = '上次的譯文沒有通過檢查：' + row.get('issue', '')
+            elif row.get('ai_redo'):
+                item.update(previous=row.get('proposed'), problem='上次的譯文把名字留成英文（' + '、'.join(row['ai_redo'])
+                            + '）：人物、訓練家、寶可夢、地點與物品的名字要用台灣官方或通行的中文名；確定是模組名、品牌或代碼才保留原文並在 note 說明')
         terms = {}
         for _, row, original in batch:
             terms.update(jobs.names_in(names, original))

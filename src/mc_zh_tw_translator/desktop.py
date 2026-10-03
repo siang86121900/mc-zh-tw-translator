@@ -1752,7 +1752,8 @@ class MainWindow(QMainWindow):
         self.ai_run_btn.setEnabled(bool(count) and not self.busy)
         # A greyed-out button says why, so it never looks broken.
         asked=len(ai.asked_rows(self.session)) if self.session and not self.session.get('is_preview') and not count else 0
-        self.ai_run_btn.setToolTip(f'有 {count:,} 筆沒有中文來源的文字可以交給 AI 補翻。' if count else
+        redo=sum(bool(r.get('ai_redo')) for _,r in ai.pending_rows(self.session)) if count else 0
+        self.ai_run_btn.setToolTip(f'有 {count:,} 筆可以交給 AI 補翻'+(f'，其中 {redo:,} 筆是先前 AI 把名字留成英文、要重新翻譯的（新譯文通過檢查前仍用舊的）' if redo else '')+'。' if count else
             f'沒有可以再送的缺漏：{asked:,} 筆 AI 已經回答過，譯文沒通過檢查或 AI 判斷保留原文，不再重送以免重複消耗額度。'
             '原因寫在每一筆的說明裡；雙擊那一筆可以拿 AI 的譯文來修改後確認。' if asked else '這批沒有需要 AI 補翻的缺漏。')
         if hasattr(self,'ai_run_hint'):

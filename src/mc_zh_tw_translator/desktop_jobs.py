@@ -520,11 +520,34 @@ class TranslationMemory:
         return count
 
 
+# v0.32.0 told AI to translate the names of people, trainers, Pokémon and places. Answers remembered before then
+# that still show such a name in English (定位 §eMisty§r 道館, COBBLEVERSE 2026-10-04) are asked once more.
+NAMES_RULE_AT='2026-10-04T00:43'
+# Names that stay English in Chinese text: the game, loaders, keys, values and sites, never a person or place.
+KEPT_ENGLISH_NAMES=frozenset('Minecraft Mojang Forge Neoforge Fabric Quilt Json Shift Ctrl Alt Tab Enter Esc Space True False '
+                             'Null Patreon Discord Curseforge Modrinth Github Kubejs Java Windows Iris Optifine Sodium Jei Rei Emi'.split())
+
+
+def english_names_left(original, text):
+    """Capitalised English words of `original` that the Chinese `text` still shows (Misty in 定位 §eMisty§r 道館)."""
+    if not isinstance(original,str) or not isinstance(text,str) or not HAN.search(text):return []
+    plain=lambda s:re.sub(r'§.|%(\d+\$)?[a-z]|\$\([^)]*\)|\{[^}]*\}|<[^>]*>|https?://\S+',' ',s)
+    words={w for w in re.findall(r'(?<![A-Za-zà-ÿ])[A-Z][a-zà-ÿ]{2,}',plain(original)) if w not in KEPT_ENGLISH_NAMES}
+    return sorted(w for w in words if re.search(r'(?<![A-Za-zà-ÿ])'+re.escape(w)+r'(?![A-Za-zà-ÿ])',plain(text)))
+
+
+def reuse_marks(earlier):
+    """The fields of a row that uses an earlier AI answer; ai_redo names the English it left (see AiMemory)."""
+    return dict(ai_reused=True,ai_model=earlier.get('model'),**({'ai_redo':earlier['redo']} if earlier.get('redo') else {}))
+
+
 class AiMemory:
     """AI translations made earlier, reused for the same mod, key and English text in any modpack.
 
     It saves quota and keeps wording the same between modpacks. Reused text stays labelled as AI
     translation and ranks last, so every other source and everything the user confirmed come first.
+    An answer from before NAMES_RULE_AT that left a name in English comes back with redo: it is still used,
+    so the game does not fall back to the English sentence, and the next AI run translates it again.
     """
     def __init__(self, home):
         self.path=Path(home)/'ai_memory.json'
@@ -532,7 +555,11 @@ class AiMemory:
         except (OSError,ValueError,AttributeError):self.entries={}
     def lookup(self,namespace,key,original):
         entry=self.entries.get(TranslationMemory.ident(namespace,key,original)) if namespace and original else None
-        return entry if isinstance(entry,dict) and isinstance(entry.get('text'),str) else None
+        if not isinstance(entry,dict) or not isinstance(entry.get('text'),str):return None
+        if not entry.get('keep') and str(entry.get('made_at') or '')<NAMES_RULE_AT:
+            names=english_names_left(original,entry['text'])
+            if names:return dict(entry,redo=names)
+        return entry
     def checked(self,namespace,key,original):
         """The name AI read for English left in it (see name_doubts) and kept as it was; None when it has not."""
         entry=self.entries.get(TranslationMemory.ident(namespace,key,original)+'\nchecked') if namespace and original else None
@@ -938,11 +965,11 @@ def unify_same_key(rows):
             if r.get('origin') in USER_ORIGINS or str(r.get('review_method') or '').startswith('user_confirmed'):continue
             if r.get('origin')=='keep_original':continue  # shown as it is on purpose
             if not fits(original_of(r),best['proposed'],best.get('own_lines')):continue
-            for field in ('recovered','installed','review_method','auto_review_reason','number_doubt','unified_from','ai_model','ai_reused','ai_review','own_lines'):
+            for field in ('recovered','installed','review_method','auto_review_reason','number_doubt','unified_from','ai_model','ai_reused','ai_redo','ai_review','own_lines'):
                 r.pop(field,None)
             r.update(proposed=best['proposed'],origin=best['origin'],evidence=best.get('evidence'),issue=best.get('issue') or '',
                      changed=best['proposed']!=r.get('current'),reviewed=False,same_key_as=best['source'])
-            for field in ('number_doubt','ai_model','ai_reused','unified_from','own_lines'):
+            for field in ('number_doubt','ai_model','ai_reused','ai_redo','unified_from','own_lines'):
                 if best.get(field) is not None:r[field]=best[field]
             changed+=1
     return changed
@@ -1742,7 +1769,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 if earlier and earlier.get('keep'):
                     origin='keep_original';issue=earlier.get('reason') or 'AI 判斷保留原文'
                 elif earlier and validate_text(original,earlier['text']) and not number_doubt(original,earlier['text']):
-                    value=earlier['text'];origin='ai_translation';extra=dict(ai_reused=True,ai_model=earlier.get('model'))
+                    value=earlier['text'];origin='ai_translation';extra=reuse_marks(earlier)
             # In a CurseForge modpack a changed mod file is replaced by the original when the game starts,
             # so program text there is listed with the reason instead of being translated for nothing.
             worded=taiwan_wording(value)
@@ -2006,7 +2033,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if '數值和原文不同' in (issue or ''):extra['number_doubt']=True  # also kept by text applied earlier
         if r.get('format_fixed') and '遊戲看不懂' not in (issue or ''):
             issue=FORMAT_FIXED_NOTE.format('、'.join(r['format_fixed']))+('；'+issue if issue else '')
-        if reused:extra.update(ai_model=earlier.get('model'),ai_reused=True)
+        if reused:extra.update(reuse_marks(earlier))
         if ((NAME_KEY.match(r['key']) or r['key'].startswith('structure.')) and isinstance(r['en'],str) and 2<len(r['en'].strip())<=40 and HAN.search(value)
                 and origin not in ('untranslated','keep_original','ai_translation')):
             rank=trust_rank(dict(origin=origin,evidence=evidence));en=r['en'].strip()
@@ -2084,7 +2111,7 @@ def embedded_row(r, curseforge, provenance, memory, ai_memory):
         if reason or (earlier and earlier.get('keep')):origin='keep_original';evidence=reason or earlier.get('reason') or 'AI 判斷保留原文'
         elif earlier and validate_text(current,earlier['text']) and not number_doubt(current,earlier['text']):
             value=earlier['text'];origin='ai_translation';evidence='ChatGPT/Codex: '+str(earlier.get('model') or '')+'（沿用先前的補譯）'
-            issue='AI 補譯（沿用先前翻過的同一句），尚未人工校對。';extra.update(ai_reused=True,ai_model=earlier.get('model'))
+            issue='AI 補譯（沿用先前翻過的同一句），尚未人工校對。';extra.update(reuse_marks(earlier))
         else:issue='缺少可用中文來源'
     if not writable and origin!='keep_original':issue=route
     return dict(slim(r),proposed=value,origin=origin,evidence=evidence,issue=issue,supported=writable,reviewed=False,
@@ -2127,7 +2154,7 @@ def data_text_row(r, shown, loader, provenance, memory, ai_memory):
             origin='keep_original';evidence=reason or earlier.get('reason') or 'AI 判斷保留原文'
         elif earlier and validate_text(mod_text,earlier['text']) and not number_doubt(mod_text,earlier['text']):
             value=earlier['text'];origin='ai_translation';evidence='ChatGPT/Codex: '+str(earlier.get('model') or '')+'（沿用先前的補譯）'
-            issue='AI 補譯（沿用先前翻過的同一句），尚未人工校對。';extra.update(ai_reused=True,ai_model=earlier.get('model'))
+            issue='AI 補譯（沿用先前翻過的同一句），尚未人工校對。';extra.update(reuse_marks(earlier))
         elif isinstance(on_screen,str) and HAN.search(on_screen):value=on_screen;origin='existing_zh_tw'
         else:issue='缺少可用中文來源'
     if not loader and origin!='keep_original':issue=HELD_NO_DATAPACK
