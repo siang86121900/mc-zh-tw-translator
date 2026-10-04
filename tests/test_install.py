@@ -431,4 +431,37 @@ class InstallTests(unittest.TestCase):
         window.close()
 
 
+    def test_install_window_says_when_it_is_not_done_and_the_card_turns_installed(self):
+        import threading
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from mc_zh_tw_translator.desktop import MainWindow
+        app=QApplication.instance() or QApplication([])
+        entry=dict(self.pack,gameVersion='1.21.1',translator='我',updated='2026-09-30',modpackDate='2026-09-18',revision=1,
+                   url='https://raw.githubusercontent.com/x',sha256='a'*64,size=1)
+        window=MainWindow(self.home)
+        with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=[]):window.catalog_loaded([entry])
+        window.active_card=window.catalog_key(window.catalog[0])
+        release=threading.Event()
+        window.run_worker('patch_install',lambda w:release.wait(10) and {},lambda _:None)
+        shown=window.install_window
+        self.assertTrue(shown.isVisible());self.assertIn('第 1 步',shown.heading.text())
+        self.assertIn('CurseForge 顯示裝好了也還不能玩',shown.warning.text())
+        with patch.object(window,'notify_finished') as told:
+            window.on_progress(40,'等待 CurseForge 安裝整合包','已就緒 1／2 個要翻譯的檔案')
+            told.assert_not_called()
+            window.on_progress(60,'準備套用翻譯','kubejs/assets/demo/lang/zh_tw.json')
+            window.on_progress(70,'備份與套用','')
+        self.assertEqual(told.call_count,1)  # once, when CurseForge is done and the translation starts
+        self.assertIn('第 2 步',shown.heading.text());self.assertIn('請先不要開遊戲',shown.warning.text());self.assertEqual(shown.bar.value(),70)
+        release.set();window.worker.wait(5000);app.processEvents()
+        self.assertIsNone(window.install_window)
+        # Finished: the card says installed at once, without fetching the list again.
+        found=[dict(name='Demo Pack',path=self.friend,projectID=123,fileID=456,gameVersion='1.21.1')]
+        record={str(self.friend.resolve()).casefold():dict(fileID=456,sha256='a'*64)}
+        done=dict(instance=str(self.friend),applied=['a'],already=[],skipped=[],backup='x',language_set=True,installed_modpack=True)
+        with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=found),              patch('mc_zh_tw_translator.patches.applied_patches',return_value=record),              patch.object(window,'refresh_catalog') as online,patch.object(QMessageBox,'information'):
+            window.patch_applied(done)
+        online.assert_not_called();self.assertEqual([b.text() for b in window.pack_buttons],['重新安裝','建立伺服器'])
+        window.close()
+
 if __name__=='__main__':unittest.main()

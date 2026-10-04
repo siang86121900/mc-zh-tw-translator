@@ -333,6 +333,46 @@ class ReviewDialog(QDialog):
         self.accept()
 
 
+class InstallProgress(QDialog):
+    """Install progress in its own window: players saw CurseForge finish and started the game while the
+    translation was still being written (owner, 2026-10-04), so this says plainly when it is not done yet."""
+    WAITING='等待 CurseForge 安裝整合包'
+
+    def __init__(self,parent,mode,name,stop):
+        super().__init__(parent);self.mode=mode;self.translating=False
+        self.setWindowTitle('安裝中：'+name);self.setMinimumWidth(520)
+        box=QVBoxLayout(self);box.setSpacing(10)
+        self.heading=label('','title');box.addWidget(self.heading)
+        self.warning=label('','warn');self.warning.setStyleSheet('font-size: 14px;');box.addWidget(self.warning)
+        self.bar=QProgressBar();self.bar.setRange(0,100);self.bar.setTextVisible(False);box.addWidget(self.bar)
+        self.detail=label('','sub');box.addWidget(self.detail)
+        row=QHBoxLayout();row.addStretch();self.stop=button('停止' if mode!='patch_install' else '停止等待',stop);row.addWidget(self.stop);box.addLayout(row)
+        self.show_step('',0)
+
+    def show_step(self,title,value,detail=''):
+        """Returns True the first time the translation starts after waiting for CurseForge."""
+        waiting=self.mode=='patch_install' and (title==self.WAITING or not title)
+        if self.mode=='patch_install':
+            self.heading.setText('第 1 步，共 2 步：等待 CurseForge 安裝整合包' if waiting else '第 2 步，共 2 步：正在裝上翻譯，還沒完成')
+            self.warning.setText('CurseForge 顯示裝好了也還不能玩：本程式接著要裝上翻譯。看到「翻譯已安裝」的視窗才算完成，在那之前請不要開遊戲。'
+                                 if waiting else '整合包已經裝好，正在裝上翻譯。請先不要開遊戲，也不要關閉本程式；完成時會跳出「翻譯已安裝」。')
+        elif self.mode=='patch_full':
+            self.heading.setText('正在安裝整合包，還沒完成')
+            self.warning.setText('看到「整合包已安裝」或「整合包已更新」的視窗才算完成，在那之前請不要開遊戲，也不要關閉本程式。')
+        else:
+            self.heading.setText('正在裝上翻譯，還沒完成')
+            self.warning.setText('看到「翻譯已安裝」的視窗才算完成，在那之前請不要開遊戲，也不要關閉本程式。')
+        if self.mode=='patch_install' and self.stop.isEnabled():self.stop.setText('停止等待' if waiting else '停止')
+        self.bar.setValue(value)
+        self.detail.setText((f'{title}：{detail}' if detail else title)+(f'（{value}%）' if title else ''))
+        started=not waiting and self.mode=='patch_install' and not self.translating and bool(title)
+        if started:self.translating=True
+        return started
+
+    def stopping(self):
+        self.stop.setEnabled(False);self.detail.setText('正在停止…')
+
+
 class FlowLayout(QLayout):
     """Widgets in a row that continues on the next line when the window is too narrow."""
     def __init__(self,parent=None,spacing=8):
@@ -618,7 +658,7 @@ class MainWindow(QMainWindow):
         box.addStretch()
         self.catalog=None;self.catalog_packs=None;self.pack_buttons=[];self.catalog_cards=[];self.memory_total=None
         # Progress of a whole-modpack install or update also shows on its own card, where the player clicked.
-        self.card_progress={};self.card_stop={};self.active_card=None;self.curseforge_alerted=False;self.card_failed=False
+        self.card_progress={};self.card_stop={};self.active_card=None;self.curseforge_alerted=False;self.card_failed=False;self.install_window=None
 
     @staticmethod
     def catalog_key(pack):return f"{pack['projectID'] or pack['name']}:{pack['fileID']}:{pack['sha256'][:12]}"
@@ -688,7 +728,7 @@ class MainWindow(QMainWindow):
         worker.finished.connect(lambda w=worker:(self.catalog_refresh.setEnabled(True),self.background.remove(w) if w in self.background else None,w.deleteLater()))
         self.background.append(worker);worker.start()
 
-    def catalog_loaded(self,packs):
+    def catalog_loaded(self,packs,quiet=False):
         self.catalog_packs=packs
         self.catalog=patches.match_catalog(packs,jobs.curseforge_instances(),patches.applied_patches(self.home),full_pack.still_installed(self.home))
         # New = published translations this user has not seen yet; shown until the page is opened.
@@ -696,7 +736,7 @@ class MainWindow(QMainWindow):
         for pack in self.catalog:pack['new']=self.catalog_key(pack) not in seen
         fresh=[p for p in self.catalog if p['new'] and p['status'] not in ('applied','full_installed')]
         mine=[p for p in fresh if p['status'] in ('exact','update')]
-        if mine and self.pages.currentIndex()!=6:
+        if mine and self.pages.currentIndex()!=6 and not quiet:
             self.notify_finished('有新的整合包翻譯',f"你電腦上的「{mine[0]['name']}」有可以安裝的翻譯"+(f"，另有 {len(mine)-1} 個" if len(mine)>1 else '')+'。')
         self.update_catalog_badge()
         if self.pages.currentIndex()==6:self.mark_catalog_seen()
@@ -885,7 +925,7 @@ class MainWindow(QMainWindow):
         self.run_worker('patch_full',operation,self.full_pack_updated)
 
     def full_pack_updated(self,result):
-        self.refresh_backups();self.refresh_catalog()
+        self.close_install_window();self.refresh_backups();self.rematch_catalog()
         lines=[f"已更新：{result['name']}",'',
                f"換上 {result['written']:,} 個新版本的檔案"+(f"，移除 {result['removed']:,} 個新版本拿掉的檔案" if result['removed'] else '')+'。',
                '存檔和遊戲設定都保留。']
@@ -901,7 +941,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self,'整合包已更新','\n'.join(lines))
 
     def full_pack_installed(self,result):
-        self.refresh_catalog()
+        self.close_install_window();self.rematch_catalog()
         lines=[f"整合包已加入 CurseForge：{result['name']}",'',
                f"共 {result['files']:,} 個檔案，都已核對和分享者的相同（其中 {result['downloaded']:,} 個模組從 CurseForge 官方下載）。",
                '打開 CurseForge，在「我的建立」找到它，按「開始」就能玩，遊戲語言已設為繁體中文。',
@@ -918,9 +958,20 @@ class MainWindow(QMainWindow):
             self.worker.cancelled=True;self.patch_cancel.setEnabled(False);self.patch_status.setText('正在停止…')
             if self.card_stop.get(self.active_card) is not None:self.card_stop[self.active_card].setEnabled(False)
             if self.card_progress.get(self.active_card) is not None:self.card_progress[self.active_card].setText('正在停止…')
+            if self.install_window is not None:self.install_window.stopping()
+
+    def close_install_window(self):
+        if self.install_window is not None:self.install_window.close();self.install_window.deleteLater();self.install_window=None
+
+    def rematch_catalog(self,quiet=True):
+        """Match the published list with the modpacks on this computer again, without the network."""
+        if not self.catalog_packs:self.refresh_catalog();return
+        self.catalog_loaded(self.catalog_packs,quiet)
 
     def patch_applied(self,result):
-        self.refresh_backups();self.refresh_catalog();self.check_outdated()
+        self.close_install_window()
+        # The card turns into 「重新安裝」 at once; fetching the list again left it as it was until 重新整理.
+        self.refresh_backups();self.rematch_catalog();self.check_outdated()
         lines=[f"已翻譯 {len(result['applied']):,} 個檔案。" if result['applied'] else '沒有需要更新的檔案。']
         consistency=result.get('consistency','unknown')
         lines.insert(0,{'matched':'分享的翻譯內容已通過檔案核對；這不是遊戲畫面實測。',
@@ -1443,6 +1494,9 @@ class MainWindow(QMainWindow):
         if mode=='ai_install':self.ai_progress.setValue(0);self.ai_progress.show()
         self.patch_cancel.setVisible(mode in ('patch_install','patch_apply','patch_server','patch_full'));self.patch_cancel.setEnabled(True)
         self.patch_cancel.setText('停止等待' if mode=='patch_install' else '停止')
+        if mode in ('patch_install','patch_apply','patch_full'):
+            name=next((p['name'] for p in self.catalog or [] if self.catalog_key(p)==self.active_card),'整合包')
+            self.install_window=InstallProgress(self,mode,name,self.cancel_install);self.install_window.show()
         self.history.setEnabled(False);self.cancel.setEnabled(mode in ('plan','full_translate','ai_translate','ai_login','ai_install'));self.ai_stop_btn.setEnabled(mode in ('ai_translate','ai_login','ai_install'))
         self.worker=Worker(operation)
         self.worker.progress.connect(self.on_progress)
@@ -1468,7 +1522,7 @@ class MainWindow(QMainWindow):
             card=self.card_progress.get(self.active_card)
             if card is not None and not self.card_failed:card.hide()
             self.active_card=None
-        self.card_failed=False
+        self.card_failed=False;self.close_install_window()
 
     def on_progress(self,value,title,detail):
         self.last_activity=time.monotonic()
@@ -1487,6 +1541,13 @@ class MainWindow(QMainWindow):
                 # The player is often looking at CurseForge itself; a Windows notice reaches them there.
                 self.curseforge_alerted=True
                 self.notify_finished('請關閉 CurseForge','整合包已下載並核對好，關閉 CurseForge（含右下角的小圖示）後會自動完成安裝。')
+            if self.install_window is not None and self.install_window.show_step(title,value,detail):
+                # CurseForge is done and players took that as the end: bring this window up and say it is not.
+                self.install_window.setWindowFlag(Qt.WindowStaysOnTopHint,True);self.install_window.show()
+                self.install_window.raise_();self.install_window.activateWindow()
+                self.notify_finished('整合包已裝好，正在裝上翻譯','請先不要開遊戲，翻譯裝好時會再通知你。')
+            if self.mode in ('patch_install','patch_apply','patch_full'):
+                self.taskbar.update(self,value,TaskbarProgress.NORMAL);self.setWindowTitle(f'{value}% · 模組包中文化 · MC Translator')
             self.patch_status.setText(f'{title}：{detail}（{value}%）' if detail else title);return
         # One-click reports progress for the whole job itself (see jobs.full_translation).
         if title in ('更新參考庫','AI 補翻中'):self.progress.setRange(0,0)
@@ -1498,6 +1559,15 @@ class MainWindow(QMainWindow):
         self.cancel.setEnabled(self.mode in ('plan','full_translate','ai_translate','ai_login','ai_install') and title not in ('驗證並準備套用','備份與套用','重新掃描實際遊戲資料','已套用已校對的文字'))
         self.append_activity(title+' · '+detail)
         if self.mode.startswith('ai_'):self.ai_status.setText(title+'：'+detail)
+
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        # Back from CurseForge (a modpack installed or removed there): redraw the cards whose state changed.
+        if (event.type()==QEvent.ActivationChange and self.isActiveWindow() and not getattr(self,'busy',True)
+                and getattr(self,'catalog_packs',None) and self.pages.currentIndex()==6):
+            fresh=patches.match_catalog(self.catalog_packs,jobs.curseforge_instances(),patches.applied_patches(self.home),full_pack.still_installed(self.home))
+            if [(self.catalog_key(p),p['status']) for p in fresh]!=[(self.catalog_key(p),p['status']) for p in self.catalog or []]:
+                self.rematch_catalog()
 
     def notify_finished(self,title,message):
         """Tell the user a long job ended even if they switched to another window."""
@@ -1582,7 +1652,7 @@ class MainWindow(QMainWindow):
         if self.mode in ('check_update','download_update'):self.update_status.setText('更新未完成：'+text)
         elif self.mode.startswith('ai_'):self.ai_status.setText(text)
         elif self.mode.startswith('patch_'):
-            self.patch_status.setText(text)
+            self.close_install_window();self.patch_status.setText(text)
             card=self.card_progress.get(self.active_card)
             if card is not None:card.setText(text);card.show();self.card_failed=True
         else:
