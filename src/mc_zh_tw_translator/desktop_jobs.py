@@ -2660,8 +2660,10 @@ def game_process_blocker(instance, processes):
             if directory==target:
                 return f'此模組包的 Minecraft（PID {pid}）仍在執行。關閉遊戲後按「重試套用」，不必重新翻譯。'
             if re.match(r'^(?:[a-z]:/|/)',directory):continue
-        # Known dedicated servers must not block an unrelated client instance.
-        if re.search(r'--launchtarget\s+\S*server\b|net\.minecraft\.server\.main|fabricserverlauncher|server\.jar\b',lower) and target not in lower:
+        # Known dedicated servers must not block an unrelated client instance; a server running in the modpack's own
+        # folder was caught by its working folder above. fabric-server-launch.jar is what 建立伺服器 writes into run.bat
+        # for Fabric (server_pack), started with relative paths only.
+        if re.search(r'--launchtarget\s+\S*server\b|net\.minecraft\.server\.main|fabricserverlauncher|fabric-server-launch(?:er)?\.jar\b|server\.jar\b',lower) and target not in lower:
             continue
         if target in lower or re.search(r'minecraft|modlauncher|bootstraplauncher|fabric',lower):
             return f'偵測到 Minecraft 程序（PID {pid}），但無法確認遊戲資料夾。請關閉相關遊戲後重試；譯文與報告已保留。'

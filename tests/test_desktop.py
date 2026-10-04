@@ -1086,6 +1086,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNone(game_process_blocker(instance,[forge]))
         forge['cwd']=str(instance)
         self.assertIsNotNone(game_process_blocker(instance,[forge]))
+        # The Fabric server 建立伺服器 makes (run.bat: -jar fabric-server-launch.jar) in its own folder.
+        fabric=dict(ProcessId=10,CommandLine='java.exe @user_jvm_args.txt -jar fabric-server-launch.jar',cwd='C:/Servers/Pack')
+        self.assertIsNone(game_process_blocker(instance,[fabric]))
+        fabric['cwd']=str(instance)
+        self.assertIsNotNone(game_process_blocker(instance,[fabric]))
 
 
 class UpdateTests(unittest.TestCase):
