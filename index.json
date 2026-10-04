@@ -9,7 +9,7 @@
       "gameVersion": "1.21.1",
       "translator": "MC Translator",
       "updated": "2026-10-04",
-      "notes": "以寶可夢為主題的 Cobblemon 冒險整合包（Minecraft 1.21.1 Fabric，約 140 個模組）。在方塊世界裡捕捉、培育寶可夢，和各地訓練家對戰、挑戰道館，用寶可幣在商店買賣，探索各種寶可夢主題的建築與傳說地點。CobbleDollars 商店畫面的按鈕與 RCT 模組自帶的訓練家名稱仍是英文。需要 MC Translator v0.32.1 以上。",
+      "notes": "以寶可夢為主題的 Cobblemon 冒險整合包（Minecraft 1.21.1 Fabric，約 140 個模組）。在方塊世界裡捕捉、培育寶可夢，和各地訓練家對戰、挑戰道館，用寶可幣在商店買賣，探索各種寶可夢主題的建築與傳說地點。CobbleDollars 商店畫面的按鈕與 RCT 模組自帶的訓練家名稱仍是英文。需要 MC Translator v0.32.1 以上；要自動加入伺服器「狗狗貓貓島」需要 v0.33.0 以上。",
       "recommendedRam": 6144,
       "sharingStatus": "ready",
       "minimumAppVersion": "0.32.1",
@@ -22,7 +22,11 @@
       "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1210677/8488030-af0208b7.zip",
       "sha256": "af0208b750310c5c120f12d452c0b9df90c7b391a7ac09689973d355af4f807f",
       "size": 2835737,
-      "revision": 6
+      "revision": 6,
+      "server": {
+        "name": "狗狗貓貓島",
+        "address": "26.186.50.26"
+      }
     },
     {
       "kind": "full",
