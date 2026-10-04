@@ -62,6 +62,7 @@ INLINE_UNVERIFIED = '並列多種語言的文字：還沒確認這個模組會�
 # Keys a mod's program asks for with a parameter Minecraft cannot fill in (full_translation_audit.renderable).
 FORMAT_FIXED_NOTE = '原文的 {} 遊戲看不懂，英文版也會照原樣顯示；譯文改用 %s 才會顯示數值'
 NO_CHINESE_FONT ='這個模組用自己的字型顯示介面（{}），字型裡沒有中文字，翻成中文會變成方框（□）'
+KEPT_BY_AUTHOR = '模組自帶的繁中與簡中都刻意保留這個英文縮寫（例如 Lv.、HP、mB），照模組原樣顯示'
 
 
 # Text the scan lists as a format no reader covers that stays English on purpose, with the reason checked in the mod.
@@ -128,6 +129,16 @@ KEY_MOD_REFERENCE = re.compile(r'^(?:biome|dimension|structure)\.([a-z0-9_]+)[./
 # Measurement units shown next to numbers (energy, fluid, pressure, temperature, time, power).
 UNITS = {'mb','b','kb','bar','psi','rpm','hz','khz','w','kw','mw','v','a','j','kj','t','s','ms','ns','μi','µi','°c','°f','k',
          'fe','rf','eu','cf','mj','su','xp','ep','mp','hp'}
+
+
+def author_kept(english, own_tw, zh_cn):
+    """The mod's own zh_tw and zh_cn both keep this English as it is, and it is an abbreviation (Lv., HP, mB, X, IV),
+    not a word: a word both translators left (Done, Fuel, Toad, Fox) is still translated. The caller also requires
+    the mod's zh_tw to be mostly Chinese, so a zh_tw that is a plain copy of en_us keeps nothing."""
+    if not isinstance(english,str) or not all(isinstance(v,str) and not HAN.search(v) and v.strip()==english.strip()
+                                              for v in (own_tw,zh_cn)):return False
+    core=PARAMETER.sub(' ',english)
+    return 0<len(re.findall('[A-Za-z]',core))<=4 and not re.search(r'[A-Za-z][a-z]{2}',core)
 
 
 def keep_original_reason(text, key='', namespace=''):
@@ -1664,6 +1675,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     # The mods' own English, to notice strings a modpack renamed through KubeJS or resource packs.
     name_terms={}  # English name -> (trust rank, Chinese); given to AI so sentences use the same names
     mod_en={};main_copy=set();screen_keys=set();lang_text=set()
+    tw_lines=collections.Counter();tw_chinese=collections.Counter()  # how much of each mod's own zh_tw is Chinese (author_kept)
     # Strings some mod's program holds: a file no reader covers may hold one a mod compares with or looks up.
     program_text={r['current'].strip() for r in audit.rows if r['kind'] in ('class_candidate','class_display') and isinstance(r['current'],str)}
     file_names={}  # the modpack's file names, read once when a config string names a file (original_file_name)
@@ -1676,6 +1688,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         m=re.search(r'assets/([^/]+)/lang/',r['source'])
         if m and r['kind']=='language' and r['source'].startswith('mods/') and isinstance(r['en'],str):
             mod_en.setdefault((m[1],r['key']),r['en'])
+        if r['kind']=='language' and r['source'].startswith('mods/') and isinstance(r['current'],str):
+            tw_lines[r['source']]+=1;tw_chinese[r['source']]+=bool(HAN.search(r['current']))
     ref_kinds=(result.get('references') or {}).get('sources') or ['tw','cn']
     vanilla=next((ref for n,ref in enumerate(refs) if n<len(ref_kinds) and ref_kinds[n]=='vanilla'),None)
     # Without any scanned mod jar there is nothing to compare against, so nothing is skipped.
@@ -1872,6 +1886,15 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                                 issue='先前寫入的中文已改回英文：'+why if back else '',
                                 supported=True,reviewed=False,changed=back))
             counts['no_chinese_font']+=1;continue
+        own=r.get('own_tw',r['current'])
+        if (r['kind']=='language' and r['source'].startswith('mods/') and isinstance(english,str)
+                and tw_chinese[r['source']]*2>=tw_lines[r['source']] and author_kept(english,own,r['zh_cn'])
+                and not memory.lookup(ns,r['key'],original)):  # what the user confirmed still comes first
+            # The mod's translators kept an abbreviation in English on purpose (Cobblemon's zh_tw: Lv., HP, PP). AI's 等級
+            # did not fit the box drawn for "Lv.2"; what an earlier run wrote goes back to the author's text once.
+            decided.append(dict(slim(r),proposed=own,origin='keep_original',evidence=KEPT_BY_AUTHOR,issue='',
+                                supported=True,reviewed=False,changed=own!=r['current']))
+            counts['kept_by_author']+=1;continue
         # Source order: most accurate Taiwan wording first (see README 翻譯邏輯 / AGENTS.md).
         # Decisions the user made → people-written zh_tw (reference packs whose English matches this
         # version, the modpack's zh_tw packs, the mod's own zh_tw) → Mojang's official names →

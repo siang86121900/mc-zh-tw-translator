@@ -969,6 +969,47 @@ class WorkflowTests(unittest.TestCase):
         again=self.make_plan()
         self.assertFalse(any(r['changed'] for r in again['rows'] if r['source'].startswith('mods/')))
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_abbreviation_kept_by_mod_translators_stays(self,_):
+        # Cobblemon's zh_tw keeps "Lv." like the Taiwan games; AI's 等級 did not fit the box drawn for "Lv.2".
+        import zipfile
+        from mc_zh_tw_translator.desktop_jobs import author_kept, KEPT_BY_AUTHOR
+        mods=self.instance/'mods';mods.mkdir()
+        en={'ui.lv':'Lv.','ui.lv.n':'Lv.%1$s','ui.hp':'HP','ui.done':'Done','ui.ok':'OK','ui.name':'Party'}
+        with zipfile.ZipFile(mods/'cobble.jar','w') as z:
+            z.writestr('assets/cobble/lang/en_us.json',json.dumps(en))
+            z.writestr('assets/cobble/lang/zh_cn.json',json.dumps({'ui.lv':'Lv.','ui.lv.n':'Lv.%1$s','ui.hp':'HP','ui.done':'Done',
+                                                                  'ui.ok':'确定','ui.name':'队伍'}))
+            z.writestr('assets/cobble/lang/zh_tw.json',json.dumps({'ui.lv':'Lv. ','ui.lv.n':'Lv.%1$s','ui.hp':'HP','ui.done':'Done',
+                                                                  'ui.ok':'OK','ui.name':'隊伍','ui.a':'一','ui.b':'二','ui.c':'三','ui.d':'四','ui.e':'五','ui.f':'六'}))
+        with zipfile.ZipFile(mods/'copy.jar','w') as z:  # a zh_tw that is only a copy of the English keeps nothing
+            z.writestr('assets/copy/lang/en_us.json',json.dumps({'c.hp':'HP','c.go':'Go now'}))
+            z.writestr('assets/copy/lang/zh_cn.json',json.dumps({'c.hp':'HP','c.go':'现在走'}))
+            z.writestr('assets/copy/lang/zh_tw.json',json.dumps({'c.hp':'HP','c.go':'Go now'}))
+        result=self.make_plan()
+        rows={r['key']:r for r in result['rows'] if r['source'].startswith('mods/')}
+        for key in ('ui.lv','ui.lv.n','ui.hp'):
+            self.assertEqual(rows[key]['origin'],'keep_original',key);self.assertFalse(rows[key]['changed'],key)
+        self.assertEqual(rows['ui.lv']['proposed'],'Lv. ')
+        self.assertNotEqual(rows['ui.done']['origin'],'keep_original')  # a word both translators left is still translated
+        self.assertNotEqual(rows['ui.ok']['origin'],'keep_original')  # zh_cn has Chinese: not kept by both
+        self.assertNotEqual(rows['c.hp'].get('evidence'),KEPT_BY_AUTHOR)
+        self.assertTrue(author_kept('%s mB','%s mB','%s mB'));self.assertTrue(author_kept('IV','IV','IV'))
+        for word in ('Fox','Sand','Done'):self.assertFalse(author_kept(word,word,word),word)
+        self.assertFalse(author_kept('HP','HP',None))
+        # An earlier run's 等級 in the translation pack goes back to the author's Lv. once.
+        (self.instance/'resourcepacks').mkdir(exist_ok=True)
+        with zipfile.ZipFile(self.instance/'resourcepacks/MCTranslator-zh_tw.zip','w') as z:
+            z.writestr('assets/cobble/lang/zh_tw.json',json.dumps({'ui.lv':'等級','ui.name':'隊伍'}))
+        again={r['key']:r for r in self.make_plan()['rows'] if r['source'].startswith('mods/')}
+        self.assertEqual((again['ui.lv']['origin'],again['ui.lv']['proposed']),('keep_original','Lv. '))
+        self.assertTrue(again['ui.lv']['changed'])
+        session=self.make_plan()
+        for row in session['rows']:row['reviewed']=True
+        apply_session(session,self.home,lambda *_:None)
+        self.assertEqual(json.loads(self.pack()['assets/cobble/lang/zh_tw.json'])['ui.lv'],'Lv. ')
+        self.assertFalse(any(r['changed'] for r in self.make_plan()['rows'] if r['key'].startswith('ui.lv')))
+
     def test_menu_buttons_drawn_as_pictures_are_explained(self):
         from mc_zh_tw_translator.desktop_jobs import image_menus, image_text_note
         layouts=self.instance/'config/fancymenu/customization';layouts.mkdir(parents=True)
