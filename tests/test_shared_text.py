@@ -83,6 +83,22 @@ class SharedTextTests(unittest.TestCase):
         self.assertEqual(done['consistency'],'matched',done)
         self.assertFalse(done['applied']);self.assertFalse(done['skipped']);self.assertIsNone(done['backup'])
         self.assertEqual({p.relative_to(self.sender).as_posix():p.read_bytes() for p in self.sender.rglob('*') if p.is_file()},before)
+        # A rescan of the translated files may list no row for a line already in Chinese (structure names, program
+        # text); the backup record matching the original must not turn those into "cannot be proven safe".
+        real=jobs.plan
+        def without_rows(*a,**k):
+            session=real(*a,**k);session['rows']=[r for r in session['rows'] if r['kind']!='embedded_text'];return session
+        # The translator's computer also keeps a receipt (original -> translated) for each file, as an earlier install
+        # of the same patch leaves; with it the original seemed to match and these lines were checked as untranslated.
+        z,m=patches.read_patch(Path(out['path']));z.close()
+        receipts={f:dict(before=h,after=u['source_after']) for u in m['text_units'] for f,h in u['requires'].items() if h!=u['source_after']}
+        record=json.loads((self.home/'applied_patches.json').read_text(encoding='utf-8')) if (self.home/'applied_patches.json').exists() else {}
+        record.setdefault(str(self.sender.resolve()).casefold(),{})['source_versions']=receipts
+        (self.home/'applied_patches.json').write_text(json.dumps(record),encoding='utf-8')
+        self.assertTrue(shared_text.local_versions(self.sender,self.home))
+        with patch.object(jobs,'plan',side_effect=without_rows):
+            done=patches.apply_patch(self.sender,Path(out['path']),self.home,set_language=True)
+        self.assertEqual(done['consistency'],'matched',done);self.assertFalse(done['skipped'])
 
     def test_name_whose_translation_leaves_one_coloured_piece_is_shared(self,_):
         # COBBLEVERSE bell_tower: "Guardian of the " + "Skies" in two colours became "天空的守護者" + "". The file

@@ -145,10 +145,12 @@ def prepare(instance, home, units, notify, work, cancelled, pack_base=None):
         why=''
         original_match=hashes[source]==u['requires'][source] or versions.get(source,{}).get('before')==u['requires'][source]
         after_match=hashes[source]==u['source_after'] and row and row.get('current')==u['text']
-        if hashes[source]==u['source_after'] and not original_match and (row or u['kind'] in ('class_display','embedded_text')):
+        if hashes[source]==u['source_after'] and hashes[source]!=u['requires'][source] and (row or u['kind'] in ('class_display','embedded_text')):
             # The translator's translated file (the translator's own computer, or the patch installed before),
             # where a rescan may list no row for text already in Chinese. A claimed hash proves nothing by itself:
-            # it counts only when the words read back from that place are the translation.
+            # it counts only when the words read back from that place are the translation. On the translator's own
+            # computer the backup record also matches the original (original_match), which must not send these
+            # lines to the checks below (COBBLEVERSE 2026-10-04: 11 lines called "cannot be proven safe").
             candidate=dict(row or {},source=u['source'],key=u['key'],kind=u['kind'],proposed=u['text'])
             already_candidates.append((u,candidate));continue
         if not original_match and not after_match:why='原檔版本和分享者不同'
