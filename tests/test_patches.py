@@ -84,6 +84,19 @@ class PatchTests(unittest.TestCase):
         (instance/'scripts/tips.zs').write_text('// 注释\n<item:a:b>.addTooltip("\\u00A7e魂心容器需灵魂项链");\nval x = "a";\n',encoding='utf-8')
         (instance/'config/quests.json').write_text('{"title": "龙之试炼", "count": 3}',encoding='utf-8')
 
+    def test_patch_installs_where_an_earlier_translation_left_receipts(self,_):
+        # A player who installed an earlier revision has local receipts; the pack must still be written (v0.32.3 crashed).
+        self.translate()
+        out=patches.export_patch(self.translator,self.home)
+        z,manifest=patches.read_patch(Path(out['path']))
+        receipt={'kubejs/assets/demo/lang/zh_tw.json':{'before':'a'*64,'after':'b'*64}}
+        plan_=patches.plan_patch(self.friend,z,manifest,receipt)
+        pack=next(p for p in plan_ if p[0].get('file')=='resourcepacks/MCTranslator-zh_tw.zip')
+        self.assertEqual((pack[1],pack[2]),('apply',self.friend/'resourcepacks/MCTranslator-zh_tw.zip'))
+        with patch('mc_zh_tw_translator.shared_text.local_versions',return_value=receipt):
+            result=patches.apply_patch(self.friend,Path(out['path']),Path(self.temp.name)/'friend-app')
+        self.assertIn('resourcepacks/MCTranslator-zh_tw.zip',result['applied'])
+
     def test_converted_config_and_scripts_travel_as_chinese_only_string_edits(self,_):
         for instance in (self.translator,self.friend):self.add_converted_files(instance)
         before={p:(self.friend/p).read_bytes() for p in ('config/fancymenu/customization/title_screen_layout.txt','scripts/tips.zs','config/quests.json')}

@@ -645,7 +645,8 @@ def plan_patch(instance: Path, z, manifest, local_versions=None):
             # Only the files whose mods are exactly the versions they were translated from.
             if index is None:
                 index=mods_by_hash(instance)
-                for path,pair in (local_versions or {}).items():
+                # Not `path`: that still names this item's file and is the target written below (v0.32.0-v0.32.3 crashed here).
+                for pair in (local_versions or {}).values():
                     if pair['after'] in index:index.setdefault(pair['before'],index[pair['after']])
                 # A mod byte-identical to the translator's translated copy (the translator's own computer, or a
                 # reinstall) came from the same original, so it stands for that original.
