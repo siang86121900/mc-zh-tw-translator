@@ -464,4 +464,18 @@ class InstallTests(unittest.TestCase):
         online.assert_not_called();self.assertEqual([b.text() for b in window.pack_buttons],['重新安裝','建立伺服器'])
         window.close()
 
+    def test_card_names_the_server_it_adds_and_asks_once(self):
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from mc_zh_tw_translator.desktop import MainWindow
+        app=QApplication.instance() or QApplication([])
+        entry=dict(self.pack,gameVersion='1.21.1',translator='我',updated='2026-09-30',modpackDate='2026-09-18',revision=1,
+                   url='https://raw.githubusercontent.com/x',sha256='a'*64,size=1,server=dict(name='狗狗貓貓島',address='26.186.50.26'))
+        window=MainWindow(self.home)
+        with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=[]):window.catalog_loaded([entry])
+        shown=' '.join(l.text() for l in window.pages.widget(6).findChildren(type(window.patch_status)))
+        self.assertIn('伺服器清單最上面加入翻譯者的伺服器：狗狗貓貓島（26.186.50.26）',shown);self.assertIn('Radmin VPN',shown)
+        with patch.object(QMessageBox,'question',return_value=QMessageBox.No) as ask:window.ask_install('安裝翻譯','說明',window.catalog[0])
+        self.assertIn('狗狗貓貓島',ask.call_args[0][2]);self.assertEqual(ask.call_count,1)
+        window.close()
+
 if __name__=='__main__':unittest.main()

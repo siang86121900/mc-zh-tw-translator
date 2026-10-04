@@ -252,6 +252,57 @@ class PatchTests(unittest.TestCase):
         response=Mock(status_code=200);response.json.return_value={'packs':[dict(base,recommendedRam='99999999'),dict(base,fileID=2,recommendedRam=6144)]}
         self.assertEqual([p['recommendedRam'] for p in patches.fetch_catalog(Mock(get=Mock(return_value=response)))],[0,6144])
 
+    def test_card_server_goes_first_in_the_multiplayer_list_and_is_restored(self,_):
+        from mc_zh_tw_translator import server_list
+        # The modpack's own list: a server with an icon, which must stay byte for byte.
+        icon=[(server_list.STRING,b'icon',b'iVBORw0KGgo='),(server_list.STRING,b'ip',b'play.example.com'),
+              (server_list.STRING,b'name',b'Sponsored'),(server_list.BYTE,b'acceptTextures',1)]
+        own=server_list.write(b'',[(server_list.LIST,b'servers',(server_list.COMPOUND,[icon]))])
+        (self.friend/'servers.dat').write_bytes(own)
+        self.translate()
+        out=patches.export_patch(self.translator,self.home)
+        server=dict(name='狗狗貓貓島',address='26.186.50.26')
+        friend_home=Path(self.temp.name)/'friend-app'
+        result=patches.apply_patch(self.friend,Path(out['path']),friend_home,server=server)
+        self.assertEqual(result['server'],dict(server,added=True))
+        listed=(self.friend/'servers.dat').read_bytes()
+        self.assertEqual(server_list.entries(listed),[('狗狗貓貓島','26.186.50.26'),('Sponsored','play.example.com')])
+        self.assertEqual(server_list.read(listed)[1][0][2][1][1],icon)  # the modpack's server untouched
+        self.assertNotIn('servers.dat',result['applied'])
+        again=patches.apply_patch(self.friend,Path(out['path']),friend_home,server=dict(server,address='26.186.50.26:25565'))
+        self.assertEqual((again['server']['added'],(self.friend/'servers.dat').read_bytes()),(False,listed))  # never twice
+        # A player re-sharing the pack never passes the server list on.
+        with zipfile.ZipFile(patches.export_patch(self.friend,friend_home)['path']) as z:
+            self.assertFalse(any('servers.dat' in n for n in [*z.namelist(),z.read('manifest.json').decode('utf-8')]))
+        restore_backup(Path(again['backup'] or result['backup']),self.friend)
+        restore_backup(Path(result['backup']),self.friend) if again['backup'] else None
+        self.assertEqual((self.friend/'servers.dat').read_bytes(),own)
+        self.assertFalse(patches.allowed_file('servers.dat',False))
+        # No list yet: one is made, and restoring removes it again.
+        (self.friend/'servers.dat').unlink()
+        fresh=patches.apply_patch(self.friend,Path(out['path']),friend_home,server=server)
+        self.assertEqual(server_list.entries((self.friend/'servers.dat').read_bytes()),[('狗狗貓貓島','26.186.50.26')])
+        restore_backup(Path(fresh['backup']),self.friend);self.assertFalse((self.friend/'servers.dat').exists())
+        # An unreadable list is left alone and said so; the translation still goes on.
+        (self.friend/'servers.dat').write_bytes(b'not nbt')
+        odd=patches.apply_patch(self.friend,Path(out['path']),friend_home,server=server)
+        self.assertEqual((odd['server']['added'],(self.friend/'servers.dat').read_bytes()),(None,b'not nbt'))
+
+    def test_catalog_server_must_be_a_plain_name_and_address(self,_):
+        from mc_zh_tw_translator import server_list
+        base=dict(name='Demo',projectID=7,fileID=1,version='1.0',gameVersion='',translator='',notes='',sha256='a'*64,size=1,updated='',
+                  url='https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/7/x.zip')
+        cases=[(dict(name='狗狗貓貓島',address='26.186.50.26'),dict(name='狗狗貓貓島',address='26.186.50.26')),
+               (dict(name='Club',address='mc.example.com:25570'),dict(name='Club',address='mc.example.com:25570')),
+               (dict(name='§cRed',address='1.2.3.4'),None),(dict(name='x'*33,address='1.2.3.4'),None),
+               (dict(name='a'+chr(10)+'b',address='1.2.3.4'),None),(dict(name='A',address='http://evil'),None),
+               (dict(name='A',address='1.2.3.4:99999'),None),(dict(name='A',address='a b'),None),('26.1.1.1',None),(None,None)]
+        response=Mock(status_code=200);response.json.return_value={'packs':[dict(base,fileID=i+1,server=s) for i,(s,_) in enumerate(cases)]}
+        self.assertEqual([p['server'] for p in patches.fetch_catalog(Mock(get=Mock(return_value=response)))],[e for _,e in cases])
+        self.assertTrue(server_list.same_address('26.186.50.26','26.186.50.26:25565'))
+        self.assertFalse(server_list.same_address('26.186.50.26','26.186.50.26:25566'))
+        with self.assertRaises(ValueError):server_list.read(bytes([10,0,0,9]))  # cut short
+
     def test_memory_advice_reads_but_never_sets_curseforge(self,_):
         self.assertEqual(patches.memory_advice(0,16384),{})
         roomy=patches.memory_advice(12128,32768)

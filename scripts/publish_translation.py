@@ -33,8 +33,8 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
-from mc_zh_tw_translator import full_pack  # noqa: E402
-from mc_zh_tw_translator.patches import export_patch, read_patch  # noqa: E402
+from mc_zh_tw_translator import full_pack, server_list  # noqa: E402
+from mc_zh_tw_translator.patches import export_patch, instance_identity, read_patch  # noqa: E402
 from mc_zh_tw_translator.updater import REPOSITORY  # noqa: E402
 
 BRANCH = 'translations'
@@ -77,6 +77,9 @@ def update_catalog(entry, same, message, files=(), dry_run=False, revise=True):
             entry = dict(entry, revision=max([int(p.get('revision') or 1) for p in replaced] or [0])+(1 if revise or not replaced else 0))
             if not entry.get('notes') and replaced:  # a re-publish without new notes keeps the card's introduction
                 entry['notes'] = replaced[-1].get('notes', '')
+            if 'server' not in entry and replaced and replaced[-1].get('server'):  # and its server
+                entry['server'] = replaced[-1]['server']
+            if entry.get('server') is None:entry.pop('server', None)
             index['packs'].append(entry)
             index['packs'].sort(key=lambda p: (p['name'].casefold(), p['updated']))
             for source, relative in files:
@@ -134,6 +137,31 @@ def refresh_full_card(args):
     entry = dict(cards[0], mods=sum(1 for _ in (instance/'mods').glob('*.jar')))
     if args.ram:entry['recommendedRam'] = args.ram
     print(f"{entry['name']}：{entry['mods']} 個模組", flush=True)
+    update_catalog(entry, lambda p: p is cards[0] or p == cards[0], f"整合包卡片資料：{entry['name']}", dry_run=args.dry_run, revise=False)
+
+
+def card_server(args):
+    """The server the card adds to players' multiplayer list: {} to keep the card's, None to remove it."""
+    if args.no_server:return dict(server=None)
+    if not (args.server_name or args.server_address):return {}
+    found = server_list.checked(dict(name=args.server_name, address=args.server_address))
+    if not found:sys.exit('伺服器名稱（1～32 個字）或位址（例如 26.186.50.26 或 example.com:25565）不正確，沒有修改。')
+    return dict(server=dict(name=found[0], address=found[1]))
+
+
+def refresh_patch_card(args):
+    """Change a translation card's details (its server) without exporting or uploading a new patch."""
+    identity = instance_identity(args.patch.resolve()) if args.patch.is_dir() else {}
+    if not identity.get('projectID'):sys.exit('請給 CurseForge 整合包的資料夾，才能找到它的卡片。')
+    exists = subprocess.run(['git', 'fetch', 'origin', BRANCH], cwd=ROOT, capture_output=True).returncode == 0
+    index = json.loads(subprocess.run(['git', 'show', f'origin/{BRANCH}:index.json'], cwd=ROOT, capture_output=True, check=True).stdout.decode('utf-8')) if exists else {'packs': []}
+    cards = [p for p in index['packs'] if p.get('kind') != 'full' and p.get('projectID') == identity['projectID'] and p.get('fileID') == identity['fileID']]
+    if len(cards) != 1:sys.exit('目錄裡找不到（或不只一張）這個整合包版本的翻譯卡片，沒有修改。')
+    changes = card_server(args)
+    if args.notes:changes['notes'] = args.notes
+    if not changes:sys.exit('沒有要修改的卡片資料。')
+    entry = dict(cards[0], **changes)
+    print(f"{entry['name']} {entry.get('version', '')}：", json.dumps({k: v for k, v in changes.items()}, ensure_ascii=False), flush=True)
     update_catalog(entry, lambda p: p is cards[0] or p == cards[0], f"整合包卡片資料：{entry['name']}", dry_run=args.dry_run, revise=False)
 
 
@@ -199,7 +227,10 @@ def main():
     parser.add_argument('--drive-folder', type=Path, help='--full：Google 雲端硬碟電腦版裡的資料夾')
     parser.add_argument('--work', type=Path, help='--full：打包用的暫存資料夾（預設系統暫存）')
     parser.add_argument('--upload-wait', type=int, default=6*3600, help='--full：等待上傳完成的秒數')
-    parser.add_argument('--card-only', action='store_true', help='--full：只補卡片資料（模組數），不重新打包上傳')
+    parser.add_argument('--card-only', action='store_true', help='只改卡片資料，不重新打包上傳（--full：補模組數；補丁卡片：伺服器、介紹）')
+    parser.add_argument('--server-name', default='', help='安裝時加到玩家「多人遊戲」清單的伺服器名稱')
+    parser.add_argument('--server-address', default='', help='伺服器位址，例如 26.186.50.26')
+    parser.add_argument('--no-server', action='store_true', help='拿掉卡片上的伺服器')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     if args.full and args.card_only:
@@ -207,6 +238,9 @@ def main():
         return
     if args.full:
         publish_full(args)
+        return
+    if args.card_only:
+        refresh_patch_card(args)
         return
     if args.patch.is_dir():
         if not args.home:sys.exit('給整合包資料夾時，請用 --home 指定 MCTranslatorData 資料夾（含套用紀錄）。')
@@ -233,7 +267,7 @@ def main():
                  recommendedRam=args.ram or int(pack.get('recommendedRam') or 0),
                  sharingStatus=manifest.get('sharing_status','unknown'),minimumAppVersion=manifest.get('minimum_app_version',''),
                  addedMods=[dict(name=m['name'], size=m['size']) for m in manifest['added_mods']],
-                 url=RAW+relative, sha256=digest, size=len(data))
+                 url=RAW+relative, sha256=digest, size=len(data), **card_server(args))
     update_catalog(entry, lambda p: p.get('projectID') == pack['projectID'] and p.get('fileID') == pack['fileID'],
                    f"已翻譯整合包：{pack['name']} {pack.get('version', '')}", [(args.patch, relative)], args.dry_run)
 

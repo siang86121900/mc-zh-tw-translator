@@ -333,6 +333,14 @@ class ReviewDialog(QDialog):
         self.accept()
 
 
+def server_line(server):
+    """What a card says about the translator's server it adds to the multiplayer list."""
+    if not server:return ''
+    vpn={'26.':'Radmin VPN','25.':'Hamachi'}.get(server['address'][:3])
+    return (f"安裝或重新安裝時，會在「多人遊戲」的伺服器清單最上面加入翻譯者的伺服器：{server['name']}（{server['address']}）。"
+            +(f"這是 {vpn} 的位址，要先加入翻譯者的 {vpn} 網路才連得上。" if vpn else ''))
+
+
 class InstallProgress(QDialog):
     """Install progress in its own window: players saw CurseForge finish and started the game while the
     translation was still being written (owner, 2026-10-04), so this says plainly when it is not done yet."""
@@ -788,7 +796,7 @@ class MainWindow(QMainWindow):
             added=(f"翻譯者另外加裝了 {len(extra)} 個模組：" +'、'.join(m['name'] for m in extra[:8])+('…' if len(extra)>8 else '')
                    +'。安裝時會從 CurseForge 一起加入。') if extra else ''
             memory=self.memory_advice(pack)
-            for text in (pack['notes'],memory.get('line'),memory.get('now'),added,notes.get(pack['status'],''),newer):
+            for text in (pack['notes'],memory.get('line'),memory.get('now'),added,server_line(pack.get('server')),notes.get(pack['status'],''),newer):
                 if text:b.addWidget(label(text,'sub'))
             if memory.get('warning'):b.addWidget(label(memory['warning'],'warn'))
             row=QHBoxLayout()
@@ -827,6 +835,7 @@ class MainWindow(QMainWindow):
     def ask_install(self,title,text,pack):
         """Ask before installing. Returns None (do nothing), True (also add the translator's mods) or False (there are none)."""
         mods=pack.get('addedMods') or []
+        if pack.get('server'):text+='\n\n'+server_line(pack['server'])+'已經有同一個位址時不重複加入，之後可在「備份與還原」移除。'
         if not mods:return False if QMessageBox.question(self,title,text+'\n\n是否繼續？')==QMessageBox.Yes else None
         names='、'.join(m['name'] for m in mods[:12])+('…' if len(mods)>12 else '')
         # The owner chose one confirmation for everything: agreeing to install also adds the translator's mods.
@@ -852,7 +861,8 @@ class MainWindow(QMainWindow):
         language=self.set_language.isChecked()
         def operation(w):
             path=patches.download_patch(pack,self.home,lambda v:w.progress.emit(v,'下載翻譯',pack['name']))
-            return dict(patches.apply_patch(Path(target),path,self.home,w.progress.emit,set_language=language,add_mods=add,cancelled=lambda:w.cancelled),
+            return dict(patches.apply_patch(Path(target),path,self.home,w.progress.emit,set_language=language,add_mods=add,cancelled=lambda:w.cancelled,
+                                            server=pack.get('server')),
                         notes=pack.get('notes',''))
         self.active_card=self.catalog_key(pack)
         self.run_worker('patch_apply',operation,self.patch_applied)
@@ -872,7 +882,8 @@ class MainWindow(QMainWindow):
             path=patches.download_patch(pack,self.home,lambda v:w.progress.emit(v,'下載翻譯',pack['name']))
             z,manifest=patches.read_patch(path);z.close()
             instance=patches.wait_for_modpack(pack,manifest,w.progress.emit,lambda:w.cancelled)
-            result=patches.apply_patch(instance,path,self.home,w.progress.emit,set_language=True,add_mods=add,cancelled=lambda:w.cancelled)
+            result=patches.apply_patch(instance,path,self.home,w.progress.emit,set_language=True,add_mods=add,cancelled=lambda:w.cancelled,
+                                       server=pack.get('server'))
             return dict(result,installed_modpack=True,notes=pack.get('notes',''))
         self.active_card=self.catalog_key(pack)
         self.run_worker('patch_install',operation,self.patch_applied)
@@ -996,6 +1007,10 @@ class MainWindow(QMainWindow):
         if result['skipped']:
             lines.append(f"有 {len(result['skipped']):,} 項翻譯略過，原因如下：")
             lines+=['・'+s['file']+'：'+s['reason'] for s in result['skipped'][:8]]+(['…'] if len(result['skipped'])>8 else [])
+        server=result.get('server')
+        if server:lines.append({True:f"已在「多人遊戲」的伺服器清單最上面加入「{server['name']}」（{server['address']}）。",
+                                False:f"「多人遊戲」的伺服器清單裡已經有 {server['address']}，沒有重複加入。",
+                                None:f"伺服器清單讀不懂，沒有加入「{server['name']}」；可以在「多人遊戲 → 新增伺服器」自己輸入 {server['address']}。"}[server['added']])
         if result['backup']:lines.append('原檔已備份，可在「備份與還原」復原。')
         lines.append('遊戲語言已設為繁體中文（台灣）。' if result['language_set'] else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
         if result.get('notes'):lines+=['','翻譯者的說明：',result['notes']]

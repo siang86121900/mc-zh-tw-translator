@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
-from . import shared_text
+from . import server_list, shared_text
 from .deployment import apply_reviewed, contained, file_hash
 from .translator import is_jar_signature_file
 from .updater import REPOSITORY, VERSION, release_url
@@ -436,6 +436,7 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 path=contained(instance,file)
                 if file.casefold()=='options.txt':continue  # personal game setting, never shared
                 if file==jobs.DEFAULT_OPTIONS_FILE:continue  # the pack switched on again; installing redoes it
+                if file==server_list.FILE:continue  # the card's server; each card adds its own, a list is never shared
                 if item['after'] is None:continue  # removed by a whole-modpack update; nothing to share
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
                 if file in restricted:
@@ -786,10 +787,11 @@ def install_mods(instance: Path, mods, home: Path, notify=lambda *_:None, cancel
 
 
 def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, set_language=False,
-                add_mods=False, cancelled=lambda:False, session=None) -> dict:
+                add_mods=False, cancelled=lambda:False, session=None, server=None) -> dict:
     """Apply a translation patch to an instance; only files matching the patch's original version change.
 
     With add_mods the mods the translator added are installed first, so their translation applies too.
+    `server` is the catalog card's {name, address}: it goes first in the multiplayer list, in the same batch.
     """
     instance=Path(instance).resolve()
     if not jobs.is_instance(instance):raise ValueError('找不到模組包資料夾（需要有 mods、config 或 kubejs）。')
@@ -857,6 +859,12 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
             activation_error='翻譯資源包未能自動啟用，請在遊戲的資源包設定啟用 MC Translator 繁體中文翻譯。'
         if record:records.append(record)
         if uses_pack and (record:=jobs.default_packs_record(instance,staged)):records.append(record)
+        # The translator's own server (owner, 2026-10-04): one entry from the catalog card, never the sender's list.
+        listed=server_list.checked(server);server_added=False
+        if listed:
+            try:
+                if record:=server_list.server_record(instance,staged,server,file_hash):records.append(record);server_added=True
+            except (OSError,ValueError):server_added=None  # an unreadable servers.dat is left alone
         jobs.require_space(instance,home,applied)
         backup=None
         if records:
@@ -877,6 +885,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         result['sender_omitted']=manifest.get('skipped') or []
         result['sender_text_omissions']=manifest.get('text_omissions') or []
         result['save_note']=shared_text.SAVE_NOTE
+        if listed:result['server']=dict(name=listed[0],address=listed[1],added=server_added)
         notify(90,'讀回核對分享內容','確認寫入的檔案與逐句譯文；這不是遊戲畫面實測')
         index=mods_by_hash(instance)
         unit_index={(u['source'],u['key'],u['kind']):u for u in manifest.get('text_units') or []}
@@ -984,7 +993,8 @@ def fetch_catalog(session=None):
                               notes=str(x.get('notes') or '')[:600],recommendedRam=ram_mb(x.get('recommendedRam')),url=x['url'],sha256=x['sha256'],size=int(x['size']),
                               sharingStatus=str(x.get('sharingStatus') or 'unknown'),minimumAppVersion=str(x.get('minimumAppVersion') or ''),
                               addedMods=[dict(name=str(m['name'])[:120],size=int(m['size'])) for m in (x.get('addedMods') or [])[:MAX_ADDED_MODS]
-                                         if isinstance(m,dict) and m.get('name') and 0<int(m.get('size') or 0)<=MAX_MOD_SIZE]))
+                                         if isinstance(m,dict) and m.get('name') and 0<int(m.get('size') or 0)<=MAX_MOD_SIZE],
+                              server=dict(zip(('name','address'),server_list.checked(x.get('server')))) if server_list.checked(x.get('server')) else None))
         except (KeyError,TypeError,ValueError):continue
     return packs
 
