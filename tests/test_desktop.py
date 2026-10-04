@@ -635,6 +635,50 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse((gun/'assets/ocle/lang/zh_tw.json').exists())
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_vaultpatcher_words_and_kubejs_template_text_are_converted_and_the_cache_is_cleared(self,_):
+        # Elemental Awakening 2026-10-04: VaultPatcher modules swap a class's English for the author's Simplified
+        # Chinese (未鉴定。), and a KubeJS tooltip was a template literal (`§9八系法术强度 +${group.bonus}%`); both
+        # stayed Simplified. VaultPatcher also reuses its cached classes, so the cache of a changed module goes.
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        modules=self.instance/'vaultpatcher/modules';modules.mkdir(parents=True)
+        module=[{'name':'blades.jar','desc':'VP模块文件','mods':'blades.jar','authors':'someone','dynamic':False,'i18n':False},
+                {'target_class':['com/blades/items/Ashes'],'pairs':[{'key':'Unidentified.','value':'未鉴定。'},
+                                                                    {'key':'鉴定','value':'鉴定'}],'info':{'method':''}},
+                {'target_class':['com/blades/Other'],'pairs':[{'key':'Hello','value':'Hello'}],'info':{'method':''}}]
+        text=json.dumps(module,ensure_ascii=False,indent=2)
+        (modules/'blades.json').write_text(text,encoding='utf-8')
+        cache=self.instance/'vaultpatcher/cache/com/blades/items';cache.mkdir(parents=True)
+        (cache/'Ashes.class').write_bytes(b'\xca\xfe\xba\xbe\x00\x00\x00\x34 \xe6\x9c\xaa\xe9\x89\xb4\xe5\xae\x9a')
+        (cache/'Ashes.class.sha256').write_text('0'*64,encoding='utf-8')
+        other=self.instance/'vaultpatcher/cache/com/blades/Other.class';other.write_bytes(b'\xca\xfe\xba\xbe')
+        js=self.instance/'kubejs/client_scripts/food.js';js.parent.mkdir(parents=True,exist_ok=True)
+        script="ItemEvents.tooltip(event => {\n  event.add(`kubejs:${id}`, [Text.blue(`§9八系法术强度 +${group.bonus}%`), Text.gray('食用后')])\n})\n"
+        js.write_text(script,encoding='utf-8')
+        kept={p:p.read_bytes() for p in (modules/'blades.json',cache/'Ashes.class',cache/'Ashes.class.sha256',js,other)}
+        result=self.make_plan()
+        rows=[r for r in result['rows'] if r['source'].startswith('vaultpatcher/')]
+        # Only values are text: a key (the class's own words) and a value that is also some pair's key stay as they are.
+        self.assertEqual([(r['key'],r['current']) for r in rows],[('[1, "pairs", 0, "value"]','未鉴定。')])
+        self.assertTrue(jobs.convertible(rows[0]))
+        jobs.auto_confirm_safe(result)
+        done=apply_session(result,self.home,lambda *_:None)
+        self.assertEqual(json.loads((modules/'blades.json').read_text(encoding='utf-8'))[1]['pairs'],
+                         [{'key':'Unidentified.','value':'未鑑定。'},{'key':'鉴定','value':'鉴定'}])
+        self.assertEqual((modules/'blades.json').read_text(encoding='utf-8'),text.replace('"未鉴定。"','"未鑑定。"'))
+        self.assertFalse((cache/'Ashes.class').exists());self.assertFalse((cache/'Ashes.class.sha256').exists())
+        self.assertTrue(other.exists())  # its module entry did not change
+        self.assertEqual(js.read_text(encoding='utf-8'),script.replace('八系法术强度','八系法術強度').replace('食用后','食用後'))
+        self.assertEqual(done['shown_mismatch'],0)
+        # VaultPatcher writes a new cache at the next start; that is never text of its own, and nothing is written again.
+        cache.mkdir(parents=True,exist_ok=True);(cache/'Ashes.class').write_bytes(b'\xca\xfe\xba\xbe \xe6\x9c\xaa\xe9\x91\x91')
+        again=self.make_plan()
+        self.assertFalse([r for r in again['rows'] if r['source'].startswith('vaultpatcher/cache/')])
+        self.assertFalse([r for r in again['rows'] if r.get('changed') and not r.get('installed') and jobs.HAN.search(r.get('current') or '')])
+        (cache/'Ashes.class').unlink()
+        restore_backup(Path(done['backup']),self.instance)
+        self.assertEqual({p:p.read_bytes() for p in kept},kept)
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_fancymenu_buttons_and_kubejs_window_title_are_converted_in_place(self,_):
         from mc_zh_tw_translator import desktop_jobs as jobs
         menu=self.instance/'config/fancymenu/customization';menu.mkdir(parents=True)

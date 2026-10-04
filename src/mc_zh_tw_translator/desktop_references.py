@@ -72,6 +72,10 @@ SLIPS = [(re.compile(a), b) for a, b in (
     ('熒(?![惑熒石])', '螢'),  # 螢光 in Taiwan (螢光蘑菇, 螢光楓木)
     ('(?<=[夠點超好按很真])贊', '讚'),  # 夠讚狗 (Okidogi), 點讚; 贊助, 贊成 stay
     ('振翼發', '振翼髮'),  # Flutter Mane: hair, not 發
+    # Found by scripts/audit_conversion.py over 306,189 strings of five modpacks (2026-10-05, Elemental Awakening).
+    # The converter's computing words make every 类型 a programmer's 型別 (傷害型別, 實體型別; 946 strings); official
+    # zh_tw writes 類型 throughout (實體類型, 未知的方塊類型: 47 times, 型別 never).
+    ('(?<![模造髮臉血典])型別(?![墅緻])', '類型'),
     # Pokémon whose official names hold 后 (queen) and 仆: the converter makes them 後 and 僕.
     ('尼多後', '尼多后'), ('焰後蜥', '焰后蜥'), ('甜冷美後', '甜冷美后'), ('僕(?=[刀斬]將軍)', '仆'),
 )]

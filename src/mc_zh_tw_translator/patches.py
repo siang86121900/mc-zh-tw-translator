@@ -45,7 +45,7 @@ PATCH_FORMAT = 'mctranslator-patch-1'
 PATCH_FORMAT_LITERALS = 'mctranslator-patch-2'
 READABLE_FORMATS = (PATCH_FORMAT, PATCH_FORMAT_LITERALS, shared_text.FORMAT)
 # Where a patch may change strings in place: the folders the program converts (desktop_jobs.LOOSE_TEXT_ROOTS).
-LITERAL_ROOTS = ('config/', 'defaultconfigs/', 'kubejs/', 'scripts/', 'tacz/', 'tlm_custom_pack/')
+LITERAL_ROOTS = ('config/', 'defaultconfigs/', 'kubejs/', 'scripts/', 'tacz/', 'tlm_custom_pack/', 'vaultpatcher/modules/')
 LITERAL_SUFFIXES = ('.json', '.snbt', '.toml', '.txt', '.yaml', '.yml', '.cfg', '.properties', '.js', '.zs')
 ESCAPED_SUFFIXES = ('.json', '.snbt', '.json5')
 CJK_TEXT = re.compile('[㐀-鿿豈-﫿　-〿＀-￯‘-”…·]')
@@ -517,6 +517,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
             manifest['sharing_status']='partial' if manifest['skipped'] else 'ready'
             manifest['save_note']=shared_text.SAVE_NOTE
             manifest['minimum_app_version']='0.32.1'  # a name read back as one coloured piece counts as shown from 0.32.1
+            if any(f['file'].casefold().startswith('vaultpatcher/') for f in manifest['files']):
+                manifest['minimum_app_version']='0.34.0'  # VaultPatcher modules are refused before 0.34.0, and their cache cleared from it
             w.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
             w.writestr('授權與來源.txt',ATTRIBUTION)
             # Per-string sources (AI, converted, reference), so the receiver's report keeps the same labels.
@@ -637,6 +639,19 @@ def archive_has(path: Path, z, item) -> bool:
         return False
 
 
+def only_entries(earlier, path: Path, item) -> bool:
+    """The archive differs from its backed-up original only in entries this patch writes again."""
+    original=earlier.get('original')
+    if not original or not Path(original).is_file() or file_hash(Path(original))!=earlier.get('before'):return False
+    try:
+        with zipfile.ZipFile(original) as a, zipfile.ZipFile(path) as b:
+            before=set(a.namelist());after=set(b.namelist())
+            if before-after:return False
+            return all(n in item['entries'] for n in after if n not in before or (a.getinfo(n).CRC,a.getinfo(n).file_size)!=(b.getinfo(n).CRC,b.getinfo(n).file_size))
+    except (OSError,zipfile.BadZipFile,KeyError):
+        return False
+
+
 def plan_patch(instance: Path, z, manifest, local_versions=None):
     """Decide per file: apply, already translated, or skip (different version or edited)."""
     plan=[];index=None
@@ -667,8 +682,12 @@ def plan_patch(instance: Path, z, manifest, local_versions=None):
             continue
         if item['archive']:
             target=find_archive(instance,item)
+            earlier=(local_versions or {}).get(clean_path(item['file']),{})
             if target:plan.append((item,'apply',target,''))
             elif path.is_file() and archive_has(path,z,item):plan.append((item,'already',path,''))
+            elif path.is_file() and earlier.get('before')==item['before'] and only_entries(earlier,path,item):
+                # An earlier revision of this translation over the same original: its entries are replaced.
+                plan.append((item,'apply',path,''))
             elif path.exists():plan.append((item,'skip',path,'模組版本和翻譯時不同'))
             else:plan.append((item,'skip',path,'找不到這個模組檔（可能是不同版本的模組包）'))
         else:
@@ -840,11 +859,13 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                 data=apply_literal_edits(item['file'],target.read_bytes(),item['literals'])
                 if sha256(data)!=item['after']:raise ValueError('補丁的文字修改套用後和翻譯者的檔案不同：'+item['file'])
                 dst.write_bytes(data)
+                if jobs.VAULTPATCHER_MODULE.match(relative):records+=jobs.vaultpatcher_cache(instance,relative,target.read_bytes(),data,records)
             else:
                 data=z.read(f'payload/{item["file"]}')
                 if sha256(data)!=item['after']:raise ValueError('補丁內容損壞：'+item['file'])
                 dst.write_bytes(data)
-            records.append(dict(file=relative,before=item['before'],after=file_hash(dst),reviewed=True,verified=True))
+            # An archive left by an earlier revision is not at item['before']; the backup must name what is there now.
+            records.append(dict(file=relative,before=file_hash(target) if item['archive'] else item['before'],after=file_hash(dst),reviewed=True,verified=True))
             applied.append(relative)
         pack_base=jobs.read_resource_pack(staged) if (staged/jobs.RESOURCE_PACK_FILE).is_file() else None
         prepared=shared_text.prepare(instance,home,manifest.get('text_units') or [],
@@ -908,7 +929,8 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         result['consistency']='unknown' if not known else 'partial' if (
             manifest.get('sharing_status')=='partial' or result['sender_omitted'] or result['sender_text_omissions'] or result['skipped'] or result['missing_mods'] or result['readback_mismatch']
             or result['file_mismatch'] or activation_error or result['mods_offered'] or (mods or {}).get('skipped')) else 'matched'
-        record_applied(home,instance,manifest,file_hash(Path(patch)),result['consistency'],versions)
+        record_applied(home,instance,manifest,file_hash(Path(patch)),result['consistency'],
+            {f:dict(before=v['before'],after=v['after']) for f,v in versions.items()})
         if applied or result_already(plan):jobs.record_translated(home,instance)
         merge_provenance(home,instance,z)
         if prepared['rows']:jobs.Provenance(home,instance).record(prepared['rows'])

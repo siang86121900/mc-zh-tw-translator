@@ -100,6 +100,40 @@ class SharedTextTests(unittest.TestCase):
             done=patches.apply_patch(self.sender,Path(out['path']),self.home,set_language=True)
         self.assertEqual(done['consistency'],'matched',done);self.assertFalse(done['skipped'])
 
+    def test_newer_revision_with_the_same_words_counts_as_installed(self,_):
+        # COBBLEVERSE 2026-10-04: a friend had revision 5 installed; revision 7 carried the same Cobbreeding lines, but
+        # the translator's jar bytes had changed. The friend's jar was neither the original nor the translator's result,
+        # its rescan listed no usable row for lines already in Chinese, and three lines were "cannot be proven safe".
+        self.translate();out=patches.export_patch(self.sender,self.home)
+        first=patches.apply_patch(self.friend,Path(out['path']),self.friend_home,set_language=True)
+        self.assertEqual(first['consistency'],'matched',first)
+        z,m=patches.read_patch(Path(out['path']));contents={n:z.read(n) for n in z.namelist()};z.close()
+        for u in m['text_units']:
+            if u['kind']=='embedded_text':u['source_after']='e'*64  # the translator's later bytes
+        m['source_hash_aliases']={u['source_after']:h for u in m['text_units'] for h in u['requires'].values() if u['source_after']!=h}
+        contents['manifest.json']=json.dumps(m,ensure_ascii=False).encode('utf-8')
+        newer=Path(self.tmp.name)/'newer.zip'
+        with zipfile.ZipFile(newer,'w') as w:
+            for n,data in contents.items():w.writestr(n,data)
+        real=jobs.plan
+        def without_rows(*a,**k):
+            session=real(*a,**k);session['rows']=[r for r in session['rows'] if r['kind']!='embedded_text'];return session
+        before=(self.friend/'datapacks/world.zip').read_bytes()
+        with patch.object(jobs,'plan',side_effect=without_rows):
+            done=patches.apply_patch(self.friend,newer,self.friend_home,set_language=True)
+        self.assertFalse(done['skipped'],done['skipped']);self.assertEqual(done['consistency'],'matched',done)
+        self.assertEqual((self.friend/'datapacks/world.zip').read_bytes(),before)
+        # The same proof needs the words to read back: a line an earlier revision wrote differently is named as such.
+        for u in m['text_units']:
+            if u['kind']=='embedded_text' and u['original']=='Shop Keeper':u['text']='商店老闆'
+        contents['manifest.json']=json.dumps(m,ensure_ascii=False).encode('utf-8')
+        with zipfile.ZipFile(newer,'w') as w:
+            for n,data in contents.items():w.writestr(n,data)
+        with patch.object(jobs,'plan',side_effect=without_rows):
+            done=patches.apply_patch(self.friend,newer,self.friend_home,set_language=True)
+        self.assertEqual(done['consistency'],'partial')
+        self.assertTrue(any('舊版翻譯' in s['reason'] for s in done['skipped']),done['skipped'])
+
     def test_name_whose_translation_leaves_one_coloured_piece_is_shared(self,_):
         # COBBLEVERSE bell_tower: "Guardian of the " + "Skies" in two colours became "天空的守護者" + "". The file
         # then reads as one piece; it was taken for "not shown" and left out of the patch.

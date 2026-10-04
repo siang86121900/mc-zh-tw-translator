@@ -27,14 +27,48 @@ def source_file(source):
 
 
 def local_versions(instance, home):
-    """Only receipts from locally proved recipes, still at their recorded result hash."""
+    """Only receipts from locally proved recipes, still at their recorded result hash.
+
+    Files this program wrote in batches still installed here count too, traced back through the backup
+    records to the original they started from: an earlier revision of the same translation leaves a file
+    that is neither the original nor the translator's result (COBBLEVERSE 2026-10-04, revision 6 → 7).
+    """
+    found=written_from(instance,home)
     try:
         data=json.loads((Path(home)/'applied_patches.json').read_text(encoding='utf-8'))
         versions=data.get(str(Path(instance).resolve()).casefold(),{}).get('source_versions',{})
-        return {file:pair for file,pair in versions.items() if isinstance(pair,dict)
+        found.update({file:pair for file,pair in versions.items() if isinstance(pair,dict)
             and all(re.fullmatch('[0-9a-f]{64}',str(pair.get(k))) for k in ('before','after'))
-            and file_hash(contained(instance,file))==pair.get('after')}
-    except (OSError,ValueError,TypeError,AttributeError):return {}
+            and file_hash(contained(instance,file))==pair.get('after')})
+    except (OSError,ValueError,TypeError,AttributeError):pass
+    return found
+
+
+def written_from(instance, home):
+    """{file: {before, after, original}} for files whose present bytes are the result of a chain of this
+    program's installed batches: `before` is the original the first batch backed up (kept at `original`)."""
+    target=Path(instance).resolve();batches=[]
+    for p in (Path(home)/'output').glob('*/原始備份/*/_備份紀錄/manifest.json'):
+        try:
+            record=json.loads(p.read_text(encoding='utf-8'))
+            if record.get('status')=='installed' and Path(record['instance']).resolve()==target:
+                batches.append((p.parents[1],{f['file']:f for f in record['files'] if isinstance(f,dict) and isinstance(f.get('file'),str)}))
+        except (OSError,ValueError,KeyError,TypeError,AttributeError):continue
+    batches.sort(key=lambda b:b[0].name,reverse=True)
+    found={}
+    for name in {f for _,files in batches for f in files}:
+        try:path=contained(target,name)
+        except ValueError:continue
+        if not path.is_file():continue
+        now=current=file_hash(path);original=None
+        for folder,files in batches:
+            r=files.get(name)
+            if not r or r.get('after')!=current:continue
+            if not r.get('before'):original=None;break  # a file this program created has no original
+            current=r['before'];original=folder/name
+        if original and current!=now and re.fullmatch('[0-9a-f]{64}',current):
+            found[name]=dict(before=current,after=now,original=str(original))
+    return found
 
 
 def validate(units, clean_path):
@@ -136,7 +170,7 @@ def prepare(instance, home, units, notify, work, cancelled, pack_base=None):
     index={(r['source'],r['key'],r['kind']):r for r in session['rows']}
     for row in session['rows']:row['reviewed']=False
     accepted=[];already=[];skipped=[];hashes={};versions=local_versions(instance,home);curseforge=jobs.is_curseforge(instance)
-    already_candidates=[]
+    already_candidates=[];older=set()
     for u in units:
         if cancelled():raise InterruptedError('已停止，分享的逐句翻譯尚未寫入。')
         source=source_file(u['source']);path=contained(instance,source)
@@ -145,13 +179,18 @@ def prepare(instance, home, units, notify, work, cancelled, pack_base=None):
         why=''
         original_match=hashes[source]==u['requires'][source] or versions.get(source,{}).get('before')==u['requires'][source]
         after_match=hashes[source]==u['source_after'] and row and row.get('current')==u['text']
-        if hashes[source]==u['source_after'] and hashes[source]!=u['requires'][source] and (row or u['kind'] in ('class_display','embedded_text')):
+        # An earlier revision of this translation, installed here from the same original: the rescan may list
+        # no usable row for text that is already Chinese, so the words read back decide, as for the translator's file.
+        earlier=(hashes[source]!=u['requires'][source] and versions.get(source,{}).get('before')==u['requires'][source]
+                 and (not row or not row.get('supported') or row.get('unverified') or row.get('literal')))
+        if (hashes[source]==u['source_after'] or earlier) and hashes[source]!=u['requires'][source] and (row or u['kind'] in ('class_display','embedded_text')):
             # The translator's translated file (the translator's own computer, or the patch installed before),
             # where a rescan may list no row for text already in Chinese. A claimed hash proves nothing by itself:
             # it counts only when the words read back from that place are the translation. On the translator's own
             # computer the backup record also matches the original (original_match), which must not send these
             # lines to the checks below (COBBLEVERSE 2026-10-04: 11 lines called "cannot be proven safe").
             candidate=dict(row or {},source=u['source'],key=u['key'],kind=u['kind'],proposed=u['text'])
+            if earlier and hashes[source]!=u['source_after']:older.add(id(u))
             already_candidates.append((u,candidate));continue
         if not original_match and not after_match:why='原檔版本和分享者不同'
         elif not row or not row.get('supported') or row.get('unverified') or row.get('literal'):why='本機無法證明這個文字位置可安全改寫'
@@ -173,6 +212,7 @@ def prepare(instance, home, units, notify, work, cancelled, pack_base=None):
     jobs.check_shown(instance,[row for _,row in already_candidates])
     for u,row in already_candidates:
         if row.get('shown'):already.append(u['source']+' / '+u['key'])
+        elif id(u) in older:skipped.append(dict(file=u['source'],key=u['key'],reason='先前安裝的舊版翻譯和這一版不同；請在「備份與還原」還原舊版翻譯後再安裝'))
         else:skipped.append(dict(file=u['source'],key=u['key'],reason='譯文未在實際讀取的檔案中啟用'))
     result=dict(records=[],rows=accepted,already=already,skipped=skipped,staged=None,session=session)
     if accepted:

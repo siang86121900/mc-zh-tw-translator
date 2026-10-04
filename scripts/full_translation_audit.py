@@ -157,6 +157,9 @@ LONE_SURROGATE=re.compile('[\ud800-\udfff]')
 # Text files where a string is written in quotes: JSON and SNBT take JSON escapes, TOML/TXT lines are kept raw.
 QUOTED=re.compile(r'"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27')
 DOUBLE_QUOTED=re.compile(r'"(?:\\.|[^"\\])*"')
+# A KubeJS template literal on one line: `§9近战伤害 +${group.bonus}%` (Elemental Awakening food_effects.js). Only plain
+# ${name.field} insertions count; one with quotes or braces of its own is code that may compare words.
+TEMPLATE=re.compile(r'`(?:\\.|[^`\\$\n]|\$(?!\{)|\$\{[\w.\[\]() +\-*/]*\})*`')
 
 SCRIPT_SUFFIXES=('.js','.zs')
 # Chinese that reads as a sentence rather than a name (geometry.四叶十字, a bone called 头发): punctuation, or a long run.
@@ -240,6 +243,12 @@ def string_literals(text,suffix,path=''):
                 # In a script, cond ? '是' : '否' is text; a key starts the line or follows { or ,
                 if is_key and script:is_key=line[:m.start()].rstrip()[-1:] in ('','{',',')
                 yield lineno,i,value,is_key,offset+m.start(),offset+m.end()
+            if suffix=='.js':
+                # Numbered after the quoted strings (from 1000), so the keys of rows found before stay the same.
+                spans=[m.span() for m in pattern.finditer(line)]
+                for j,m in enumerate(TEMPLATE.finditer(line)):
+                    if any(a<m.end() and m.start()<b for a,b in spans):continue
+                    yield lineno,1000+j,m[0][1:-1],False,offset+m.start(),offset+m.end()
         offset+=len(line)
 
 # Files that describe a pack rather than hold game text, and tool caches (JEI's sort order and lookup history).
@@ -400,7 +409,11 @@ VANILLA_STRUCTURES=('ancient_city','bastion_remnant','buried_treasure','desert_p
                     'nether_complexes','nether_fossils','ocean_monuments','ocean_ruins','pillager_outposts','ruined_portals',
                     'shipwrecks','strongholds','swamp_huts','villages','woodland_mansions')
 LOCALE=re.compile(r'[a-z]{2,3}_[a-z]{2,3}$')
-NOT_READ=('config/ftbquests/quests-backup/',)
+# VaultPatcher's cache holds the mod classes it already patched from vaultpatcher/modules (ClassCache): output made
+# from those modules at every start, never text of its own (desktop_jobs.vaultpatcher_cache clears it when a module changes).
+NOT_READ=('config/ftbquests/quests-backup/','vaultpatcher/cache/')
+# VaultPatcher modules: [header, {"target_class": [...], "pairs": [{"key": English in the class, "value": shown instead}]}].
+VAULTPATCHER_MODULE=re.compile(r'vaultpatcher/modules/[^/]+\.json$',re.I)
 CONFIG_SCREEN=b'net/neoforged/neoforge/client/gui/ConfigurationScreen'
 LANG_KEY=re.compile(r'[A-Za-z0-9_.\-]+$')
 NAMESPACE=re.compile(r'[a-z0-9_.\-]+$')
@@ -1021,6 +1034,8 @@ class Audit:
                     if not raw.strip():
                         self.counts['empty_config_files']+=1;continue
                     data=parse(p.read_bytes());inline=set()
+                    if VAULTPATCHER_MODULE.match(n):
+                        self.vaultpatcher_module(n,data);continue
                     for path,texts in inline_languages(data):
                         # {"en_us": "...", "zh_cn": "..."}: one text in several languages (Ponderer scenes)
                         inline.add(tuple(path))
@@ -1104,6 +1119,21 @@ class Audit:
             self.collection('instance',set(files),lambda n:files[n].read_bytes())
             for row in self.rows[first:]:row['unverified']=True
             self.counts['unverified_language_rows']+=len(self.rows)-first
+    def vaultpatcher_module(self,n,data):
+        """VaultPatcher (me.fengming.vaultpatcher_asm, 1.5.2) swaps each pair's "key" string in the named classes for
+        its "value" as the game loads them (LdcNodeHandler), so the value is what the player reads. Only values are rows:
+        a key is the class's own English the swap looks for, and a value also used as a key elsewhere in the file is
+        left alone, as converting it would change what that pair looks for."""
+        entries=[e for e in data if isinstance(e,dict)] if isinstance(data,list) else []
+        keys={p.get('key') for e in entries for p in (e.get('pairs') or []) if isinstance(p,dict)}
+        for i,e in enumerate(data if isinstance(data,list) else []):
+            if not isinstance(e,dict) or not isinstance(e.get('pairs'),list):continue
+            for j,pair in enumerate(e['pairs']):
+                if not isinstance(pair,dict):continue
+                value=pair.get('value')
+                if isinstance(value,str) and HAN.search(value) and value not in keys:
+                    self.add(n,json.dumps([i,'pairs',j,'value']),None,value,kind='config')
+        self.counts['vaultpatcher_modules']+=1
     def unverified_literals(self,n,text,strict):
         """Rows for the Chinese strings of a file no reader covers, to be converted to Taiwan wording in place;
         returns the text with every quoted string blanked, so what is left over can still be listed.

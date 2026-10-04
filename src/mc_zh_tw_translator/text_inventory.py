@@ -19,7 +19,7 @@ import zlib
 from pathlib import Path, PurePosixPath
 
 FORMAT = 'text-inventory-2'
-RULES_VERSION = '2026-10-03.8'
+RULES_VERSION = '2026-10-04.1'
 HAN = re.compile('[㐀-鿿]')
 WORDS = re.compile(r'[A-Za-z]{2,}')
 LOCALE = re.compile(r'(?:^|/)(?!en_us|zh_tw|zh_cn)[a-z]{2}[_-](?:[a-z]{2}|\d{3})(?:/|[.\[])', re.I)

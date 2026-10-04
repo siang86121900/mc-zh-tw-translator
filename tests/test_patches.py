@@ -97,6 +97,56 @@ class PatchTests(unittest.TestCase):
             result=patches.apply_patch(self.friend,Path(out['path']),Path(self.temp.name)/'friend-app')
         self.assertIn('resourcepacks/MCTranslator-zh_tw.zip',result['applied'])
 
+    def test_newer_revision_installs_over_an_archive_an_earlier_revision_translated(self,_):
+        # COBBLEVERSE 2026-10-04: a friend who installed revision 6 had RCTmod RP.zip at revision 6's bytes; revision 7
+        # called it "a different mod version" because the file was neither the original nor the translator's result.
+        for root in (self.translator,self.friend):
+            (root/'resourcepacks').mkdir(exist_ok=True)
+            with zipfile.ZipFile(root/'resourcepacks/rp.zip','w') as z:
+                z.writestr('pack.mcmeta','{"pack":{"pack_format":15,"description":"rp"}}')
+                z.writestr('assets/real/lang/en_us.json',json.dumps({'real.b':'Trainer'}))
+                z.writestr('assets/real/lang/zh_cn.json',json.dumps({'real.b':'训练家'}))
+        original=(self.friend/'resourcepacks/rp.zip').read_bytes()
+        self.translate()
+        out=patches.export_patch(self.translator,self.home)
+        friend_home=Path(self.temp.name)/'friend-app'
+        first=patches.apply_patch(self.friend,Path(out['path']),friend_home)
+        self.assertIn('resourcepacks/rp.zip',first['applied'])
+        # Revision 7: the same file with other words in its zh_tw.json.
+        z,manifest=patches.read_patch(Path(out['path']));contents={n:z.read(n) for n in z.namelist()};z.close()
+        entry='payload/resourcepacks/rp.zip/assets/real/lang/zh_tw.json'
+        contents[entry]=json.dumps({'real.b':'寶可夢訓練家'},ensure_ascii=False).encode('utf-8')
+        item=next(f for f in manifest['files'] if f['file']=='resourcepacks/rp.zip')
+        item['entries']['assets/real/lang/zh_tw.json']=patches.sha256(contents[entry])
+        contents['manifest.json']=json.dumps(manifest,ensure_ascii=False).encode('utf-8')
+        newer=Path(self.temp.name)/'newer.zip'
+        with zipfile.ZipFile(newer,'w') as w:
+            for n,data in contents.items():w.writestr(n,data)
+        second=patches.apply_patch(self.friend,newer,friend_home)
+        self.assertIn('resourcepacks/rp.zip',second['applied'],second['skipped'])
+        self.assertFalse([s for s in second['skipped'] if s['file']=='resourcepacks/rp.zip'])
+        with zipfile.ZipFile(self.friend/'resourcepacks/rp.zip') as a:
+            self.assertEqual(json.loads(a.read('assets/real/lang/zh_tw.json'))['real.b'],'寶可夢訓練家')
+        again=patches.apply_patch(self.friend,newer,friend_home)
+        self.assertIn('resourcepacks/rp.zip',again['already'])
+        restore_backup(Path(second['backup']),self.friend);restore_backup(Path(first['backup']),self.friend)
+        self.assertEqual((self.friend/'resourcepacks/rp.zip').read_bytes(),original)
+
+    def test_an_archive_changed_beyond_the_patch_entries_is_not_rewritten(self,_):
+        root=Path(self.temp.name)
+        def archive(path,entries):
+            with zipfile.ZipFile(path,'w') as z:
+                for n,data in entries.items():z.writestr(n,data)
+            return path
+        backup=archive(root/'original.zip',{'pack.mcmeta':'{}','assets/real/lang/en_us.json':'{}'})
+        earlier=dict(before=patches.file_hash(backup),original=str(backup))
+        item=dict(entries={'assets/real/lang/zh_tw.json':'0'*64})
+        ours=archive(root/'ours.zip',{'pack.mcmeta':'{}','assets/real/lang/en_us.json':'{}','assets/real/lang/zh_tw.json':'{"a":"甲"}'})
+        self.assertTrue(patches.only_entries(earlier,ours,item))
+        edited=archive(root/'edited.zip',{'pack.mcmeta':'{"x":1}','assets/real/lang/en_us.json':'{}','assets/real/lang/zh_tw.json':'{}'})
+        self.assertFalse(patches.only_entries(earlier,edited,item))
+        self.assertFalse(patches.only_entries(dict(earlier,before='0'*64),ours,item))  # the backup is not that original
+
     def test_converted_config_and_scripts_travel_as_chinese_only_string_edits(self,_):
         for instance in (self.translator,self.friend):self.add_converted_files(instance)
         before={p:(self.friend/p).read_bytes() for p in ('config/fancymenu/customization/title_screen_layout.txt','scripts/tips.zs','config/quests.json')}

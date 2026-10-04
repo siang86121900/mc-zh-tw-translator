@@ -283,6 +283,23 @@ class QualityTests(Base):
         self.assertEqual(jobs.number_doubt('Weighs 13,500 jin','重 13500 斤'),'')
         self.assertIn('譯文 50',jobs.number_doubt('100 slimes vs 1 Gorilla?','你能戰勝 50 隻史萊姆嗎？'))
 
+    def test_names_told_apart_by_a_number_keep_the_authors_own_names(self):
+        # Elemental Awakening: Wine Fox 1…5 are named 巫女/冰霜… in the author's zh_cn; the number check sent them to AI,
+        # which wrote 「奧術」酒狐 2. Names that only differ by the number take the author's names, without a doubt.
+        en={'entity.demo.fox':'Wine Fox','entity.demo.fox_1':'Wine Fox 1','entity.demo.fox_2':'Wine Fox 2',
+            'item.demo.fox_1_egg':'Wine Fox 1 Spawn Egg','item.demo.fox_2_egg':'Wine Fox 2 Spawn Egg',
+            'item.demo.sword_1':'Sword 1','item.demo.sword_2':'Sword 2','gui.demo.a':'Lasts 3 seconds'}
+        cn={'entity.demo.fox':'「奥术」酒狐','entity.demo.fox_1':'「巫女」酒狐','entity.demo.fox_2':'「冰霜」酒狐',
+            'item.demo.fox_1_egg':'「巫女」酒狐刷怪蛋','item.demo.fox_2_egg':'「冰霜」酒狐刷怪蛋',
+            'item.demo.sword_1':'剑','item.demo.sword_2':'剑','gui.demo.a':'持续片刻'}
+        self.write(en,cn)
+        rows=self.rows()
+        for key,name in (('entity.demo.fox_1','「巫女」酒狐'),('entity.demo.fox_2','「冰霜」酒狐'),('item.demo.fox_2_egg','「冰霜」酒狐生怪蛋')):
+            self.assertEqual((rows[key]['origin'],rows[key]['proposed']),('same_source_zh_cn',name),key)
+            self.assertFalse(rows[key].get('number_doubt'),key)
+        # Two names that become the same Chinese lost what told them apart; a sentence's number is still checked.
+        for key in ('item.demo.sword_2','gui.demo.a'):self.assertTrue(rows[key].get('number_doubt'),key)
+
     def test_traditional_chinese_written_for_this_version_keeps_its_place(self):
         self.write({'a':'Lasts 3 seconds'},{'a':'持续 3 秒'},{'a':'持續片刻'})
         row=self.rows()['a']  # the mod's own zh_tw is not replaced because of a number, only listed (AGENTS.md)
@@ -349,6 +366,11 @@ class QualityTests(Base):
         self.assertEqual(references.to_taiwan('机器的物品输出端口在右侧，输入端口在左侧'),'機器的物品輸出端在右側，輸入端在左側')
         # Text applied by an earlier version is corrected the same way (once, listed for checking).
         self.assertEqual(jobs.taiwan_wording('魔法箭會提供魔法系前期一個很不錯的輸出埠'),'魔法箭會提供魔法系前期一個很不錯的輸出手段')
+        # 类型 is 類型 as official zh_tw writes it (實體類型), never the programmer's 型別 (Elemental Awakening 徽章型別).
+        for cn,tw in (('§f徽章类型：','§f徽章類型：'),('伤害类型','傷害類型'),('目标实体类型的','目標實體類型的'),('变量类型','變數類型')):
+            self.assertEqual(references.to_taiwan(cn),tw,cn)
+        self.assertEqual(jobs.taiwan_wording('全傷害型別'),'全傷害類型')
+        for text in ('類型','模型別墅','造型別緻','髮型別再剪了'):self.assertEqual(references.to_taiwan(text),text)
 
     def test_glossary_follows_official_names(self):
         from mc_zh_tw_translator.translator import MINECRAFT_GLOSSARY as glossary

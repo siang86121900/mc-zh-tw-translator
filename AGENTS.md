@@ -66,10 +66,10 @@
 - 禁止只憑相同英文、key 尾段或子字串做跨模組／全域替換。簡中轉繁不只是轉字形，仍須校對台灣用語、拼接句與上下文；可信繁中不得整句盲目重轉。
 - 先判定是否為玩家可見文字。模組名、作者名與縮寫可合理保留；不翻 registry ID、設定鍵、UUID、URL、指令結構等機器值。
 - 數量、價格、解鎖條件、否定意思、NBT 型別、格式碼、換行、佔位符及參數順序不得被翻譯改壞。
-- 數值檢查適用所有來源，不只 AI：簡中轉繁、版本不同或跨版本的候選若少了或改了英文原文的數字，先改用保留數字的來源；都沒有才採用並列入「建議確認」，寫出原文與譯文的數字。中文數字（九十九、雙倍）與參數不算差異。為本版本撰寫的繁中不因數字差異被取代，只列出；使用者已確認的內容不檢查。
+- 數值檢查適用所有來源，不只 AI：簡中轉繁、版本不同或跨版本的候選若少了或改了英文原文的數字，先改用保留數字的來源；都沒有才採用並列入「建議確認」，寫出原文與譯文的數字。中文數字（九十九、雙倍）與參數不算差異。例外（使用者 2026-10-05 同意）：名稱（item／block／entity.<模組>.<路徑>）的英文只差一個編號（Wine Fox、Wine Fox 1…5），而模組自帶的中文每個名字都不同、也沒有數字時，編號只是暫用名，直接用作者的名字、不列疑點、不送 AI（desktop_jobs.numbered_names；Elemental Awakening 的「冰霜」酒狐曾被 AI 改成「奧術」酒狐 2）。為本版本撰寫的繁中不因數字差異被取代，只列出；使用者已確認的內容不檢查。
 - 是否含簡體以台灣用字判斷：台、岩、床、群、峰、裡、為等不是簡體，不得因此把正確繁中降級。轉換產生的譯文使用官方繁中的字形，不輸出臺、巖、牀、羣、峯。
 - 一個簡體字對應多個繁體字（只／隻、并／並／併、个／個／箇、干／乾／幹、几／幾／機、了／瞭、复／復／覆…）時，轉換工具只認得它詞表裡的詞，詞表外就選錯（「擊殺 3 只殭屍」）。修正寫成 desktop_references.SLIPS 的規則，每條規則同時測該改與不該改的句子（tests/test_safeguards.py）；改轉換規則前後用 scripts/audit_conversion.py 對真實整合包（只讀）統計並比對前後差異，逐條看過才發布。使用者回報一個錯字時，用這個工具找出同類的錯，不只修那一句。先前版本寫入的錯字在重跑時更正一次並列入「建議確認」（已修正轉換用字），之後重跑不再變動。
-- 寶可夢名稱以模組自帶的繁中為準（Cobblemon 的 zh_tw 是台灣官方譯名，和大陸譯名不同：謎擬Q／谜拟丘），不用簡中轉換取代；官方名裡的「后」「仆」（尼多后、焰后蜥、甜冷美后、仆刀將軍）不是簡體（KEPT_WORDS）。2026-10-03 起 SLIPS 另修正音譯的「託→托」、「慄→栗」、「熒→螢」、「贊→讚」（五個整合包 1,240 句逐條看過）。
+- 寶可夢名稱以模組自帶的繁中為準（Cobblemon 的 zh_tw 是台灣官方譯名，和大陸譯名不同：謎擬Q／谜拟丘），不用簡中轉換取代；官方名裡的「后」「仆」（尼多后、焰后蜥、甜冷美后、仆刀將軍）不是簡體（KEPT_WORDS）。2026-10-03 起 SLIPS 另修正音譯的「託→托」、「慄→栗」、「熒→螢」、「贊→讚」（五個整合包 1,240 句逐條看過）。2026-10-05 起「型別→類型」（轉換工具把所有「类型」當程式術語；官方繁中一律寫「類型」，五個整合包 946 句逐類看過）。
 - 模組自帶的繁中與簡中都刻意保留同一個英文縮寫（Cobblemon 的 Lv.、HP、PP，單位 mB、RPM，羅馬數字、座標 X/Y/Z）時照模組原樣保留，不送 AI（desktop_jobs.author_kept）：限該模組的 zh_tw 過半是中文、去掉參數後最多 4 個字母、不像英文單字（Done、Fuel、Fox 這種兩邊都沒翻的單字仍照常翻）；使用者確認的翻譯優先。AI 先前翻的（等級2 塞不進「Lv.2」的框）重跑時改回一次（使用者 2026-10-04 選擇）。
 - 大陸用語替換只收沒有歧義的詞。Minecraft 名稱以 Mojang 官方 zh_cn／zh_tw 對照（desktop_references.MC_TERMS）：句中只換只在 Minecraft 才有的詞（下界、末影、生物群系…），一般詞（監守者、守衛者）只在整句就是該名稱時換。在台灣同樣正確的詞（質量＝重量、支持者、感謝支持）不替換；新增替換詞前先確認它沒有第二種意思。
 - AI 分開處理缺漏補翻與具體疑點核對，不將全部可靠譯文重新送 AI。核對未改文字時保留原來源並另記 AI 審核；新寫或改寫標記 ai_translation，保留前一候選與來源。
@@ -109,7 +109,8 @@
 - 使用者回報畫面上的漏翻時，除了修好那一類文字，同時查清楚掃描為什麼沒發現、報告為什麼沒有紅字，補上防漏檢查（讓同類格式以後一定會被列出）與測試；只修單一檔案不算完成。新增讀取器前先拆模組程式確認它怎麼顯示這段文字（照字面 Component.literal 或查語系鍵）、從哪裡讀（資源包、資料包、存檔），依據寫在程式註解。
 - 模組照字面顯示、從資料包讀的文字（full_translation_audit.DATA_TEXT_FORMATS 列出每種格式與欄位：Whispering Quests 的 tasks|chapters、Slime Throne Extras 的 st_quests 名稱、Monster Expansion 的 quest_data 與 monsterology）：簡中轉台灣用語、英文照一般順序與 AI 補翻，連同該檔其餘內容複製進翻譯資料包 config/openloader/data/zz-MCTranslator-zh_tw.zip（desktop_jobs.DATA_PACK_FILE；OpenLoader 19 以 Pack.Position.TOP、必載並自動加入既有世界，依名稱排序所以名稱排最後），模組檔不修改，CurseForge 模組也適用。同一個檔案有多份時翻遊戲讀的那份（OpenLoader > datapacks > 模組）。資料包每次都從目前的原檔重建，只放回原句仍相同的譯文，原檔變了（模組更新）就重做，不讓舊複本蓋掉新任務內容。OpenLoader 21（NeoForge 1.21.1）改讀 config/openloader/packs，翻譯資料包放那裡（desktop_jobs.data_pack_file；options.json 的 load_data_packs 關閉時不寫入）。沒有 OpenLoader（或其資料包停用）時不寫入，報告寫明原因（HELD_NO_DATAPACK）。任務進度只記 id、不記文字（已查 QuestManager），改文字不影響存檔。
 - 同一段文字並列多種語言的格式（{"en_us": …, "zh_cn": …}，例如 Ponderer 的 config/ponderer/scripts）：在同一段加上 zh_tw，不改其他語言。英文可能被整合包作者截斷未寫完，有完整的簡中時照一般順序先用簡中轉台灣用語，英文只作比對。寫入前必須先在模組程式裡確認它會依遊戲語言讀 zh_tw（記在 desktop_jobs.INLINE_ZH_TW 並註明依據）；未確認的格式不寫入、不算進完成率，報告寫明「還沒確認這個模組會讀繁中」。
-- 設定檔與任務檔裡直接寫的中文（config、defaultconfigs、kubejs 的 json／snbt／toml／txt／yaml 字串值、Forge 舊式 .cfg 的值與清單行、.properties 的值（KubeJS 視窗標題）、FancyMenu 版面檔的 label／hoverlabel／description／source 等顯示欄位、KubeJS 腳本 .js 與 CraftTweaker 腳本 scripts/*.zs 的字串、內容包 JSON 顯示欄位，例如 FTB Quests 1.20.1 寫在 chapters 裡的任務文字、Text.of('…')）：簡體一律在原檔轉成台灣用語，只改那個字串、其餘位元組不動（desktop_jobs.convertible／rewrite_literals）；鍵名（腳本裡只有開頭、{ 或逗號後接冒號的才算鍵名，三元運算的文字照轉）、註解行（含腳本的 /* */ 區塊）、其他語言的檔案（lang 資料夾、zh_cn 等語言代碼命名）與遊戲不讀的 quests-backup 不改。英文仍列待查；例外是 FancyMenu 版面的英文按鈕、說明與 source_mode = direct 的文字元件，照一般順序與 AI 補翻後原地寫入（embedded_text.fancymenu_units），佔位符、顏色碼、%n% 與連結目標必須原樣保留，圖片路徑不是文字；英文改中文以格式 3 的有用途證明逐句紀錄分享，不帶整份版面檔。
+- 設定檔與任務檔裡直接寫的中文（config、defaultconfigs、kubejs 的 json／snbt／toml／txt／yaml 字串值、Forge 舊式 .cfg 的值與清單行、.properties 的值（KubeJS 視窗標題）、FancyMenu 版面檔的 label／hoverlabel／description／source 等顯示欄位、KubeJS 腳本 .js（含同一行、`${}` 裡只有變數的樣板字串）與 CraftTweaker 腳本 scripts/*.zs 的字串、內容包 JSON 顯示欄位，例如 FTB Quests 1.20.1 寫在 chapters 裡的任務文字、Text.of('…')）：簡體一律在原檔轉成台灣用語，只改那個字串、其餘位元組不動（desktop_jobs.convertible／rewrite_literals）；鍵名（腳本裡只有開頭、{ 或逗號後接冒號的才算鍵名，三元運算的文字照轉）、註解行（含腳本的 /* */ 區塊）、其他語言的檔案（lang 資料夾、zh_cn 等語言代碼命名）與遊戲不讀的 quests-backup 不改。英文仍列待查；例外是 FancyMenu 版面的英文按鈕、說明與 source_mode = direct 的文字元件，照一般順序與 AI 補翻後原地寫入（embedded_text.fancymenu_units），佔位符、顏色碼、%n% 與連結目標必須原樣保留，圖片路徑不是文字；英文改中文以格式 3 的有用途證明逐句紀錄分享，不帶整份版面檔。
+- VaultPatcher 把 class 裡的英文換成 vaultpatcher/modules/*.json 各組 pairs 的 value：只把 value 的簡體在原檔轉台灣用語，key（拿來比對 class 原文）與同時當成 key 的 value 不改；VaultPatcher 預設沿用 vaultpatcher/cache 裡改好的 class（只看原模組有沒有變），所以 value 有變的 target_class 一併移除快取（desktop_jobs.vaultpatcher_cache，同批備份、可還原），快取不掃描（Elemental Awakening 2026-10-04 未鉴定。、葛伦科龙）。
 - FTB Quests 的任務文字在 config/ftbquests/quests/lang/<語言>.snbt（mc_zh_tw_translator.quest_lang），當成語系檔處理：說明清單逐行成為一筆，簡中清單行數和英文不同時不逐行對應；寫出 zh_tw.snbt 時沿用英文檔的排版，圖片與換頁行原樣保留，英文檔不修改。
 - 新增支援的格式前，用真實整合包列出「有玩家文字卻沒產生任何一筆」的檔案，確認新格式涵蓋它們；參考其他翻譯工具的支援範圍時只讀其內容，不執行不明程式。
 - 附帶語言包裡未安裝模組的文字略過。判定已安裝要有模組本身（宣告的 modId）、它的語系檔或世界生成資料；其他模組附的相容材質、配方不算。
@@ -213,6 +214,7 @@
 - 上架時在說明欄寫上整合包自己建議的記憶體（manifest.json 的 minecraft.recommendedRam），由玩家在啟動器設定；程式不修改啟動器的設定檔。例外（使用者 2026-10-02 同意放寬）：作者沒有建議值時（例如從其他啟動器複製來的整包分享），依模組數估計（patches.memory_estimate，與建立伺服器同一級距），卡片寫明「程式估計，不是作者建議」，步驟不提「作者推薦」選項；連模組數都不知道時只列調整步驟。整包卡片的模組數在上架時記下（目錄的 mods），舊卡片用 publish_translation.py --full --card-only 補上，不重新打包、不改翻譯版次。
 - 向使用者說明分享範圍時講清楚：補丁不含模組檔、整份設定檔或腳本、記憶體與啟動器設定、遊戲選項（設定檔與腳本只帶轉成繁體的那幾句）；分享者另外加裝的模組只記名稱與校驗碼，對方選擇不加入時略過那個模組的翻譯。
 - 套用只修改原檔雜湊匹配者（同大小同雜湊的改名檔可辨識），不匹配者略過並報告，仍經備份、驗證與還原流程。
+- 先前裝過同一份翻譯較舊版次的玩家（COBBLEVERSE 2026-10-04 第 6 版→第 7 版），檔案既不是原檔也不是翻譯者的結果：以玩家自己電腦上仍生效的備份紀錄一路追回原檔（shared_text.written_from），原檔和補丁要求的相同才算同一份；逐句文字讀回和新版相同就算已翻譯，資源包壓縮檔只在和備份原檔相比只改了補丁會重寫的項目時才重寫（patches.only_entries）。讀回和新版不同的逐句文字列出「先前安裝的舊版翻譯和這一版不同」，請玩家先還原舊版。
 - 逐一確認實際引用來源及其當次授權條款，附來源與授權資訊；不得將所有參考庫一律宣稱同一授權。公開分享前須確認修改與再散布權限，不將本專案政策當作取得上游授權。
 - 分享預設免費，不做付費或贊助者限定；說明需先安裝完整同版本整合包，補丁不是可裝入空白環境的完整包。
 

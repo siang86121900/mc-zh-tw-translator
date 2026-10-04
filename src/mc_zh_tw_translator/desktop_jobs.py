@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from full_translation_audit import (Audit, parse, lang_table, inline_field, parse_binary_nbt, rewrite_binary_nbt, placeholders, at, string_literals,
-                                    LOOSE_FOLDERS, CONTENT_PACK_FOLDERS, FANCYMENU, plain_text)
+                                    LOOSE_FOLDERS, CONTENT_PACK_FOLDERS, FANCYMENU, plain_text, VAULTPATCHER_MODULE)
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_free
 from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified, VANILLA_STRUCTURE_NAMES
 from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
@@ -129,6 +129,34 @@ KEY_MOD_REFERENCE = re.compile(r'^(?:biome|dimension|structure)\.([a-z0-9_]+)[./
 # Measurement units shown next to numbers (energy, fluid, pressure, temperature, time, power).
 UNITS = {'mb','b','kb','bar','psi','rpm','hz','khz','w','kw','mw','v','a','j','kj','t','s','ms','ns','μi','µi','°c','°f','k',
          'fe','rf','eu','cf','mj','su','xp','ep','mp','hp'}
+
+
+INDEX_NUMBER = re.compile(r'(?<!\S)\d{1,2}(?!\S)')
+
+
+def numbered_names(rows):
+    """(source, key) of names whose English tells look-alikes apart only by a number the mod's Chinese replaces with names
+    of their own: Elemental Awakening's Wine Fox / Wine Fox 1…5 are 「奧術」「巫女」「冰霜」「櫻花」「魔女」「月汐」酒狐 in
+    the author's zh_cn. The number check had sent 「冰霜」酒狐 to AI, which wrote 「奧術」酒狐 2 (owner, 2026-10-05).
+    Only when every name of the group has Chinese without a number and no two of them are the same."""
+    groups=collections.defaultdict(list)
+    for r in rows:
+        en=r.get('en')
+        # Names only (item.<mod>.<path>): a tooltip or description under the name (item.pixelmon.rare_soda.tooltip) is a sentence.
+        if r.get('kind')!='language' or not NAME_KEY.match(r['key']) or r['key'].count('.')!=2 or not isinstance(en,str) or len(en)>40:continue
+        numbers=INDEX_NUMBER.findall(en)
+        if len(numbers)>1:continue
+        base=' '.join(INDEX_NUMBER.sub(' ',en).split()).casefold()
+        chinese=next((v for v in (r.get('zh_cn'),r.get('current')) if isinstance(v,str) and HAN.search(v)),None)
+        groups[(r['source'],r['key'].split('.')[0],base)].append((r['key'],bool(numbers),chinese))
+    found=set()
+    for (source,_,_),names in groups.items():
+        numbered=[k for k,has,_ in names if has]
+        chinese=[c for _,_,c in names]
+        if (len(numbered)>=2 and all(chinese) and len(set(chinese))==len(chinese)
+                and not any(re.search(r'\d',c) for c in chinese)):
+            found|={(source,k) for k in numbered}
+    return found
 
 
 def author_kept(english, own_tw, zh_cn):
@@ -1690,6 +1718,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             mod_en.setdefault((m[1],r['key']),r['en'])
         if r['kind']=='language' and r['source'].startswith('mods/') and isinstance(r['current'],str):
             tw_lines[r['source']]+=1;tw_chinese[r['source']]+=bool(HAN.search(r['current']))
+    index_names=numbered_names(audit.rows)  # Wine Fox 2 is 「冰霜」酒狐: the number is not dropped
     ref_kinds=(result.get('references') or {}).get('sources') or ['tw','cn']
     vanilla=next((ref for n,ref in enumerate(refs) if n<len(ref_kinds) and ref_kinds[n]=='vanilla'),None)
     # Without any scanned mod jar there is nothing to compare against, so nothing is skipped.
@@ -1991,7 +2020,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             if not fits(original,text,own_lines):continue
             written_tw=(name in ('existing_zh_tw','instance_resourcepack','official_vanilla')
                         or (name=='reference_pack_or_cfpa' and source in ('reference:tw','reference:para')))
-            note='' if name in ('translation_memory','user_glossary') else number_doubt(english,text)
+            note='' if name in ('translation_memory','user_glossary') or (
+                name in ('same_source_zh_cn','instance_zh_cn','existing_zh_tw') and (r['source'],r['key']) in index_names) else number_doubt(english,text)
             ready.append((bool(note) and not written_tw,name,text,source,note,own_lines))
             if not ready[-1][0]:break
         own_lines=False
@@ -2744,7 +2774,8 @@ def pack_metadata(instance):
 
 
 LOOSE_TEXT_KINDS = ('config','snbt_display_array','script_candidate','binary_config_candidate')
-LOOSE_TEXT_ROOTS = ('config/','defaultconfigs/','kubejs/','scripts/','tacz/','tlm_custom_pack/')  # scripts/: CraftTweaker
+# scripts/: CraftTweaker; vaultpatcher/modules/: the words VaultPatcher puts in place of a class's own (pair values only).
+LOOSE_TEXT_ROOTS = ('config/','defaultconfigs/','kubejs/','scripts/','tacz/','tlm_custom_pack/','vaultpatcher/modules/')
 LOOSE_TEXT_SUFFIXES = ('.json','.snbt','.toml','.txt','.js','.zs','.cfg','.yaml','.yml','.properties','.data','.cache')
 BINARY_CONFIG_SUFFIXES = ('.data','.cache')
 NOT_THIS_LANGUAGE = {'lang','langs','i18n','locale','locales','.archive-unpack'}
@@ -2796,6 +2827,31 @@ def convertible(row):
             and (source.startswith(LOOSE_TEXT_ROOTS) or bool(row.get('unverified')))
             and source.endswith(LOOSE_TEXT_SUFFIXES) and not other_language_file(source)
             and isinstance(row.get('current'),str) and bool(HAN.search(row['current'])))
+
+
+def vaultpatcher_cache(instance, name, before, after, records=()):
+    """Records removing VaultPatcher's cached classes for the module entries whose words changed.
+
+    VaultPatcher 1.5.2 (core.cache.ClassCache.updated) reuses vaultpatcher/cache/<class>.class for as long as the mod's
+    own class is unchanged (debug_mode.use_cache, on by default), so a converted module would still show the old words.
+    Without the cache it patches the class from the module again at the next start and writes a new cache."""
+    try:old,new=parse(before),parse(after)
+    except ValueError:return []
+    if not isinstance(old,list) or not isinstance(new,list) or len(old)!=len(new):return []
+    classes=set()
+    for a,b in zip(old,new):
+        if a!=b and isinstance(b,dict):
+            target=b.get('target_class')
+            classes|={c for c in (target if isinstance(target,list) else [target]) if isinstance(c,str) and c.strip()}
+    taken={r['file'].casefold() for r in records};found=[]
+    for c in sorted(classes):
+        for suffix in ('.class','.class.sha256'):
+            rel='vaultpatcher/cache/'+c.strip().strip('/').replace('.','/')+suffix
+            try:path=contained(instance,rel)
+            except ValueError:continue
+            if path.is_file() and rel.casefold() not in taken:
+                taken.add(rel.casefold());found.append(dict(file=rel,before=file_hash(path),after=None,reviewed=True,verified=True))
+    return found
 
 
 def rewrite_literals(raw, name, rows):
@@ -3538,6 +3594,8 @@ def stage_and_apply(session, home, notify, work, stage_only=False, pack_base=Non
             if z:z.close()
         if merged:records=[dict(r,after=file_hash(dst)) if r['file']==path else r for r in records]
         else:records.append(dict(file=path,before=before,after=file_hash(dst),reviewed=True,verified=True))
+    for r in [r for r in records if VAULTPATCHER_MODULE.match(r['file']) and r.get('after')]:
+        records+=vaultpatcher_cache(instance,r['file'],contained(instance,r['file']).read_bytes(),(staged/r['file']).read_bytes(),records)
     if changed_classes:
         from .class_text import check_java
         notify(71,'檢查程式文字',f'用 Java 解析 {len(changed_classes):,} 個修改過的 class，確認格式完整')
