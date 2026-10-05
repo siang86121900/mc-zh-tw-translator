@@ -80,6 +80,10 @@ KEEP_ENGLISH_FORMATS = [
     # random.json is not read by its program at all.
     (re.compile(r'!/assets/musicnotification/(?:musics|random)\.json$'),
      '音樂通知顯示的是曲名、作者與專輯名稱，屬於作品名稱，比照 Minecraft 官方繁中的唱片名保留英文'),
+    # Ice and Fire 2.1.13 IceAndFireMainMenu: shown only with "Custom main menu" on (off by default), read from GitHub
+    # first and else from its own jar by getResourceAsStream, which no resource pack reaches.
+    (re.compile(r'!/assets/iceandfire/splashes\.txt$'),
+     '冰與火的主選單標語只在開啟「Custom main menu」時出現（預設關閉），而且先從網路讀英文版，讀不到才用模組檔裡那份，翻譯資源包蓋不過去'),
 ]
 
 
@@ -1479,7 +1483,10 @@ def present_mods(z, depth=0):
 # scan-20: data sentence keys retain their exact JSON position for independent coverage checks
 # scan-21: VillagerConfig trades and plain-string set_name / set_lore, REI custom group names, owo rich language listed
 # scan-22: Supplementaries flute song names are not listed as unsupported data (only a key and a file name)
-SCAN_CACHE_VERSION = 'scan-22'
+# scan-23: book pages the author wrote out only in Simplified Chinese follow the Chinese pages (cn_shape)
+# scan-24: owo rich language pieces are rows (rich); resource-read text files (RESOURCE_TEXTS); single-word data keys; Konkrete locals
+# scan-25: a Chinese book shape only for paragraphs the English has no place for; stand-in English kept for coverage
+SCAN_CACHE_VERSION = 'scan-25'
 
 
 def scan_cache(home, instance):
@@ -2089,7 +2096,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # Parameters, key names and similar strings stay as-is; they are neither gaps nor AI work.
             origin='keep_original';evidence=reason;issue=''
             if r['en'] is None and r['current'] is None:issue='無需翻譯：'+evidence  # no en_us fallback in game
-        supported=r['kind']=='language' or bool(re.search(r'/(?:en_us|zh_tw)(?:_0)?/',r['source'])) or bool(book_title(r))
+        supported=(r['kind']=='language' or bool(re.search(r'/(?:en_us|zh_tw)(?:_0)?/',r['source'])) or bool(book_title(r))
+                   or bool(r.get('resource_text')))  # read through the resource manager whatever the language (RESOURCE_TEXTS)
         if r['kind']=='inline_lang':
             supported=reads_inline_zh_tw(r['source'])
             if not supported:issue=INLINE_UNVERIFIED  # written only where the mod is known to read zh_tw
@@ -2477,7 +2485,7 @@ def check_shown(instance, rows):
             if raw is None:data=None
             elif name.endswith('.snbt'):data=quest_file(raw)
             elif name.endswith('.json'):data=parse(raw)
-            elif name.endswith('.lang'):data=lang_table(raw.decode('utf-8-sig'),name)
+            elif name.endswith(('.lang','.local')):data=lang_table(raw.decode('utf-8-sig'),name)
             else:data=raw.decode('utf-8-sig')
         except (ValueError,UnicodeError):data=None
         files[where]=data;return data
@@ -2555,6 +2563,8 @@ def check_shown(instance, rows):
         elif r.get('kind')=='book':text=data if r['key']=='text' else at(data,json.loads(r['key']))
         elif r.get('kind')=='inline_lang':
             node=node_at(data,json.loads(r['key']));text=node.get(inline_field(r['source'],node)) if isinstance(node,dict) else None
+        elif r.get('rich'):
+            key,*part=json.loads(r['key']);text=at(data.get(key),part) if isinstance(data.get(key),(dict,list)) else None
         else:text=data.get(r['key'])
         r['shown']=text==r['proposed'];r.pop('shown_other',None)
         if where is None:missing+=not r['shown']
@@ -2661,7 +2671,7 @@ def target_for(row):
     # Loose config files are recorded by their path alone (config/x.json), without an archive part.
     outer,path=row['source'].split('!/',1) if '!/' in row['source'] else ('instance',row['source'])
     if row.get('kind','language')=='language':  # reports from early versions had language rows only
-        path=re.sub(r'/(?:en_us|zh_cn|zh_tw)\.(json|lang|snbt)$',r'/zh_tw.\1',path,flags=re.I)
+        path=re.sub(r'/(?:en_us|zh_cn|zh_tw)\.(json|lang|snbt|local)$',r'/zh_tw.\1',path,flags=re.I)
     else:
         path=re.sub(r'/en_us(_0)?/',r'/zh_tw\1/',path,flags=re.I)  # _0: Ice and Fire's bestiary (lang/bestiary/en_us_0/)
     if outer=='instance':return path,None
@@ -3228,7 +3238,29 @@ def build_pack(instance, staged, pack_rows, session, notify, pack_base=None):
         if previous:
             before=parse(previous) if resource.endswith('.json') else dict(l.split('=',1) for l in previous.decode('utf-8-sig').splitlines() if '=' in l)
             data=before if first['kind'] in ('book','inline_lang') else {**data,**before}
+        if first['kind']=='book' and first.get('cn_shape'):
+            # A page the author wrote out only in Simplified Chinese (Audit cn_shape): built on the Chinese page, every
+            # paragraph from this run's decision, so an earlier copy shaped like the short English page is replaced.
+            inner=first['source'].split('!/',1)[1]
+            data=parse(read_archive_entry(instance,outer,re.sub(r'/en_us/','/zh_cn/',inner,count=1)))
+            # Paragraphs already in Chinese in the pack copy and unchanged this run are not in the session (counted as
+            # already Chinese): they keep that copy's words, so no Simplified paragraph of the base is left behind.
+            def overlay(node,old):
+                for k,v in (node.items() if isinstance(node,dict) else enumerate(node) if isinstance(node,list) else ()):
+                    try:prior=old[k]
+                    except (KeyError,IndexError,TypeError):continue
+                    if isinstance(v,str) and isinstance(prior,str) and HAN.search(prior):node[k]=prior
+                    else:overlay(v,prior)
+            if previous:overlay(data,parse(previous))
+            rows=[r for r in session['rows'] if r['source']==first['source'] and r['kind']=='book']
         for r in rows:
+            if r['kind']=='language' and r.get('rich'):
+                # owo-lib rich value: the English component with this piece's words replaced (colours kept).
+                key,*path=json.loads(r['key'])
+                if not isinstance(data.get(key),(dict,list)):data[key]=copy.deepcopy(r['rich_en'])
+                node=data[key]
+                for part in path[:-1]:node=node[part]
+                node[path[-1]]=r['proposed'];continue
             if r['kind']=='language':data[r['key']]=r['proposed'];continue
             if r['kind']=='inline_lang':
                 node=node_at(data,json.loads(r['key']));node[inline_field(r['source'],node)]=r['proposed'];continue  # beside en_us
@@ -3571,7 +3603,15 @@ def stage_and_apply(session, home, notify, work, stage_only=False, pack_base=Non
                         sourcepath=rows[0]['source'].split('!/',1)[1]
                         data=parse(z.read(sourcepath) if z else contained(instance,sourcepath).read_bytes())
                     for r in rows:
-                        if r['kind']=='language':
+                        if r['kind']=='language' and r.get('rich'):
+                            key,*part=json.loads(r['key']);held=(on_disk if merged else data).get(key)
+                            if (at(held,part) if isinstance(held,(dict,list)) else None)!=r['current']:
+                                raise changed_since_scan(home,instance,path+' / '+key)
+                            if not isinstance(data.get(key),(dict,list)):data[key]=copy.deepcopy(r['rich_en'])
+                            node=data[key]
+                            for step in part[:-1]:node=node[step]
+                            node[part[-1]]=r['proposed']
+                        elif r['kind']=='language':
                             # Compare with the file as it is on disk, not with library text merged in above.
                             on_file=(on_disk if merged else data).get(r['key'])
                             # A quest file this batch created earlier holds the English wherever no Chinese was

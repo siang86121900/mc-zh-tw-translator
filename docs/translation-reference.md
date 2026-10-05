@@ -90,6 +90,16 @@
 
 - 不是玩家文字（Elemental Awakening 2026-10-05，使用者要求「不該有誤報」）：冰與火圖鑑其他語言的頁面（`lang/bestiary/ja_jp_0/`，語言資料夾多了 `_0`；`text_inventory.LOCALE` 與 `locale_source` 都認得，繁中與簡中頁面也對到圖鑑條目），設定檔（config／defaultconfigs 的 toml、yml、cfg）的英文區段名與設定值（`names.cfg` 這類名稱清單除外），法術、翻滾動作檔的說明（spell_animations、rolling_animations），碰撞箱（hitboxes），FancyMenu 編輯器的曲目與主題，`kubejs.plugins.txt`、反編譯工具的參數表、打包進模組的函式庫（`repack/`），Supplementaries 沒用到的歌曲，Neruina 的錯誤回報範本，Create 思索場景的建築檔，槍械包自己的名稱，Citadel 的贊助者名單，UUID、Java 類別名、base64 資料（FTB 任務裡玩家頭顱的皮膚）、帶顏色碼的指令（`&b/ftbteams party create`），建築告示牌上只有一兩個字母的裝飾，Konkrete 等其他語言的介面檔（`foreign_file`），存檔裡的隊伍名稱，以及腳本裡提到欄位名的程式碼行。另外查過模組程式確認不會顯示的：Monster Expansion 0.7.6 的 `monster_ref` 名稱（`MonsterRefManager.parseRef` 不讀 `name`，指南顯示由 `entity_id` 組出的語系鍵），Supplementaries 3.1.43 的笛子曲名（`Song.getTranslationKey` 只當鍵與錄音檔名），沒有任何模組讀的 Citadel `backup_text.txt`，Legendary Monsters 2.1.22 沒被引用的整份 `space_station.nbt`（太空站由 `space_station_main` 與 `part1-9` 組成），包在載入器裡的 MixinExtras 程式庫，`sounds.json`；KubeJS 啟動腳本裡同一行有註冊代碼、而語系檔已有 `block.kubejs.<代碼>` 的顯示名稱（遊戲顯示語系檔的名字）；樣板字串裡只有 `${}` 與數值、沒有文字的片段。模組自帶就壞掉的檔案（Dungeon Now Loading 2.2 的 4 個建築檔解壓縮失敗、Integrated Villages 的 6 個戰利品表 JSON 格式錯誤）改以灰字說明，不列紅字。仍會列出的（是玩家文字、尚未支援）：標題畫面隨機標語、Alex's Caves 的 `texts/end.txt`、只有簡中的 Patchouli 書頁、戰利品裡寫死的名字、Konkrete 的英文介面 `en_us.local`。
 
+- 2026-10-05 起支援的格式（使用者要求 Elemental Awakening 剩下的 13 個檔案都要翻成繁體）：
+  - 只有簡中寫完整、英文只是短短一段的書頁（Jerotes Village 二輪世界探索指南：簡中 9 段、英文 1 段且內容不同；黑金聯盟的一頁）：繁中版改照簡中的頁面結構產生，每段都轉繁，英文不拿來比對（Audit cn_shape）。先前以英文為底只寫出 1 段。
+  - 透過資源系統讀、不分語言的文字檔（`full_translation_audit.RESOURCE_TEXTS`）：Fancy Toasts 1.4.6 的 `splashes.txt`（SplashManager.readSplashes 用 ResourceManager.getResource，`{user.name}` 會換成玩家名稱）、Mutant More 的 `texts/mutantmore_splashes.txt`（SplashManagerMixin 用 ResourceManager.openAsReader 讀）、模組放的 `assets/minecraft/texts/end.txt`（擊敗終界龍後的片尾文字，WinScreen 讀 minecraft:texts/end.txt；Alex's Caves 有自己的版本）。翻譯資源包放同路徑的一份就會蓋過。
+  - 冰與火 2.1.13 的 `splashes.txt` 保留英文並以灰字說明：IceAndFireMainMenu 只在 `"Custom main menu"` 開啟時顯示（Elemental Awakening 關閉），而且先從 GitHub 讀，讀不到才用 getResourceAsStream 讀模組檔，資源包蓋不過。
+  - Konkrete 1.8.0 的 `config/konkrete/locals/<語言>.local`：Locals.localize 先用遊戲目前的語言，沒有才用 en_us，所以在旁邊新增 `zh_tw.local`（`key=value`，讀取時會去掉等號兩邊的空白）。
+  - owo-lib 的帶格式語系值（`{"text": …, "color": "gray"}`）：每段文字一筆，鍵記成 `[語系鍵, 路徑]`，zh_tw 寫回同樣的元件、只換文字，顏色保留（OwoTranslationMixin 在任何語言檔都讀這種值）。
+  - 資料檔裡拿一個大寫開頭的英文單字當語系鍵（ATi Structures 1.4.6 戰利品：`{"translate": "RedBull"}`、`Chlorophyll`、`Indestructible `）：沒有語系檔定義時遊戲顯示鍵本身，和句子當鍵一樣補成語系條目。小寫單字可能是真的鍵，不補。
+  - Immersive Paintings 0.6.13 的畫名（`data/immersive_paintings/paintings/*.json` 的 `name`）：選畫畫面用 Component.literal 顯示；PaintingsLoader 先列出 png、再從最上層讀同名 json，所以翻譯資料包的 json 改畫名、圖仍用模組的。`author` 是人名，保留。
+  - Torches Becomes Sunlight 0.4.9 的 `data/torchesbecomesunlight/dialogue/` 不再列為漏翻：`title`、`description` 只在 Dialogue.serializeNBT 存讀，不顯示；台詞是語系鍵（`dialogue.frostnova_fight.main1`），照一般語系檔翻。
+
 ## 硬編碼文字（修改 class 前必讀）
 
 2026-10-03 本機 v0.32.0 的獨立文字涵蓋檢查（尚未發布）：COBBLEVERSE 中的 `assets/better_pokedex_scanner/variant_labels/cobblemon.json` 有 `headerLabel`、`aspectLabels` 與 `aspectDisplays.parts[].text` 等變體標籤，現有翻譯讀取器沒有涵蓋，先列為未支援候選。分段顏色與拼接文字需要按整組處理；尚未建立寫入支援，不能宣稱新增診斷就已翻好。仍須追查模組讀取與顯示位置後才能加入讀取器。

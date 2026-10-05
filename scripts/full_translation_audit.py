@@ -10,13 +10,17 @@ from mc_zh_tw_translator import quest_lang
 
 HAN=re.compile('[\u3400-\u9fff]'); LATIN=re.compile('[A-Za-z]{3,}')
 # FTB Quests keeps quest text in config/ftbquests/quests/lang/<locale>.snbt (see quest_lang).
-LANG=re.compile(r'^(.*?/lang/)(en_us|zh_tw|zh_cn)\.(json|lang)$|^(.*?/ftbquests/quests/lang/)(en_us|zh_tw|zh_cn)\.(snbt)$',re.I)
+# Konkrete 1.8.0 (FancyMenu's library) reads config/konkrete/locals/<language>.local, the game's language first and
+# en_us when that file is missing (Locals.localize), so a zh_tw.local beside the English is shown.
+LANG=re.compile(r'^(.*?/lang/)(en_us|zh_tw|zh_cn)\.(json|lang)$|^(.*?/ftbquests/quests/lang/)(en_us|zh_tw|zh_cn)\.(snbt)$'
+                r'|^(.*?/konkrete/locals/)(en_us|zh_tw|zh_cn)\.(local)$',re.I)
 
 def lang_table(text,name=''):
     """{key: text} of a .lang file. A shader pack's (shaders/lang/en_US.lang) is a Java properties file that Iris and
     Oculus load with Properties.load: spaces around the = and indented or "!" comments are allowed there
     (Photon: "profile.low                            = §e低")."""
-    shader=bool(SHADER_LANG.search(name.replace('\\','/')));out={}
+    # Konkrete's .local files write "key = value" and its reader drops the spaces around the "=" too.
+    shader=bool(SHADER_LANG.search(name.replace('\\','/'))) or name.lower().endswith('.local');out={}
     for line in text.splitlines():
         s=line.lstrip() if shader else line
         if '=' not in s or s.startswith('#') or (shader and s.startswith('!')):continue
@@ -27,10 +31,18 @@ def lang_table(text,name=''):
 
 def lang_parts(m):
     """(folder, language, extension) of a LANG match, whichever of its two forms matched."""
-    return (m[1],m[2],m[3]) if m[1] is not None else (m[4],m[5],m[6])
+    return (m[1],m[2],m[3]) if m[1] is not None else (m[4],m[5],m[6]) if m[4] is not None else (m[7],m[8],m[9])
 # codex/: Saint's Dragons' Draconic Codex pages (assets/saintsdragons/codex/<language>/ecology/*.txt), read in the game's
 # language with en_us as the fallback (CodexEcologyPanel asks LanguageManager.getSelected).
 BOOK=re.compile(r'/(?:patchouli_books|books?|guidebook|codex)/',re.I)
+# One-language text files read through the resource manager, so a resource pack's copy replaces them (checked in each
+# mod's program, Elemental Awakening 2026-10-05). Ice and Fire's splashes.txt is not one: IceAndFireMainMenu reads it from
+# GitHub, else from its own jar by getResourceAsStream, which no resource pack reaches (KEEP_ENGLISH_FORMATS).
+RESOURCE_TEXTS={
+    'assets/fancytoasts/splashes.txt',               # Fancy Toasts 1.4.6 SplashManager.readSplashes: ResourceManager.getResource
+    'assets/mutantmore/texts/mutantmore_splashes.txt',  # Mutant More SplashManagerMixin: ResourceManager.openAsReader
+    'assets/minecraft/texts/end.txt',                # the win screen's poem (WinScreen reads minecraft:texts/end.txt); Alex's Caves ships its own
+}
 INLINE_ASSETS=re.compile(r'(?:^|/)assets/(?:chronodawn/chronicle|foxablazeaqzl_wiki/wiki)/.+\.json$')
 BESTIARY=re.compile(r'(?:^|/)assets/[^/]+/lang/bestiary/en_us_0/[^/]+\.txt$')
 DISPLAY={'name','Name','text','title','subtitle','description','landing_text','header','customTooltips','displayName','tooltip','label','message','lore','Lore'}
@@ -372,7 +384,11 @@ DATA_TEXT_FORMATS=[(re.compile(r'(?:^|/)data/[a-z0-9_.\-]+/whisperingquests/(?:t
                     {'title','short_description','description','text','pool_name','display_name'}),
                    (re.compile(r'(?:^|/)data/stextras/st_quests/.+\.json$'),{'name'}),
                    (re.compile(r'(?:^|/)data/monsterexpansion/quest_data/.+\.json$'),{'name','objective','description','display_name'}),
-                   (re.compile(r'(?:^|/)data/monsterexpansion/monsterology/.+\.json$'),{'title','type','lore','fighting_tips'})]
+                   (re.compile(r'(?:^|/)data/monsterexpansion/monsterology/.+\.json$'),{'title','type','lore','fighting_tips'}),
+                   # Immersive Paintings 0.6.13: the picker shows Component.literal(painting.name) (ImmersivePaintingScreen);
+                   # PaintingsLoader lists the .png files and reads the .json of the same name from the top pack, so our
+                   # data pack's copy names a painting the mod's own image still draws. "author" is a person's name, kept.
+                   (re.compile(r'(?:^|/)data/immersive_paintings/paintings/.+\.json$'),{'name'})]
 # Data files whose English sentences the mod hands to Component.translatable as the language key, so an entry keyed by
 # the sentence in the translation resource pack shows the translation (Audit.data_keys):
 # - Pixelmon 9.4.1 NPC presets: open_dialogue "title" and "message", open_paged_dialogue "pages"
@@ -563,6 +579,13 @@ def data_key_refs(text):
         yield unquote(key),unquote(fallback)
 
 
+def has_path(data, path):
+    """Whether parsed JSON has anything at `path`."""
+    for part in path:
+        try:data=data[part]
+        except (KeyError,IndexError,TypeError):return False
+    return True
+
 def sentence_key(key):
     """Whether a language key is itself the English the game shows when no file has it ("I LOVE URANIUM")."""
     return bool(' ' in key.strip() and re.search(r'[A-Za-z]{2}',key) and not re.fullmatch(r'[a-z0-9_.:\-/ ]+\.[a-z0-9_]+',key))
@@ -748,9 +771,22 @@ class Audit:
                 rich=[(k,[v for _,f,v in leaves(en[k]) if f=='text' and LATIN.search(v)]) for k in sorted(en)
                       if isinstance(en[k],(dict,list)) and not isinstance(tw.get(k),(str,dict,list))]
                 rich=[(k,words) for k,words in rich if words]
-                if rich:
-                    self.add(source,'rich_language',None,f'{len(rich)} 句語系文字是帶格式的 JSON 元件，尚未支援翻譯，'
-                             f'例如 {rich[0][0]}：{" ".join(rich[0][1])[:200]}',kind='unsupported_config_text')
+                # Each worded piece of a rich value is a row of its own, keyed [language key, path in the value]; the
+                # zh_tw file gets the English component with only those words replaced, so colours stay (owo-lib reads
+                # rich values in any language file, OwoTranslationMixin). A zh_tw that is rich already is the current text.
+                for k,_ in rich:
+                    for path,field,value in leaves(en[k]):
+                        if field=='text' and LATIN.search(value):
+                            mine=tw.get(k) if isinstance(tw.get(k),(dict,list)) else None
+                            self.add(source,json.dumps([k,*path]),value,at(mine,path) if mine is not None else None,
+                                     at(cn.get(k),path) if isinstance(cn.get(k),(dict,list)) else None)
+                            self.rows[-1].update(rich=True,rich_en=en[k])
+                    self.counts['rich_language_values']+=1
+                # The translation resource pack's own zh_tw (no English beside it): its rich pieces are what the game
+                # shows, read on a rerun as the current text of the rows above.
+                for k,v in tw.items() if not en else ():
+                    for path,field,value in leaves(v) if isinstance(v,(dict,list)) else ():
+                        if field=='text' and value.strip():self.add(source,json.dumps([k,*path]),None,value)
             except Exception as e:self.errors.append([label,langs,str(e)])
         for row in self.rows[first:] if font else ():
             if row['kind']=='language':row['no_chinese_font']=label+'!/'+font
@@ -764,6 +800,18 @@ class Audit:
                 raw=read(n);tw,cn=n.replace('/en_us_0/','/zh_tw_0/'),n.replace('/en_us_0/','/zh_cn_0/')
                 if not decode(raw).strip():continue
                 self.add(label+'!/'+n,'text',decode(raw),decode(read(tw)) if tw in names else None,decode(read(cn)) if cn in names else None,'book')
+            except Exception as e:self.errors.append([label,n,str(e)])
+        for n in sorted(names):
+            # Text files a mod reads through the resource manager whatever the language (RESOURCE_TEXTS): the
+            # translation resource pack's copy at the same path is the one the game reads. In that pack the file is the
+            # Chinese the game shows (read on a rerun as the current text).
+            if n not in RESOURCE_TEXTS:continue
+            try:
+                text=decode(read(n))
+                if not text.strip():continue
+                own=label.endswith('MCTranslator-zh_tw.zip')
+                self.add(label+'!/'+n,'text',None if own else text,text if own else None,None,'book')
+                self.rows[-1]['resource_text']=True
             except Exception as e:self.errors.append([label,n,str(e)])
         for n in names:
             if not BOOK.search('/'+n) or not n.endswith(('.json','.txt')):continue
@@ -783,6 +831,22 @@ class Audit:
                 if n.endswith('.txt'):
                     self.add(label+'!/'+n,'text',decode(raw),decode(twraw) if twraw else None,decode(cnraw) if cnraw else None,'book');continue
                 en=parse(raw);tw=parse(twraw) if twraw else {};cn=parse(cnraw) if cnraw else {}
+                text=lambda data:{tuple(p) for p,f,v in leaves(data) if f not in PATCHOULI_SKIP_FIELDS and not NOT_TEXT_FIELD.search(str(f))
+                                  and (f in DISPLAY or HAN.search(v) or (LATIN.search(v) and ' ' in v))}
+                shown=text(cn) if cn and not twraw else set()
+                # Only paragraphs the English has no place for at all (pages 2-9 of a 1-page stand-in) make the Chinese
+                # the shape: a field the English holds with something else, such as an id the Chinese copy wrote in
+                # Chinese (Ice and Fire's Tinkers book: "modifier": "frost" / "霜冻"), keeps the English file's shape.
+                missing={p for p in shown if not has_path(en,p)}
+                if missing:
+                    # The author wrote the page out in Simplified Chinese only and left a shorter English stand-in
+                    # (Jerotes Village's Second Round World guide: 9 pages in zh_cn, 1 unrelated page in en_us). The
+                    # Traditional copy follows the Chinese pages; the English does not match them, so it is not compared.
+                    for path,field,value in leaves(cn):
+                        if tuple(path) in shown:
+                            self.add(label+'!/'+n,json.dumps(path),None,None,value,'book')
+                            self.rows[-1].update(cn_shape=True,stand_in=sorted({v for _,_,v in leaves(en)}))
+                    self.counts['books_longer_in_chinese']+=1;continue
                 for path,field,value in leaves(en):
                     if field in PATCHOULI_SKIP_FIELDS or NOT_TEXT_FIELD.search(str(field)):continue
                     if field in DISPLAY or HAN.search(value) or (LATIN.search(value) and ' ' in value):
@@ -848,7 +912,10 @@ class Audit:
                             key_from_data_path=json.dumps(path),key_sentence=True)])
             for key,fallback in data_key_refs(text):
                 if not isinstance(key,str) or not key.strip() or not re.search('[A-Za-z]',key) or '\n' in key:continue
-                en=fallback if isinstance(fallback,str) and fallback.strip() else key if sentence_key(key) else None
+                # A capitalised word used as the key is the name shown too (ATi Structures 1.4.6 loot: {"translate":
+                # "RedBull"}, "Chlorophyll", "Indestructible "); a lower-case word could be a real key and is not.
+                word=bool(re.fullmatch(r"\s*[A-Z][A-Za-z'\-]{2,}\s*",key))
+                en=fallback if isinstance(fallback,str) and fallback.strip() else key if sentence_key(key) or word else None
                 if en is None:continue
                 self.extra_keys.append([source_of(m[1]),key,en,None,dict(key_from_data=where)])
     def unsupported_data(self,label,names,read):
@@ -864,7 +931,10 @@ class Audit:
                     or m[2] in ('lang','patchouli_books','tags','recipe','recipes','worldgen')
                     # Supplementaries 3.1.43: a flute song's "name" is only its key and recording file name
                     # (Song.getTranslationKey, used by SongsManager as a map key and in new File(...)), never shown.
-                    or n.startswith('data/supplementaries/flute_songs/')):continue
+                    or n.startswith('data/supplementaries/flute_songs/')
+                    # Torches Becomes Sunlight 0.4.9: a dialogue's "title" and "description" are only saved and loaded
+                    # (Dialogue.serializeNBT); its lines are language keys (dialogue.frostnova_fight.main1).
+                    or n.startswith('data/torchesbecomesunlight/dialogue/')):continue
             try:
                 raw=read(n)
                 for _,field,value in leaves(parse(raw)):

@@ -360,6 +360,44 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(sum(bool(r.get('shown_other')) for r in rows),1)
         self.assertFalse(jobs.coverage(done).get('unconfirmed'))
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_a_page_written_out_only_in_simplified_chinese_keeps_all_its_paragraphs(self,_):
+        # Jerotes Village's Second Round World guide: zh_cn has 9 paragraphs, en_us a single unrelated one. The
+        # Traditional copy was shaped like the English and dropped 8 paragraphs (Elemental Awakening 2026-10-05).
+        import zipfile
+        (self.instance/'mods').mkdir()
+        (self.instance/'options.txt').write_text('lang:zh_tw\n',encoding='utf-8')
+        page='assets/jv/patchouli_books/guide/{}/entries/cold.json'
+        # First translated while both copies had one page (an earlier version wrote the pack shaped like the English):
+        # paragraphs already Chinese there and unchanged are not in the next run's rows, and must not fall back to Simplified.
+        with zipfile.ZipFile(self.instance/'mods/jv.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="jv"\n')
+            z.writestr(page.format('en_us'),json.dumps({'name':'Bitter Cold','pages':[{'type':'patchouli:text','text':'Take a deep breath first.'}]}))
+            z.writestr(page.format('zh_cn'),json.dumps({'name':'苦寒之地','pages':[{'type':'patchouli:text','text':'作为最寒冷的群系'}]},ensure_ascii=False))
+        apply_session(self.confirm_all(self.make_plan()),self.home,lambda *_:None)
+        with zipfile.ZipFile(self.instance/'mods/jv.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="jv"\n')
+            z.writestr(page.format('en_us'),json.dumps({'name':'Bitter Cold','pages':[{'type':'patchouli:text','text':'Take a deep breath first.'}]}))
+            z.writestr(page.format('zh_cn'),json.dumps({'name':'苦寒之地','pages':[{'type':'patchouli:text','text':'作为最寒冷的群系'},
+                {'type':'patchouli:text','text':'漫兽并不分布于这里'},{'type':'patchouli:spotlight','title':'苦寒摇铃','text':'用来驱逐雪怪'}]},ensure_ascii=False))
+        done=apply_session(self.confirm_all(self.make_plan()),self.home,lambda *_:None)
+        self.assertEqual(done['shown_mismatch'],0)
+        with zipfile.ZipFile(self.instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:
+            tw=json.loads(z.read(page.format('zh_tw')))
+        self.assertEqual(tw['name'],'苦寒之地')
+        self.assertEqual([p.get('text') for p in tw['pages']],['作為最寒冷的生態域','漫獸並不分佈於這裡','用來驅逐雪怪'])
+        self.assertEqual((tw['pages'][2]['type'],tw['pages'][2]['title']),('patchouli:spotlight','苦寒搖鈴'))
+        again=self.make_plan()
+        self.assertFalse([r for r in again['rows'] if 'patchouli' in r['source'] and r.get('changed') and not r.get('installed')])
+        # Ice and Fire's Tinkers book: the Chinese copy wrote the id field in Chinese ("modifier": "霜冻"). The English has a
+        # place for it, so the English shape stays and the id is never replaced.
+        tinkers='assets/jv/book/{}/modifiers/frost.json'
+        with zipfile.ZipFile(self.instance/'mods/jv.jar','a') as z:
+            z.writestr(tinkers.format('en_us'),json.dumps({'modifier':'frost','text':[{'text':'A coating of ice blood'}],'effects':['Freezes enemies']}))
+            z.writestr(tinkers.format('zh_cn'),json.dumps({'modifier':'霜冻','text':[{'text':'涂满冰龙血'}],'effects':['冻结敌人']},ensure_ascii=False))
+        rows=[r for r in self.make_plan()['rows'] if r['source'].endswith('modifiers/frost.json')]
+        self.assertTrue(rows);self.assertFalse([r for r in rows if r.get('cn_shape') or r['key']=='["modifier"]'])
+
     def test_chinese_written_in_the_english_file_is_converted_at_once(self):
         lang=self.instance/'config/ftbquests/quests/lang';lang.mkdir(parents=True)
         (lang/'en_us.snbt').write_text('{\n\tquest.A.title: "食人魔萨满"\n}\n',encoding='utf-8')

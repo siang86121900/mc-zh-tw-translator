@@ -104,15 +104,61 @@ class MissedFormatTests(unittest.TestCase):
         self.assertEqual(kept['origin'], 'keep_original'); self.assertIn('Better Pokédex Scanner', kept['issue'])
         self.assertEqual(rows['assets/other_mod/labels/']['origin'], 'untranslated')  # unknown formats stay red
 
-    def test_rich_language_values_are_listed_not_dropped(self):
-        # owo-lib: a value may be a text component; such rows used to vanish without a red line in the report.
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_rich_language_values_are_translated_with_their_colours(self, _):
+        # owo-lib: a value may be a text component; such rows used to vanish, then were only listed. Each worded piece is
+        # now a row, and the zh_tw file holds the English component with those words replaced (owner 2026-10-05).
         self.jar('owo.jar', {'fabric.mod.json': {'schemaVersion': 1, 'id': 'owo'},
                              'assets/owo/lang/en_us.json': {'text.owo.select_hint': {'text': 'Shift-click to select multiple', 'color': 'gray'},
                                                             'text.owo.save': 'Save'}})
-        rows = self.make_plan()['rows']
-        listed = [r for r in rows if r['kind'] == 'unsupported_config_text' and r['key'] == 'rich_language']
-        self.assertEqual(len(listed), 1); self.assertIn('Shift-click to select multiple', listed[0]['current'])
+        result = self.make_plan(); rows = result['rows']
+        self.assertFalse([r for r in rows if r['kind'] == 'unsupported_config_text' and 'owo' in r['source']])
+        piece = next(r for r in rows if r.get('rich'))
+        self.assertEqual((json.loads(piece['key']), piece['en']), (['text.owo.select_hint', 'text'], 'Shift-click to select multiple'))
         self.assertTrue(any(r['key'] == 'text.owo.save' and r['kind'] == 'language' for r in rows))  # plain values as before
+        piece.update(proposed='按住 Shift 點擊可多選', origin='ai_translation', changed=True, reviewed=True)
+        done = apply_session(result, self.home, lambda *_: None)
+        with zipfile.ZipFile(self.instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:
+            tw = json.loads(z.read('assets/owo/lang/zh_tw.json'))
+        self.assertEqual(tw['text.owo.select_hint'], {'text': '按住 Shift 點擊可多選', 'color': 'gray'})
+        self.assertEqual(done['shown_mismatch'], 0)
+        again = next(r for r in self.make_plan()['rows'] if r.get('rich'))
+        self.assertEqual(again['current'], '按住 Shift 點擊可多選')  # the pack's copy is read back: nothing to write again
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_elemental_awakening_formats_are_translated_where_the_game_reads_them(self, _):
+        # Owner 2026-10-05: the 13 listed files must be Chinese too. Each place was checked in the mod's program.
+        self.jar('toasts.jar', {'META-INF/mods.toml': 'modLoader="javafml"\n[[mods]]\nmodId="fancytoasts"\n',
+                                'assets/fancytoasts/splashes.txt': 'You are a sweetheart!\nHello {user.name}!\n'})
+        self.jar('iaf.jar', {'META-INF/mods.toml': 'modLoader="javafml"\n[[mods]]\nmodId="iceandfire"\n',
+                             'assets/iceandfire/splashes.txt': 'Here be dragons\nMind the fire breath\n'})
+        self.jar('ati.jar', {'META-INF/mods.toml': 'modLoader="javafml"\n[[mods]]\nmodId="ati_structures"\n',
+                             'assets/ati_structures/lang/en_us.json': {'block.ati_structures.a': 'A'},
+                             'data/ati_structures/loot_tables/chests/archer.json': {'pools': [{'entries': [{'type': 'minecraft:item', 'name': 'minecraft:potion',
+                                 'functions': [{'function': 'minecraft:set_name', 'name': {'translate': 'RedBull', 'color': '#059e70'}}]}]}]}})
+        locals_ = self.instance/'config/konkrete/locals'; locals_.mkdir(parents=True)
+        (locals_/'en_us.local').write_text('popup.choosefile.title = Choose File\ngeneral.width = Width\n', encoding='utf-8')
+        (locals_/'de_de.local').write_text('popup.choosefile.title = Datei wählen\n', encoding='utf-8')
+        result = self.make_plan(); rows = result['rows']
+        red = [r['source'] for r in rows if r['kind'] == 'unsupported_config_text' and r['origin'] != 'keep_original']
+        self.assertFalse([s for s in red if 'fancytoasts' in s or 'konkrete' in s or 'ati' in s], red)
+        kept = [r for r in rows if r['kind'] == 'unsupported_config_text' and 'iceandfire/splashes' in r['source']]
+        self.assertTrue(kept and all(r['origin'] == 'keep_original' and 'Custom main menu' in r['issue'] for r in kept))
+        splash = next(r for r in rows if r['source'].endswith('fancytoasts/splashes.txt') and r['kind'] == 'book')
+        self.assertTrue(splash['supported'])
+        self.assertTrue(any(r['key'] == 'RedBull' and r['kind'] == 'language' for r in rows))
+        self.translate(result, {'You are a sweetheart!\nHello {user.name}!\n': '你是個小甜心！\n哈囉，{user.name}！\n',
+                                'Choose File': '選擇檔案', 'Width': '寬度', 'RedBull': '紅牛'})
+        done = apply_session(result, self.home, lambda *_: None)
+        self.assertEqual(done['shown_mismatch'], 0)
+        pack = self.pack()
+        self.assertEqual(pack['assets/fancytoasts/splashes.txt'].decode('utf-8'), '你是個小甜心！\n哈囉，{user.name}！\n')
+        self.assertEqual(json.loads(pack['assets/ati_structures/lang/zh_tw.json'])['RedBull'], '紅牛')
+        self.assertEqual(sorted((locals_/'zh_tw.local').read_text(encoding='utf-8').splitlines()),
+                         ['general.width=寬度', 'popup.choosefile.title=選擇檔案'])
+        self.assertEqual(self.written_nothing(), [])
+        restore_backup(Path(done['backup']), self.instance)
+        self.assertFalse((locals_/'zh_tw.local').exists())
 
     def test_fancymenu_units_are_shown_words_only(self):
         units = dict(embedded_text.units('config/fancymenu/customization/menu.txt', self.LAYOUT.encode()))

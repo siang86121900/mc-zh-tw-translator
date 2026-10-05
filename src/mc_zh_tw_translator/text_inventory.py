@@ -19,7 +19,7 @@ import zlib
 from pathlib import Path, PurePosixPath
 
 FORMAT = 'text-inventory-2'
-RULES_VERSION = '2026-10-05.6'
+RULES_VERSION = '2026-10-05.8'
 HAN = re.compile('[㐀-鿿]')
 WORDS = re.compile(r'[A-Za-z]{2,}')
 # Ice and Fire names its bestiary folders ja_jp_0/, es_es_0/ (BestiaryScreen reads lang/bestiary/<language>_0/).
@@ -76,7 +76,7 @@ NOT_PLAYER = re.compile(r'(?i)(?:^|/)(?:META-INF/|license|licence|notice|readme|
                         r'(?:^|/)gunpack(?:\.meta|_info)[^/]*\.json$|/assets/citadel/(?:patreon|backup_text)\.txt$|'
                         # Monster Expansion 0.7.6 MonsterRefManager.parseRef never reads "name": the guide shows
                         # Component.translatable built from entity_id.
-                        r'/data/monsterexpansion/monster_ref/|'
+                        r'/data/monsterexpansion/monster_ref/|/data/torchesbecomesunlight/dialogue/|'
                         # A sound list (sounds.json names sound files; its subtitles are language keys).
                         r'(?:^|/)sounds\.json$|'
                         # Legendary Monsters 2.1.22 builds its space station from space_station_main and _part1-9 (template
@@ -439,6 +439,7 @@ def coverage_index(rows):
                 if isinstance(value,(dict,list)):
                     texts.extend(v for _,f,v in leaves(value) if f in ('text','fallback'))
         key = row['key']; kind = row.get('kind', 'language')
+        if kind=='language' and row.get('rich'):key=json.loads(key)[0]  # an owo rich piece: [language key, path]
         if kind=='language':language_keys[key].update(texts+[key])
         for text in texts:
             exact[(source, key)].add(text)
@@ -467,6 +468,9 @@ def coverage_index(rows):
                         for child, _, value in leaves(parsed): exact[(source, json.dumps(path + child))].add(value)
             except (ValueError, TypeError): pass
         if key == 'text': values[source].extend(texts)  # a whole plain-text book page
+        # A page the author wrote out only in Simplified Chinese stands in for its shorter English (Audit cn_shape):
+        # the English stand-in's words are what that Chinese replaces in game.
+        values[source].extend(row.get('stand_in') or ())
         if row.get('key_from_data'):
             data_source = locale_source(row['key_from_data'])
             data_keys[(data_source,key)].update(texts+[key])
@@ -534,6 +538,9 @@ def reconcile(inventory, rows):
         # Book lines are indented ("    Welcome to the Abyssal Chasm..."); the inventory keeps them stripped.
         elif any(text == v or (item['mode'] == 'literal' and text in (line.strip() for line in v.splitlines()))
                  for v in values.get(source, ())):
+            state = 'covered'
+        elif item['mode'] == 'literal' and any(text in line for v in values.get(source, ()) if '\n' in v for line in v.splitlines()):
+            # A quoted piece of a line a whole text file shows as written (Fancy Toasts: newToast("You are a sweetheart!");).
             state = 'covered'
         elif source.endswith('.mcfunction') and function_forms(text) & set(values.get(source,())):
             state = 'covered'  # the quoted SNBT string still has its escapes (\\n) or JSON quotes, the scanned unit has not
