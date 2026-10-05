@@ -1981,6 +1981,10 @@ class MainWindow(QMainWindow):
         repaired=len(self.session.get('repairs',[]))
         if repaired:notes.append(f'{repaired:,} 個原本格式錯誤的繁中語系檔已自動依英文與簡中重建')
         broken=sum(jobs.broken_source_file(e) for e in self.session.get('errors',[]))
+        # The coverage check names each broken file; those the scan already counted (same mod file) are not counted twice.
+        counted={str(e[0]) for e in self.session.get('errors',[]) if isinstance(e,(list,tuple)) and e and jobs.broken_source_file(e)}
+        broken+=len({e['source'] for e in (self.session.get('text_inventory') or {}).get('errors') or []
+                     if jobs.broken_inventory_file(e) and e['source'].split('!/')[0] not in counted})
         if broken:notes.append(f'{broken:,} 個模組自帶的檔案本身格式錯誤，遊戲也讀不到，不影響畫面上的文字（已略過，檔案沒有修改）')
         notes.append('外部翻譯 API 未使用（0 筆）')
         self.report_counts.setText('　·　'.join(notes))

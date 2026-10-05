@@ -259,10 +259,20 @@ def readopt_rejected(session):
 
 JSON_BROKEN=re.compile(r'^(Expecting|Unterminated string|Invalid control character|Invalid \\escape|Extra data)')
 
+# Compressed data the mod ships damaged (Dungeon Now Loading 2.2: four structure files whose gzip data does not unpack).
+DAMAGED=re.compile(r'(?:^|: )(?:CRC check failed|Error -3 while decompressing|Not a gzipped file|Compressed file ended)')
+
 def broken_source_file(error):
     """A file that ships broken: the game cannot read it either, so no text is missing from the screen."""
     parts=[p for p in error if isinstance(p,str)] if isinstance(error,(list,tuple)) else [str(error)]
-    return len(parts)>1 and bool(JSON_BROKEN.match(parts[-1]))
+    return len(parts)>1 and bool(JSON_BROKEN.match(parts[-1]) or DAMAGED.search(parts[-1]))
+
+
+def broken_inventory_file(error):
+    """The coverage check's read failure of a file that ships broken (damaged compression, malformed JSON)."""
+    detail=(error.get('detail') or '') if isinstance(error,dict) else ''
+    kind,_,message=detail.partition(': ')
+    return kind in ('BadGzipFile','error','EOFError','JSONDecodeError') and bool(DAMAGED.search(detail) or JSON_BROKEN.match(message))
 
 
 def describe_error(error):
@@ -270,7 +280,9 @@ def describe_error(error):
     parts=[p for p in error if isinstance(p,str)] if isinstance(error,(list,tuple)) else [str(error)]
     where=Path(parts[0]).name if parts else ''
     detail=parts[-1] if len(parts)>1 else ''
-    if 'Expecting' in detail:
+    if DAMAGED.search(detail):
+        detail='檔案在模組裡原本就是壞的（壓縮資料解不開，遊戲讀它也會失敗），這個檔案的文字無法掃描（檔案沒有被修改）。（技術細節：'+detail[:160]+'）'
+    elif 'Expecting' in detail:
         detail='檔案本身格式錯誤，遊戲也讀不到，這個檔案的文字這次沒有掃描（檔案沒有被修改）。（技術細節：'+detail[:160]+'）'
         if any(isinstance(p,dict) and 'zh_tw' in p for p in error):detail+='。重新執行一鍵翻譯時會自動重建這個繁中檔。'
     elif detail and not HAN.search(detail):
@@ -845,7 +857,7 @@ BUTTON_LABEL = re.compile(r'^\s*label\s*=\s*\S',re.M)
 
 def inventory_note(session):
     """Incomplete reads are not silently treated as a clean scan."""
-    info=session.get('text_inventory') or {};errors=info.get('errors') or []
+    info=session.get('text_inventory') or {};errors=[e for e in info.get('errors') or [] if not broken_inventory_file(e)]
     if not errors:return ''
     examples='、'.join(e['source'] for e in errors[:3])
     return (f'有 {len(errors):,} 項文字涵蓋檢查未完成（{examples}），這些內容沒有被此檢查證明已涵蓋。'
@@ -1466,7 +1478,8 @@ def present_mods(z, depth=0):
 #          formats (DATA_TEXT_FORMATS), resource text no reader covers (unsupported_assets)
 # scan-20: data sentence keys retain their exact JSON position for independent coverage checks
 # scan-21: VillagerConfig trades and plain-string set_name / set_lore, REI custom group names, owo rich language listed
-SCAN_CACHE_VERSION = 'scan-21'
+# scan-22: Supplementaries flute song names are not listed as unsupported data (only a key and a file name)
+SCAN_CACHE_VERSION = 'scan-22'
 
 
 def scan_cache(home, instance):

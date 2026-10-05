@@ -223,6 +223,16 @@ class WorkflowTests(unittest.TestCase):
         # Our own scanner failing is still shown: the text may be on screen and unscanned.
         self.assertFalse(broken_source_file(['mods/a.jar',{},"'utf-8' codec can't encode character"]))
         self.assertFalse(broken_source_file(['mods/a.jar','class extraction: bad constant pool']))
+        # Dungeon Now Loading 2.2 ships four structure files whose gzip data does not unpack: a note, not a red line.
+        self.assertTrue(broken_source_file(['mods/dnl.jar','embedded text: CRC check failed']))
+        self.assertTrue(broken_source_file(['mods/dnl.jar','embedded text: Error -3 while decompressing data: invalid literal/lengths set']))
+        from mc_zh_tw_translator.desktop_jobs import inventory_note, broken_inventory_file
+        damaged=dict(source='mods/dnl.jar!/data/d/structures/a.nbt',reason='x',detail='BadGzipFile: CRC check failed')
+        malformed=dict(source='mods/v.jar!/data/v/loot_tables/a.json',reason='x',detail='JSONDecodeError: Extra data: line 129 column 1 (char 3179)')
+        unread=dict(source='mods/big.jar!/data/b/structures/huge.nbt',reason='檔案大小超過盤點範圍，沒有讀取',detail='')
+        self.assertTrue(broken_inventory_file(damaged) and broken_inventory_file(malformed));self.assertFalse(broken_inventory_file(unread))
+        self.assertEqual(inventory_note(dict(text_inventory=dict(errors=[damaged,malformed]))),'')
+        self.assertIn('有 1 項文字涵蓋檢查未完成',inventory_note(dict(text_inventory=dict(errors=[damaged,unread]))))
 
     def make_mod(self, nested=True):
         import io, zipfile

@@ -174,6 +174,12 @@ def other_language(n):
     return any(re.fullmatch(r'[a-z]{2,3}[_-][a-z]{2,4}',part,re.I) and part.casefold().replace('-','_')!='zh_tw'
                for part in parts[:-1]+(PurePosixPath(n).stem,))
 
+def foreign_file(n):
+    """A file in a language other than English or Chinese (de_de.local, ja-JP.json): its words are neither the
+    original to translate nor Chinese to convert."""
+    m=re.fullmatch(r'([a-z]{2,3})[_-]([a-z]{2,4})',PurePosixPath(n).stem,re.I)
+    return bool(m) and m[1].casefold() not in ('en','zh')
+
 # FancyMenu layouts (title and pause screen buttons): "label = 開始遊戲" lines, the text shown as written.
 FANCYMENU=re.compile(r'(?:^|/)config/fancymenu/customization/[^/]+\.txt$',re.I)
 FANCYMENU_TEXT={'label','hoverlabel','description','source','tooltip','text','title'}
@@ -277,7 +283,9 @@ def unsupported_sample(n,text,root,strict=False):
         text=re.sub(r'(?m)(?<![:"\'])//.*$','',text)
     lines=[line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(('#','//','--','*','/*'))]
     sample=next((line for line in lines if HAN.search(line)),None)
-    if sample is None and not strict:
+    # A script's English strings are read string by string already; a code line such as "let name = getModifierName(…)"
+    # naming a field is not text (Elemental Awakening SuitEvent.js).
+    if sample is None and not strict and not n.lower().endswith(('.js','.zs')):
         sample=next((line for line in lines if re.search(
             r'(?i)\b(?:title|name|description|label|tooltip|message|category|shop|store|market|vendor|trade)\b\s*[:=].*[A-Za-z]',line)),None)
     return sample
@@ -853,7 +861,10 @@ class Audit:
             m=DATA_JSON.match(n)
             if (not m or DATA_TEXT.search('/'+n) or BOOK.search('/'+n) or embedded_text.is_file('/'+n)
                     or any(r.search('/'+n) for r,_ in DATA_KEY_SENTENCES)
-                    or m[2] in ('lang','patchouli_books','tags','recipe','recipes','worldgen')):continue
+                    or m[2] in ('lang','patchouli_books','tags','recipe','recipes','worldgen')
+                    # Supplementaries 3.1.43: a flute song's "name" is only its key and recording file name
+                    # (Song.getTranslationKey, used by SongsManager as a map key and in new File(...)), never shown.
+                    or n.startswith('data/supplementaries/flute_songs/')):continue
             try:
                 raw=read(n)
                 for _,field,value in leaves(parse(raw)):
@@ -1071,8 +1082,11 @@ class Audit:
         produced={r['source'].removeprefix('instance!/') for r in self.rows}
         for n,p in names.items():
             content=n.split('/',1)[0] in CONTENT_PACK_FOLDERS
+            # Another language's file (Konkrete's locals/de_de.local) and a world's own data (an FTB Quests team name in
+            # saves/) are not text to translate (Elemental Awakening 2026-10-05).
             if (n in produced or LANG.match('/'+n) or BOOK.search('/'+n) or DATA_TEXT.search('/'+n) or (content and p.suffix.lower()!='.json')
-                    or p.suffix.lower() not in TEXT_CONFIG_SUFFIXES or p.stat().st_size>16*1024*1024):continue
+                    or p.suffix.lower() not in TEXT_CONFIG_SUFFIXES or p.stat().st_size>16*1024*1024
+                    or n.startswith('saves/') or foreign_file(n)):continue
             try:
                 text=decode(p.read_bytes())
                 if '\0' in text:continue

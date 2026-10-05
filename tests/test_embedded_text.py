@@ -180,7 +180,9 @@ class EmbeddedTextTests(unittest.TestCase):
             audit = Audit(Path(folder) / 'audit', {})
             files = {'data/questboard/notices/intro.json': b'{"pages": [{"lines": [{"text": "Welcome to my humble shop"}]}]}',
                      'data/cobblemon/dialogues/intro.json': b'{"pages": [{"lines": ["Welcome to the Pokemon Center"]}]}',
-                     'data/sample/recipe/a.json': b'{"result": {"name": "Not shown to anyone here"}}'}
+                     'data/sample/recipe/a.json': b'{"result": {"name": "Not shown to anyone here"}}',
+                     # Supplementaries' flute song name is only a key and a file name (checked in SongsManager).
+                     'data/supplementaries/flute_songs/aot2.json': b'{"name": "attack on titan theme", "notes": [0, 30820]}'}
             audit.unsupported_data('mods/a.jar', set(files), files.__getitem__)
             listed = [r['source'] for r in audit.rows if r['kind'] == 'unsupported_config_text']
             self.assertEqual(listed, ['mods/a.jar!/data/questboard/notices/'])

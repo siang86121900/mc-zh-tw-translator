@@ -19,10 +19,11 @@ import zlib
 from pathlib import Path, PurePosixPath
 
 FORMAT = 'text-inventory-2'
-RULES_VERSION = '2026-10-04.1'
+RULES_VERSION = '2026-10-05.6'
 HAN = re.compile('[㐀-鿿]')
 WORDS = re.compile(r'[A-Za-z]{2,}')
-LOCALE = re.compile(r'(?:^|/)(?!en_us|zh_tw|zh_cn)[a-z]{2}[_-](?:[a-z]{2}|\d{3})(?:/|[.\[])', re.I)
+# Ice and Fire names its bestiary folders ja_jp_0/, es_es_0/ (BestiaryScreen reads lang/bestiary/<language>_0/).
+LOCALE = re.compile(r'(?:^|/)(?!en_us|zh_tw|zh_cn)[a-z]{2}[_-](?:[a-z]{2}|\d{3})(?:_\d)?(?:/|[.\[])', re.I)
 LANG = re.compile(r'/lang/(en_us|zh_cn|zh_tw)\.(json|lang|snbt)$', re.I)
 DISPLAY = {'name', 'text', 'title', 'subtitle', 'description', 'landing_text', 'header',
            'customTooltips', 'displayName', 'tooltip', 'label', 'hoverlabel', 'message',
@@ -64,7 +65,26 @@ NOT_PLAYER = re.compile(r'(?i)(?:^|/)(?:META-INF/|license|licence|notice|readme|
                         # A book's copy in a language with a code of its own (Alex's Caves books/tok/: Toki Pona).
                         r'/books?/tok/|'
                         r'(?:^|/)[^/]*(?:licens[ei]|credits|terms&conditions|mixin-config)[^/]*\.(?:txt|md)$|'
+                        # Elemental Awakening 2026-10-05: the descriptions of spell and roll animations (Spell Engine,
+                        # Combat Roll), hitbox shapes, FancyMenu's editor music list and themes, KubeJS plugin lists and
+                        # decompiler notes, libraries shaded into a mod (repack/), Supplementaries' unused songs, Neruina's
+                        # crash-report template, Create's Ponder scene schematics, a gun pack's own name (a brand), and
+                        # Citadel's supporter list and a backup text no mod reads: none of these is text the game shows the player.
+                        r'/(?:spell_animations|rolling_animations|player_animations|hitboxes)/|'
+                        r'/assets/fancymenu/(?:metadata|themes)/|(?:^|/)kubejs\.plugins\.txt$|fernflower_[^/]*\.txt$|/repack/|'
+                        r'/data/supplementaries/(?:unused_songs|flute_songs)/|/data/neruina/|/assets/create/ponder/|'
+                        r'(?:^|/)gunpack(?:\.meta|_info)[^/]*\.json$|/assets/citadel/(?:patreon|backup_text)\.txt$|'
+                        # Monster Expansion 0.7.6 MonsterRefManager.parseRef never reads "name": the guide shows
+                        # Component.translatable built from entity_id.
+                        r'/data/monsterexpansion/monster_ref/|'
+                        # A sound list (sounds.json names sound files; its subtitles are language keys).
+                        r'(?:^|/)sounds\.json$|'
+                        # Legendary Monsters 2.1.22 builds its space station from space_station_main and _part1-9 (template
+                        # pools); the 17 MB whole space_station.nbt is named by nothing in the mod.
+                        r'/data/legendary_monsters/structures/space_station\.nbt$|'
                         r'(?:^|/)(?:CONTRIBUTORS|CONTRIBUTING|ATTRIBUTION|patrons)\.(?:md|txt)$')
+# Code libraries mods nest in themselves (MixinExtras inside Connector and structure-pool-api, several levels deep).
+LIBRARY_JAR = re.compile(r'(?i)(?:^|/)mixinextras[^/]*\.jar$')
 MAX_TEXT = 8 << 20
 MAX_ARCHIVE = 1200 << 20
 MAX_NESTED = 300 << 20
@@ -81,7 +101,7 @@ def source_name(source):
 
 
 def locale_source(source):
-    return re.sub(r'(?i)(/)(?:en_us|zh_cn|zh_tw)(?=[/.])', r'\1@locale', source_name(source))
+    return re.sub(r'(?i)(/)(?:en_us|zh_cn|zh_tw)(?=(?:_\d)?[/.])', r'\1@locale', source_name(source))
 
 
 def readable(text):
@@ -92,6 +112,10 @@ def readable(text):
     if re.fullmatch(r'\S+(?:\.zip|\.nbt|\.png|\.json|\.jar|\.ogg)', text, re.I): return False
     if re.match(r'^(?:https?://|\[source:|\$\{|query\.|variable\.)', text): return False
     if not HAN.search(text) and re.fullmatch(r'[\w./:@#%+\-]+', text) and re.search(r'[._/:@#%]', text): return False
+    # An id built in a KubeJS template literal (kubejs:${id}_scroll, beer_${beer.id}) is an id too.
+    if '${' in text and not HAN.search(text) and re.fullmatch(r'[\w./:@#%+\-]*', re.sub(r'\$\{[^}]*\}', '', text)): return False
+    # Only what is written around a template literal's insertions is text (§a+2% ${fruit.attribute}（0:05） has none).
+    text = re.sub(r'\$\{[^}]*\}', ' ', text)
     return bool(HAN.search(text) or WORDS.search(text) or re.fullmatch(r'[A-Za-z]',text.strip()))
 
 
@@ -124,6 +148,12 @@ def machine_text(text):
     twilightforest:aurora_block", minecraft\\:purple_dye), a settings section ("[wallet_slot]"), a macro variable."""
     text = text or ''
     if re.fullmatch(r'\{[\w.]+\}',text) or re.search(r'\w+:\s*"[\w.\-]+:[\w./\-]+"',text):return True
+    # A UUID or its template, a Java class or method signature (KubeJS startup scripts), and base64 data such as the
+    # skin of a player head in an FTB Quests chapter (Elemental Awakening 2026-10-05).
+    if re.fullmatch(r'[0-9a-fxy]{8}-[0-9a-fxy]{4}-[0-9a-fxy]{4}-[0-9a-fxy]{4}-[0-9a-fxy]{12}',text,re.I):return True
+    if re.fullmatch(r'(?:\w+\()?[a-z][\w]*(?:\.[\w$]+){2,}\)?',text):return True
+    if re.fullmatch(r'[A-Za-z0-9+/]{40,}={0,2}',text):return True
+    if re.match(r'(?:[&§][0-9a-fk-or])+/[a-z_]+(?:\s|$)',text):return True  # a coloured command (&b/ftbteams party create)
     if re.fullmatch(r'(?:\d+x\s+)?[\w.\-]+\\?:[\w./\-]+',text) or re.fullmatch(r'\[[\w.\-]+\]',text):return True
     if re.fullmatch(r'\{image:[^}]*\}',text):return True  # an FTB Quests picture line
     # Commands a quest or script runs (Chapter of Yuusha: "/curios add hands @s", "summon cataclysm:… ~ ~10 ~",
@@ -196,6 +226,8 @@ def inspect_file(source, raw):
                         if field=='minecraft:lore' and all(re.fullmatch(r'[a-z][a-z0-9_]*',w) for w in words):continue
                         text=words[0] if len(words)==1 else json.dumps(component,ensure_ascii=True,sort_keys=True)
                 except ValueError:pass
+            # One or two letters on a structure's sign ("a", "V") are decoration, not words to translate.
+            if suffix=='.nbt' and len(text.strip())<=2 and not HAN.search(text):continue
             if readable(text):
                 value=dict(key=key,text=text,mode=mode,literal_key=literal_key)
                 if field=='fallback':
@@ -226,10 +258,22 @@ def inspect_file(source, raw):
                 except ValueError:pass
     # A book page is prose: an apostrophe ("the watcher's perspective") is not a quote, so its lines are compared whole.
     book_page = suffix == '.txt' and re.search(r'/books?/|/codex/|/bestiary/', source)
-    for line, index, value, is_key, _, _ in ([] if book_page else string_literals(text, suffix, source)):
+    # English in a mod's settings file is a section name or a setting's value (Mob Settings, bookofdragons:nightfury=fly):
+    # settings are not translated (AGENTS.md); their Chinese is still checked.
+    settings = source.startswith(('config/','defaultconfigs/')) and suffix in ('.toml','.yml','.yaml','.cfg') and not short_names
+    literals = [] if book_page else list(string_literals(text, suffix, source))
+    line_values = collections.defaultdict(list)
+    for entry in literals: line_values[entry[0]].append(entry)
+    for line, index, value, is_key, _, _ in literals:
         if re.fullmatch(r'[0-9A-Fa-f]{16}',value) or machine_text(value):continue  # quest ids (469FC2D5B99CD7A1), item ids
+        if settings and not HAN.search(value):continue
         if not is_key and readable(value) and (HAN.search(value) or len(WORDS.findall(value))>=2 or short_names):
             found=dict(key=f'{line}:{index}', text=value, mode='literal')
+            if source.startswith('kubejs/startup_scripts/'):
+                # The ids registered on the same line (createBlock('primordial_block', 'Primordial Block')): KubeJS shows the
+                # language file's name for that id when there is one, not the display name written here.
+                ids=[v for n,_,v,_,_,_ in line_values.get(line,()) if re.fullmatch(r'[a-z0-9_/]+',v)]
+                if ids:found['registered_ids']=ids
             if (line,value) in fallbacks:found.update(translation_key=fallbacks[(line,value)],is_fallback=True)
             yield found
     if suffix in ('.txt', '.md'):
@@ -303,6 +347,7 @@ def collect(root, cancelled=lambda: False, notify=lambda *_: None, cache=None, s
                 problem(source, '壓縮檔內路徑不正常，沒有讀取'); continue
             nested = name.lower().endswith(('.jar', '.zip'))
             if name.endswith('/showdown.zip'):continue
+            if nested and LIBRARY_JAR.search(name):continue  # a code library nested in a loader, no text of its own
             if not nested and not eligible(source): continue
             if name.endswith(('MCTranslator-zh_tw.zip', 'zz-MCTranslator-zh_tw.zip')): continue
             limit = MAX_NESTED if nested else MAX_TEXT
@@ -509,6 +554,8 @@ def reconcile(inventory, rows):
             # A language file defines the key, so the game never shows this fallback (Mega Showdown's advancement
             # titles differ from their en_us only by a full stop); the language row is what gets translated.
             state='covered'
+        elif any(f'{kind}.kubejs.{i.replace("/",".")}' in language_keys for i in item.get('registered_ids',()) for kind in ('block','item','fluid','entity')):
+            state = 'covered'  # the language file names that id (block.kubejs.primordial_block: 原始洞穴傳送門框架)
         elif source in listed or any(source.startswith(s) for s in listed if s.endswith('/')):
             state = 'listed'  # known unsupported, never claimed to be translated
         else: state = 'uncovered'

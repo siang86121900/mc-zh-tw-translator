@@ -282,6 +282,39 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(result['errors'])
         self.assertEqual([(c['text'],c['state']) for c in result['candidates']],[('Required','covered')])
 
+    def test_program_data_found_in_elemental_awakening_is_not_listed_but_player_text_is(self):
+        # 2026-10-05: 467 of 679 listed files were Ice and Fire's bestiary in other languages (ja_jp_0/), and most of the
+        # rest were settings, animation notes, ids and data. The owner: there must be no false alarms.
+        skin='ewogICJ0aW1lc3RhbXAiIDogMTc0ODc0ODUyNTgyMSwKICAicHJvZmlsZUlkIiA6ICIzMmY5YzlmZjQxZmQ0YTQ5YW'
+        with zipfile.ZipFile(self.root/'mod.jar','w') as z:
+            z.writestr('assets/iceandfire/lang/bestiary/ja_jp_0/alchemy_0.txt','ドラゴンの血を集めた後\n')
+            z.writestr('assets/iceandfire/lang/bestiary/es_es_0/alchemy_0.txt','Luego de obtener sangre del dragón\n')
+            z.writestr('assets/spell/spell_animations/slash.json','{"name":"One handed slash attack from left to right"}')
+            z.writestr('assets/fancymenu/metadata/minecraft_music_tracks.json','{"tracks":[{"name":"Mutation Song"}]}')
+            z.writestr('data/shadows/hitboxes/boss.json','{"parts":[{"name":"top part"}]}')
+            z.writestr('kubejs.plugins.txt','dev.demo.kubejs.DemoPlugin client server\n')
+            z.writestr('data/supplementaries/unused_songs/songs/a.json','{"name":"unused song"}')
+            z.writestr('data/supplementaries/flute_songs/a.json','{"name":"attack on titan"}')
+            z.writestr('assets/demo/splashes.txt','You are a sweetheart!\n')  # shown on the title screen: listed
+        self.write('config/demo-common.toml','[general]\n\t#Mob Settings\n\tname = "Mob Settings"\n\tmob = "bookofdragons:nightfury=fly"\n'
+                   '\ttitle = "龍的設定"\n')
+        self.write('kubejs/startup_scripts/vars.js','const ID = "38edebf6-f75e-4c4e-b630-9b2919b2fa7a"\nlet t = "net.minecraft.advancements.critereon.MinMaxBounds$Ints"\n'
+                   'event.create("primordial").displayName("Primordial Block")\n')
+        self.write('config/ftbquests/quests/chapters/a.snbt','{ description: ["'+skin+'", "&b/ftbteams party create", "Craft the first altar"] }\n')
+        self.write('kubejs/client_scripts/scroll.js','event.add(`kubejs:${id}_scroll`, Text.of(`beer_${beer.id}`), Text.blue(`§a+2% ${fruit.attribute}（0:05）`))\n')
+        self.write('kubejs/startup_scripts/blocks.js',"make('primordial_block', 'Primordial Block')\nmake('other_block', 'Other Block')\n")
+        with zipfile.ZipFile(self.root/'mx.jar','w') as z:
+            z.writestr('data/monsterexpansion/monster_ref/rakoth.json','{"entity_id":"monsterexpansion:rakoth","name":"Rakoth Beast"}')
+        texts=sorted(c['text'] for c in self.inspect()['candidates'])
+        self.assertEqual(texts,sorted(['You are a sweetheart!','龍的設定','Primordial Block','Primordial Block','Other Block','Craft the first altar']))
+        # KubeJS shows the language file's name for a registered id, not the display name in the script.
+        lang=dict(self.row('kubejs/assets/kubejs/lang/zh_tw.json','block.kubejs.primordial_block','原始洞穴傳送門框架','language'))
+        states={c['text']:c['state'] for c in self.inspect([lang])['candidates'] if c['source'].endswith('blocks.js')}
+        self.assertEqual((states['Primordial Block'],states['Other Block']),('covered','uncovered'))
+        for unread in ('mods/c.jar!/META-INF/jarjar/mixinextras-forge-0.3.2.jar','mods/a.jar!/packs/resource/assets/aether/sounds.json',
+                       'mods/l.jar!/data/legendary_monsters/structures/space_station.nbt'):
+            self.assertFalse(inv.eligible(unread) and not inv.LIBRARY_JAR.search(unread),unread)
+
     def test_custom_label_maps_and_single_character_display_fragments_are_inventoried(self):
         self.write('config/demo.json',{'headerLabel':'Regional Variation','aspectLabels':{'demo':'Chimera A'},
                                       'parts':[{'text':'E'}],'translationKey':'demo.header'})
