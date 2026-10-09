@@ -1031,7 +1031,8 @@ def full_entry(x):
                 translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),modpackDate='',
                 revision=max(1,int(x.get('revision') or 1)),notes=str(x.get('notes') or '')[:600],
                 recommendedRam=ram_mb(x.get('recommendedRam')),driveId=str(x['driveId']),sha256=x['sha256'],size=int(x['size']),
-                totalSize=max(int(x.get('totalSize') or 0),0),mods=min(max(int(x.get('mods') or 0),0),5000),url='',addedMods=[])
+                totalSize=max(int(x.get('totalSize') or 0),0),mods=min(max(int(x.get('mods') or 0),0),5000),url='',addedMods=[],
+                server=dict(zip(('name','address'),server_list.checked(x.get('server')))) if server_list.checked(x.get('server')) else None)
 
 
 def match_full(packs, installed=None):

@@ -40,6 +40,7 @@ from mc_zh_tw_translator.updater import REPOSITORY  # noqa: E402
 BRANCH = 'translations'
 RAW = f'https://raw.githubusercontent.com/{REPOSITORY}/{BRANCH}/'
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SERVER = dict(name='狗狗貓貓島', address='26.186.50.26')
 
 
 def git(*args, cwd):
@@ -135,6 +136,8 @@ def refresh_full_card(args):
     if len(cards) != 1:
         sys.exit(f'目錄裡找不到（或不只一張）「{instance.name}」的整包卡片，沒有修改。')
     entry = dict(cards[0], mods=sum(1 for _ in (instance/'mods').glob('*.jar')))
+    entry.update(card_server(args))
+    if args.notes:entry['notes']=args.notes
     if args.ram:entry['recommendedRam'] = args.ram
     print(f"{entry['name']}：{entry['mods']} 個模組", flush=True)
     update_catalog(entry, lambda p: p is cards[0] or p == cards[0], f"整合包卡片資料：{entry['name']}", dry_run=args.dry_run, revise=False)
@@ -143,7 +146,8 @@ def refresh_full_card(args):
 def card_server(args):
     """The server the card adds to players' multiplayer list: {} to keep the card's, None to remove it."""
     if args.no_server:return dict(server=None)
-    if not (args.server_name or args.server_address):return {}
+    if not (args.server_name or args.server_address):
+        return {} if args.card_only else dict(server=dict(DEFAULT_SERVER))
     found = server_list.checked(dict(name=args.server_name, address=args.server_address))
     if not found:sys.exit('伺服器名稱（1～32 個字）或位址（例如 26.186.50.26 或 example.com:25565）不正確，沒有修改。')
     return dict(server=dict(name=found[0], address=found[1]))
@@ -198,7 +202,7 @@ def publish_full(args):
                  loader=manifest['loader'].get('name', ''), translator=args.translator, updated=date.today().isoformat(),
                  notes=args.notes, recommendedRam=args.ram or int(manifest.get('recommendedRam') or 0),
                  driveId=file_id, sha256=digest, size=size, totalSize=manifest['totalSize'], files=len(manifest['files']),
-                 mods=sum(1 for e in manifest['files'] if re.fullmatch(r'mods/[^/]+\.jar', e['path'])))
+                 mods=sum(1 for e in manifest['files'] if re.fullmatch(r'mods/[^/]+\.jar', e['path'])), **card_server(args))
     # Players download anonymously; prove that works (and that the bytes are the same) before listing it.
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         for attempt in range(20):

@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import patches
+from . import server_list
 from .deployment import contained, file_hash, when_free
 from .updater import VERSION
 
@@ -444,8 +445,21 @@ def remember(home: Path, folder: Path, manifest, package_sha: str, guid: str):
     jobs.write_json(path,{e['path']:e['sha256'] for e in manifest['files']})
 
 
+def prepare_server(folder, staged, server):
+    """Only the card's checked name/address travel; never import a sharer's server list."""
+    found=server_list.checked(server)
+    if not found:return None,dict(server=None,server_added=False,server_error='')
+    result=dict(server=dict(zip(('name','address'),found)),server_added=False,server_error='')
+    try:record=server_list.server_record(folder,staged,server,file_hash)
+    except (ValueError,OSError) as exc:
+        result['server_error']='原有伺服器清單無法安全更新，已保留原樣。'+jobs.explain_error(exc)
+        return None,result
+    result['server_added']=record is not None
+    return record,result
+
+
 def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:False, session=None, listing=None,
-            running=curseforge_running, pause=time.sleep, wait_limit=3600, clock=time.monotonic) -> dict:
+            running=curseforge_running, pause=time.sleep, wait_limit=3600, clock=time.monotonic, server=None) -> dict:
     """Install a full-pack zip as a new CurseForge profile; returns where it went.
 
     Nothing of the player's is changed except one profile added to CurseForge's list; a failure at any
@@ -506,6 +520,14 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         # then refuses to rename the folder holding them: wait and try again (deployment.when_free).
         when_free(lambda:work.rename(folder),folder.name,lambda name:notify(96,'等待其他程式放開檔案','防毒或索引程式正在檢查剛下載的檔案：'+name))
         moved=folder
+        staged=home/'tmp'/('fullserver-'+uuid.uuid4().hex[:8]);staged.mkdir(parents=True)
+        try:
+            server_record,server_result=prepare_server(folder,staged,server)
+            server_backup=None
+            if server_record:
+                from .deployment import apply_reviewed
+                server_backup=str(apply_reviewed(folder,staged,[server_record],home/'output',jobs.waiting_note(notify,96,'加入伺服器')))
+        finally:shutil.rmtree(staged,ignore_errors=True)
         record=new_record(manifest,folder)
         stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
         register(listing,folder,record,home/'output'/folder.name/'CurseForge紀錄備份'/stamp)
@@ -514,7 +536,8 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         for source in sources:Path(source).unlink(missing_ok=True)
         notify(100,'整合包已安裝',folder.name)
         return dict(folder=str(folder),name=folder.name,files=len(manifest['files']),downloaded=len(linked),
-                    recommendedRam=manifest.get('recommendedRam') or 0,loader=manifest['loader'].get('name',''))
+                    recommendedRam=manifest.get('recommendedRam') or 0,loader=manifest['loader'].get('name',''),
+                    backup=server_backup,**server_result)
     except BaseException:
         # Only what this install made is removed: the work folder, or the new folder it became.
         if not registered:
@@ -523,7 +546,7 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         raise
 
 
-def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cancelled=lambda:False, session=None, pause=time.sleep) -> dict:
+def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cancelled=lambda:False, session=None, pause=time.sleep, server=None) -> dict:
     """Bring an installed profile to a newer upload in place; saves, game options and screenshots stay.
 
     Compared with the content list it was installed with: a file the new version changed or added is
@@ -577,6 +600,8 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
         if jars:
             vr=VerifyResult();check_java_zipfs(jars,vr)
             if not vr.ok:raise ValueError('更新的模組檔沒有通過檢查：'+'; '.join(vr.errors))
+        server_record,server_result=prepare_server(folder,staged,server)
+        if server_record:records.append(server_record)
         jobs.require_space(folder,home,[r['file'] for r in records])
         backup=None
         if records:
@@ -588,6 +613,6 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
         notify(100,'整合包已更新',folder.name)
         return dict(folder=str(folder),name=folder.name,written=sum(r['after'] is not None for r in records),
                     removed=sum(r['after'] is None for r in records),replaced=replaced,kept=kept,backup=backup,
-                    recommendedRam=manifest.get('recommendedRam') or 0)
+                    recommendedRam=manifest.get('recommendedRam') or 0,**server_result)
     finally:
         shutil.rmtree(staged,ignore_errors=True)

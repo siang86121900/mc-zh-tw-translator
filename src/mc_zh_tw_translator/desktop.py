@@ -337,7 +337,7 @@ def server_line(server):
     """What a card says about the translator's server it adds to the multiplayer list."""
     if not server:return ''
     vpn={'26.':'Radmin VPN','25.':'Hamachi'}.get(server['address'][:3])
-    return (f"安裝或重新安裝時，會在「多人遊戲」的伺服器清單最上面加入翻譯者的伺服器：{server['name']}（{server['address']}）。"
+    return (f"安裝、重新安裝或更新時，會在「多人遊戲」的伺服器清單最上面加入翻譯者的伺服器：{server['name']}（{server['address']}）。"
             +(f"這是 {vpn} 的位址，要先加入翻譯者的 {vpn} 網路才連得上。" if vpn else ''))
 
 
@@ -901,10 +901,11 @@ class MainWindow(QMainWindow):
               +('\n\n你的 CurseForge 現在開著：程式會先下載和核對，最後一步請把 CurseForge 關掉（包含右下角的小圖示），'
                 '關掉後會自動完成；到時也會跳出通知提醒你。\n' if full_pack.curseforge_running() else '最後一步需要 CurseForge 是關閉的，到時會提醒你。\n')+
               '下載可能需要幾分鐘到幾十分鐘，請不要關閉本程式。\n\n是否繼續？')
+        if pack.get('server'):text+='\n\n'+server_line(pack['server'])+'同一個位址不重複加入，可在「備份與還原」復原。'
         if QMessageBox.question(self,'安裝整合包',text)!=QMessageBox.Yes:return
         def operation(w):
             path=full_pack.download(pack,self.home,lambda v:w.progress.emit(v,'從雲端下載整合包',pack['name']),cancelled=lambda:w.cancelled)
-            result=full_pack.install(path,self.home,w.progress.emit,lambda:w.cancelled)
+            result=full_pack.install(path,self.home,w.progress.emit,lambda:w.cancelled,server=pack.get('server'))
             path.unlink(missing_ok=True)  # the installed modpack is the copy that matters; the download is gigabytes
             return dict(result,notes=pack.get('notes',''))
         self.active_card=self.catalog_key(pack);self.curseforge_alerted=False
@@ -926,10 +927,11 @@ class MainWindow(QMainWindow):
               '2. 只換掉有變動的檔案，新版本拿掉的模組會移除；存檔、遊戲設定和截圖都不會動。\n'
               '3. 換掉和移除的檔案會先備份，之後可在「備份與還原」復原。\n\n'
               '請先關閉這個整合包的遊戲；CurseForge 不必關閉。\n\n是否繼續？')
+        if pack.get('server'):text+='\n\n'+server_line(pack['server'])+'同一個位址不重複加入，原有清單保留。'
         if QMessageBox.question(self,'更新整合包',text)!=QMessageBox.Yes:return
         def operation(w):
             path=full_pack.download(pack,self.home,lambda v:w.progress.emit(v,'從雲端下載新版本',pack['name']),cancelled=lambda:w.cancelled)
-            result=full_pack.update(path,self.home,Path(target),w.progress.emit,lambda:w.cancelled)
+            result=full_pack.update(path,self.home,Path(target),w.progress.emit,lambda:w.cancelled,server=pack.get('server'))
             path.unlink(missing_ok=True)
             return dict(result,notes=pack.get('notes',''))
         self.active_card=self.catalog_key(pack);self.curseforge_alerted=False
@@ -947,16 +949,21 @@ class MainWindow(QMainWindow):
             lines.append(f"新版本拿掉了 {len(result['kept']):,} 個你改過的檔案，為了不弄丟你的修改沒有刪除："
                          +'、'.join(result['kept'][:5])+('…' if len(result['kept'])>5 else ''))
         if result['backup']:lines.append('換掉的檔案已備份，可在「備份與還原」復原。')
+        if result.get('server'):
+            lines.append(result.get('server_error') or ('已加入伺服器：' if result.get('server_added') else '伺服器清單已有：')+result['server']['name']+'（'+result['server']['address']+'）')
         if result.get('notes'):lines+=['','分享者的說明：',result['notes']]
         self.patch_status.setText('');self.notify_finished('整合包已更新',lines[0])
         QMessageBox.information(self,'整合包已更新','\n'.join(lines))
 
     def full_pack_installed(self,result):
-        self.close_install_window();self.rematch_catalog()
+        self.close_install_window();self.refresh_backups();self.rematch_catalog()
         lines=[f"整合包已加入 CurseForge：{result['name']}",'',
                f"共 {result['files']:,} 個檔案，都已核對和分享者的相同（其中 {result['downloaded']:,} 個模組從 CurseForge 官方下載）。",
                '打開 CurseForge，在「我的建立」找到它，按「開始」就能玩，遊戲語言已設為繁體中文。',
                '如果你沒裝過 '+(result.get('loader') or 'Forge')+'，第一次開啟時 CurseForge 會先下載它，需要等一下。']
+        if result.get('server'):
+            lines.append(result.get('server_error') or ('已加入伺服器：' if result.get('server_added') else '伺服器清單已有：')+result['server']['name']+'（'+result['server']['address']+'）')
+        if result.get('backup'):lines.append('伺服器清單的變更已備份，可在「備份與還原」復原。')
         if result.get('notes'):lines+=['','分享者的說明：',result['notes']]
         memory=self.memory_advice(dict(recommendedRam=result.get('recommendedRam') or 0,instances=[dict(path=result['folder'])]))
         if memory:lines+=['',memory['line']]+[memory[k] for k in ('now','warning') if memory[k]]+['（在「已翻譯整合包」按「怎麼調整記憶體」看步驟）']

@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from mc_zh_tw_translator import full_pack, patches
+from mc_zh_tw_translator import full_pack, patches, server_list, desktop_jobs
 
 LOADER = {'name': 'forge-47.4.10', 'forgeVersion': '47.4.10', 'type': 1, 'installMethod': 3,
           'downloadUrl': 'https://modloaders.forgecdn.net/647622546/maven/net/minecraftforge/forge/1.20.1-47.4.10/forge-1.20.1-47.4.10.jar',
@@ -108,6 +108,51 @@ class FullPackTests(unittest.TestCase):
         record=json.loads((self.owner/'minecraftinstance.json').read_text());record['projectID']=5
         (self.owner/'minecraftinstance.json').write_text(json.dumps(record))
         with self.assertRaisesRegex(ValueError,'正式版本'):full_pack.build(self.owner,self.root/'x.zip',session=self.server)
+
+    def test_card_server_install_update_duplicate_and_restore(self):
+        server=dict(name='狗狗貓貓島',address='26.186.50.26')
+        result=self.install(server=server)
+        folder=Path(result['folder'])
+        self.assertTrue(result['server_added'])
+        self.assertEqual(server_list.entries((folder/'servers.dat').read_bytes()),[('狗狗貓貓島','26.186.50.26')])
+        desktop_jobs.restore_backup(Path(result['backup']),folder)
+        self.assertFalse((folder/'servers.dat').exists())
+        # Updating just the card also adds a server without changing any pack files.
+        original=server_list.with_server(None,'原有伺服器','example.com')
+        (folder/'servers.dat').write_bytes(original)
+        done=full_pack.update(self.package,self.home,folder,session=self.server,pause=lambda _:None,server=server)
+        written=(folder/'servers.dat').read_bytes()
+        self.assertTrue(done['server_added'])
+        self.assertEqual(server_list.entries(written),[('狗狗貓貓島','26.186.50.26'),('原有伺服器','example.com')])
+        again=full_pack.update(self.package,self.home,folder,session=self.server,pause=lambda _:None,server=server)
+        self.assertFalse(again['server_added']);self.assertIsNone(again['backup'])
+        self.assertEqual((folder/'servers.dat').read_bytes(),written)
+        desktop_jobs.restore_backup(Path(done['backup']),folder)
+        self.assertEqual((folder/'servers.dat').read_bytes(),original)
+
+    def test_broken_server_list_is_preserved_and_update_still_succeeds(self):
+        folder=Path(self.install()['folder'])
+        (folder/'servers.dat').write_bytes(b'bad existing list')
+        done=full_pack.update(self.package,self.home,folder,session=self.server,pause=lambda _:None,
+                              server=dict(name='狗狗貓貓島',address='26.186.50.26'))
+        self.assertFalse(done['server_added']);self.assertIn('已保留原樣',done['server_error'])
+        self.assertEqual((folder/'servers.dat').read_bytes(),b'bad existing list')
+
+    def test_full_catalog_preserves_valid_server_and_rejects_invalid_one(self):
+        entry=dict(kind='full',name='My Pack',driveId='B'*33,sha256='a'*64,size=1000,
+                   server=dict(name='狗狗貓貓島',address='26.186.50.26'))
+        self.assertEqual(patches.full_entry(entry)['server'],entry['server'])
+        self.assertIsNone(patches.full_entry(dict(entry,server=dict(name='bad',address='http://example.com')))['server'])
+
+    def test_new_publications_default_to_owners_server(self):
+        import argparse
+        import publish_translation
+        args=argparse.Namespace(no_server=False,server_name='',server_address='',card_only=False)
+        self.assertEqual(publish_translation.card_server(args),{'server':dict(name='狗狗貓貓島',address='26.186.50.26')})
+        args.card_only=True
+        self.assertEqual(publish_translation.card_server(args),{})
+        args.no_server=True
+        self.assertEqual(publish_translation.card_server(args),{'server':None})
 
     def test_install_creates_a_checked_profile_and_keeps_the_rest_of_the_list(self):
         result=self.install()
