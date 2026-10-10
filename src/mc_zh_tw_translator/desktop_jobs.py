@@ -1326,12 +1326,15 @@ def curseforge_instances():
     Returns dicts with name, path, projectID, fileID and gameVersion; projectID/fileID are 0
     for instances the user created by hand.
     """
-    from .full_pack import curseforge_list
+    from .full_pack import curseforge_list, configured_curseforge_root
+    listing=curseforge_list()
     try:
-        data=json.loads(curseforge_list().read_text(encoding='utf-8-sig'))
+        data=json.loads(listing.read_text(encoding='utf-8-sig'))
     except (OSError,ValueError):
         data=[]
     result=[];seen=set();roots={Path.home()/'curseforge/minecraft/Instances'}
+    configured=configured_curseforge_root(listing)
+    if configured:roots.add(configured)
     def add(x,path):
         result.append(dict(name=x.get('name') or path.name,path=path,projectID=int(x.get('projectID') or 0),
                            fileID=int(x.get('fileID') or 0),gameVersion=x.get('gameVersion') or ''))

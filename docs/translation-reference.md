@@ -123,3 +123,12 @@
 - 套用後必須讀回全部修正文字、驗證受保護的格式與參數，並比對除預期文字常數及其長度外的 class 內容完全一致。對每個修改過的 class 執行 Java 解析，再執行 instance 的 Java ZipFS 驗證與修改前輸入比對。解析通過不等於所有事件已在遊戲內觸發測試，交付時不得混稱。
 - 用途未確認的常數保留在待查清單；開發工具或日誌文字的排除需記錄理由。分別回報常數修改次數、不同原文數、class 數及模組數，不可把重複字串的多處修改稱為相同數量的獨立句子。
 
+
+
+CurseForge 雲端整包登記（2026-10-10）
+
+本機已安裝的 CurseForge Windows 單檔 Agent 中，Curse.Games.Minecraft 的 MinecraftInstanceService.RefreshAsync 呼叫 ResolveGameInstancesAsync。後者讀 MinecraftSettings.InstanceRoot、列舉直屬資料夾，未登記的路徑呼叫 ImportInstanceAsync；匯入會讀該資料夾的 minecraftinstance.json，反序列化、InitAfterLoadFromDisk、SaveToDisk、AddToDatabase，再掃描模組。缺少設定檔才略過。因此全域 MinecraftGameInstance.json 不是新設定檔匯入的必要前提。
+
+Electron storage.json 的 minecraft-settings 在本機為 JSON 字串，其中 minecraftRoot 指向遊戲根目錄，整合包放 Instances。缺少全域清單時，APP 只接受啟動器自身資料位置中的此設定，且要求絕對路徑及 Instances 已存在；僅在新建資料夾寫入設定檔，由 CurseForge 下次啟動／刷新匯入。不得建立空的全域清單，以免隱藏其他設定檔。全域清單已存在但格式錯誤時不繞過。下載後、登記前再次核對路徑及清單，設定變動則停止並移除本次新建資料夾。
+
+以上為本機程式讀取流程查證與隔離安裝測試，不等於已在回報問題的玩家電腦上實測 CurseForge 匯入或遊戲啟動。

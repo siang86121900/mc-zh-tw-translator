@@ -966,6 +966,9 @@ class MainWindow(QMainWindow):
                f"共 {result['files']:,} 個檔案，都已核對和分享者的相同（其中 {result['downloaded']:,} 個模組從 CurseForge 官方下載）。",
                '打開 CurseForge，在「我的建立」找到它，按「開始」就能玩，遊戲語言已設為繁體中文。',
                '如果你沒裝過 '+(result.get('loader') or 'Forge')+'，第一次開啟時 CurseForge 會先下載它，需要等一下。']
+        if result.get('profile_import'):
+            lines[0]=f"整合包已安裝：{result['name']}"
+            lines.insert(3,'已建立 CurseForge 設定檔；重新開啟 CurseForge 後，它會從遊戲資料夾載入這個整合包。')
         if result.get('server'):
             lines.append(result.get('server_error') or ('已加入伺服器：' if result.get('server_added') else '伺服器清單已有：')+result['server']['name']+'（'+result['server']['address']+'）')
         if result.get('backup'):lines.append('伺服器清單的變更已備份，可在「備份與還原」復原。')

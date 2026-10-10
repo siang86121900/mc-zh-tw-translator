@@ -237,6 +237,77 @@ class FullPackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Minecraft 整合包清單'):
             full_pack.install(self.package,self.home,session=self.server,listing=self.root/'missing.json',running=lambda:False)
 
+    def missing_cache_setup(self,as_string=True):
+        self.listing=self.root/'程式資料/CurseForge/agent/GameInstances/MinecraftGameInstance.json'
+        self.listing.parent.mkdir(parents=True)
+        settings={'minecraftRoot':str(self.instances.parent)}
+        storage=self.listing.parent.parent.parent/'storage.json'
+        storage.write_text(json.dumps({'minecraft-settings':json.dumps(settings) if as_string else settings}),encoding='utf-8')
+        return storage
+
+    def test_missing_cache_installs_profile_without_creating_global_list_or_changing_other_pack(self):
+        storage=self.missing_cache_setup()
+        old=self.instances/'Other Pack/minecraftinstance.json';old.write_bytes(b'{"name":"Other Pack","guid":"aaaa"}')
+        originals={p:p.read_bytes() for p in (storage,old)}
+        result=self.install();folder=Path(result['folder'])
+        self.assertTrue(result['profile_import']);self.assertFalse(self.listing.exists())
+        record=json.loads((folder/'minecraftinstance.json').read_bytes())
+        self.assertEqual(record['name'],'My Pack');self.assertEqual(record['installedAddons'],[])
+        for p,raw in originals.items():self.assertEqual(p.read_bytes(),raw)
+        for e in self.manifest['files']:self.assertEqual(sha((folder/e['path']).read_bytes()),e['sha256'])
+        with patch.object(full_pack,'curseforge_list',return_value=self.listing):
+            self.assertIn(folder.resolve(),[x['path'].resolve() for x in desktop_jobs.curseforge_instances()])
+        self.assertTrue(self.install()['name'].endswith('(2)'))
+
+    def test_storage_object_supported_and_current_config_wins_over_old_list(self):
+        self.missing_cache_setup(as_string=False)
+        self.listing.write_text(json.dumps([{'installPath':str(self.root/'old/Instances/Pack')}]),encoding='utf-8')
+        self.assertEqual(full_pack.curseforge_root(self.listing).resolve(),self.instances.resolve())
+        result=self.install();self.assertFalse(result['profile_import'])
+        self.assertEqual(len(json.loads(self.listing.read_bytes())),2)
+
+    def test_missing_cache_invalid_settings_cannot_start_download(self):
+        storage=self.missing_cache_setup()
+        for value in ('', 'relative', str(self.root/'not-there'), str(Path.home()), str(self.root.anchor)):
+            storage.write_text(json.dumps({'minecraft-settings':json.dumps({'minecraftRoot':value})}),encoding='utf-8')
+            self.server.asked.clear()
+            with self.subTest(value=value),self.assertRaises(ValueError):self.install()
+            self.assertFalse(self.server.asked);self.assertFalse(self.listing.exists())
+        storage.write_text('broken',encoding='utf-8')
+        with self.assertRaises(ValueError):self.install()
+
+    def test_config_change_during_download_rolls_back_new_folder(self):
+        storage=self.missing_cache_setup()
+        def running():
+            storage.write_text('{}',encoding='utf-8');return False
+        with self.assertRaises(ValueError):self.install(running=running)
+        self.assertEqual([p.name for p in self.instances.iterdir()],['Other Pack'])
+
+    def test_cache_appearing_during_download_is_preserved_and_appended(self):
+        self.missing_cache_setup()
+        def running():
+            self.listing.write_bytes(self.before);return False
+        result=self.install(running=running)
+        self.assertFalse(result['profile_import']);self.assertTrue(self.listing.read_bytes().startswith(self.before[:-1]))
+
+    def test_broken_cache_is_not_bypassed_using_valid_settings(self):
+        self.missing_cache_setup();self.listing.write_bytes(b'{}')
+        self.server.asked.clear()
+        with self.assertRaisesRegex(ValueError,'看不懂'):self.install()
+        self.assertEqual(self.listing.read_bytes(),b'{}');self.assertFalse(self.server.asked)
+
+    def test_missing_cache_cancelled_install_leaves_no_profile(self):
+        self.missing_cache_setup()
+        with self.assertRaises(InterruptedError):self.install(cancelled=lambda:True)
+        self.assertFalse(self.listing.exists());self.assertEqual([p.name for p in self.instances.iterdir()],['Other Pack'])
+
+    def test_detection_finds_settings_even_when_global_cache_is_missing(self):
+        self.missing_cache_setup()
+        with patch.object(full_pack,'system_curseforge_data_roots',return_value=[self.listing.parent.parent.parent]), \
+             patch.dict('os.environ',APPDATA=str(self.root/'roaming'),LOCALAPPDATA=str(self.root/'local')), \
+             patch.object(Path,'home',return_value=self.root):
+            self.assertEqual(full_pack.curseforge_list(),self.listing)
+
     def test_preflight_missing_minecraft_list_does_not_claim_app_is_absent(self):
         with self.assertRaisesRegex(ValueError,'完成遊戲資料夾設定'):
             full_pack.require_curseforge_list(self.root/'missing.json')

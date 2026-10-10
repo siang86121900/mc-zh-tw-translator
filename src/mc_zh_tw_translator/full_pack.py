@@ -368,13 +368,37 @@ def curseforge_list() -> Path:
                 Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData/Local'))]
     paths=[p/'agent/GameInstances/MinecraftGameInstance.json' for p in system_curseforge_data_roots()]
     paths += [p/'CurseForge/agent/GameInstances/MinecraftGameInstance.json' for p in candidates]
-    return next((p for p in paths if p.is_file()),appdata/'CurseForge/agent/GameInstances/MinecraftGameInstance.json')
+    return next((p for p in paths if p.is_file()),
+                next((p for p in paths if configured_curseforge_root(p)),paths[0] if paths else appdata/'CurseForge/agent/GameInstances/MinecraftGameInstance.json'))
+
+
+def configured_curseforge_root(listing: Path):
+    """Read the launcher's own setting, never infer a missing cache from the cloud package.
+
+    CurseForge's storage.json stores minecraft-settings as a JSON string (older stores may
+    use an object). Its agent resolves InstanceRoot and imports minecraftinstance.json from
+    each unregistered directory during RefreshAsync; see docs/translation-reference.md.
+    """
+    listing=Path(listing)
+    if listing.parent.name!='GameInstances' or listing.parent.parent.name!='agent':return None
+    try:
+        data=json.loads((listing.parent.parent.parent/'storage.json').read_text(encoding='utf-8-sig'))
+        settings=data.get('minecraft-settings')
+        if isinstance(settings,str):settings=json.loads(settings)
+        value=settings.get('minecraftRoot') if isinstance(settings,dict) else None
+        if not isinstance(value,str) or not value.strip():return None
+        root=Path(value)
+        if not root.is_absolute() or root.parent==root or root.resolve()==Path.home().resolve():return None
+        instances=root/'Instances'
+        return instances if instances.is_dir() else None
+    except (OSError,ValueError,TypeError):return None
 
 
 def require_curseforge_list(listing=None) -> Path:
     """Check Minecraft initialization before downloading a whole pack; absence is not proof of no app."""
     path=Path(listing) if listing is not None else curseforge_list()
     if not path.is_file():
+        if configured_curseforge_root(path):return path
         raise ValueError('找不到 CurseForge 的 Minecraft 整合包清單，無法安全登記新的整合包。'
                          '這不代表沒有安裝 CurseForge。請先重新開啟 CurseForge，再回來按「安裝」。'
                          '尚未設定 Minecraft 的玩家才需要進入 Minecraft 頁面完成遊戲資料夾設定。'
@@ -388,6 +412,8 @@ def require_curseforge_list(listing=None) -> Path:
 
 def curseforge_root(listing: Path) -> Path:
     """Where CurseForge keeps modpack folders: where most listed ones are, else its default."""
+    configured=configured_curseforge_root(listing)
+    if configured:return configured
     try:data=json.loads(listing.read_text(encoding='utf-8-sig'))
     except (OSError,ValueError):data=[]
     counts={}
@@ -431,6 +457,17 @@ def new_record(manifest, folder: Path) -> dict:
 def register(listing: Path, folder: Path, record: dict, backup_dir: Path):
     """Add one profile to CurseForge's list (CurseForge must be closed). The list is backed up first and
     put back when the result does not read back with the new profile; nothing else in it changes."""
+    if not listing.exists():
+        root=configured_curseforge_root(listing)
+        if root is None or folder.resolve().parent!=root.resolve():
+            raise ValueError('CurseForge 的 Minecraft 遊戲資料夾設定已變動，沒有登記。請再按一次「安裝」。')
+        # No empty global list: it could hide existing packs. The agent imports the new
+        # profile from its configured Instances directory on the next refresh/startup.
+        profile=folder/'minecraftinstance.json'
+        entry=json.dumps(record,ensure_ascii=False,separators=(',',':')).encode('utf-8')
+        profile.write_bytes(entry)
+        if json.loads(profile.read_bytes())!=record:raise ValueError('新整合包設定檔讀回不符，沒有登記。')
+        return None
     raw=listing.read_bytes()
     data=json.loads(raw.decode('utf-8-sig'))
     if not isinstance(data,list):raise ValueError('CurseForge 的整合包清單格式看不懂，沒有修改。')
@@ -555,6 +592,9 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
             if clock()-start>wait_limit:raise ValueError('一直等不到 CurseForge 關閉，沒有建立整合包。關閉 CurseForge 後再按一次「安裝」，已下載的檔案不必重新下載。')
             notify(95,'請關閉 CurseForge','整合包已準備好；CurseForge 開著時無法加入新的設定檔，關閉後會自動繼續（包含右下角的小圖示）')
             pause(3)
+        require_curseforge_list(listing)
+        if curseforge_root(listing).resolve()!=root.resolve():
+            raise ValueError('CurseForge 的 Minecraft 遊戲資料夾設定已變動，沒有登記。請再按一次「安裝」。')
         folder=new_folder(root,manifest['name'])
         # Files just written are often opened for a moment by an antivirus scan or the Windows indexer, and Windows
         # then refuses to rename the folder holding them: wait and try again (deployment.when_free).
@@ -570,14 +610,14 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         finally:shutil.rmtree(staged,ignore_errors=True)
         record=new_record(manifest,folder)
         stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
-        register(listing,folder,record,home/'output'/folder.name/'CurseForge紀錄備份'/stamp)
+        listing_backup=register(listing,folder,record,home/'output'/folder.name/'CurseForge紀錄備份'/stamp)
         registered=True
         remember(home,folder,manifest,file_hash(Path(package)),record['guid'])
         for source in sources:Path(source).unlink(missing_ok=True)
         notify(100,'整合包已安裝',folder.name)
         return dict(folder=str(folder),name=folder.name,files=len(manifest['files']),downloaded=len(linked),
                     recommendedRam=manifest.get('recommendedRam') or 0,loader=manifest['loader'].get('name',''),
-                    backup=server_backup,**server_result)
+                    backup=server_backup,profile_import=listing_backup is None,**server_result)
     except BaseException:
         # Only what this install made is removed: the work folder, or the new folder it became.
         if not registered:
