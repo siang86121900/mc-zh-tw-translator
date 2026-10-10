@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import server_list, shared_text
+from . import covers
 from .deployment import apply_reviewed, contained, file_hash
 from .translator import is_jar_signature_file
 from .updater import REPOSITORY, VERSION, release_url
@@ -942,6 +943,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
             recipe_session.update(status='installed',backup=backup,backups=[backup] if backup else [],
                 installed_count=len(prepared['rows']),shown_mismatch=result['readback_mismatch'])
             jobs.write_json(Path(recipe_session['report'])/'session.json',recipe_session)
+        result['cover']=covers.finish(instance,home,notify,cancelled)
         report=home/'output'/instance.name/'報告'/('補丁-'+datetime.now().strftime('%Y%m%d-%H%M%S'))
         report.mkdir(parents=True,exist_ok=True)
         jobs.write_json(report/'patch_result.json',result)

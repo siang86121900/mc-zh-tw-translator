@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import patches
+from . import covers
 from . import server_list
 from .deployment import contained, file_hash, when_free
 from .updater import VERSION
@@ -199,6 +200,8 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
             if same:entries[rel].update(source='curseforge',url=mod['url'],projectID=mod['projectID'],fileID=mod['fileID'],name=mod['name'])
     options=generated_options(instance)
     entries['options.txt']=dict(path='options.txt',size=len(options),sha256=hashlib.sha256(options).hexdigest())
+    cover=covers.image_for(instance,record,identity['name'])
+    entries[covers.FILE]=dict(path=covers.FILE,size=len(cover),sha256=hashlib.sha256(cover).hexdigest())
     manifest=dict(format=FORMAT,name=identity['name'],version=identity['version'],gameVersion=identity['gameVersion'] or record.get('gameVersion') or '',
                   recommendedRam=identity['recommendedRam'],loader=loader,created=datetime.now().isoformat(timespec='seconds'),
                   program=VERSION,files=[dict(e,source=e.get('source','zip')) for e in entries.values()])
@@ -211,6 +214,7 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
                 if cancelled():raise InterruptedError('已停止，沒有產生壓縮檔。')
                 kind=zipfile.ZIP_STORED if e['path'].casefold().endswith(STORED) else zipfile.ZIP_DEFLATED
                 if e['path']=='options.txt':z.writestr(PAYLOAD+'options.txt',options,compress_type=kind)
+                elif e['path']==covers.FILE:z.writestr(PAYLOAD+covers.FILE,cover,compress_type=kind)
                 else:z.write(instance/e['path'],PAYLOAD+e['path'],compress_type=kind)
                 if i%100==0:notify(60+int(40*i/max(1,len(bundled))),'寫入壓縮檔',e['path'])
             z.writestr(MANIFEST,json.dumps(manifest,ensure_ascii=False,indent=1))
@@ -665,6 +669,9 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
                 server_backup=str(apply_reviewed(folder,staged,[server_record],home/'output',jobs.waiting_note(notify,96,'加入伺服器')))
         finally:shutil.rmtree(staged,ignore_errors=True)
         record=new_record(manifest,folder)
+        cover_path=contained(folder,covers.FILE)
+        if not cover_path.is_file():cover_path.write_bytes(covers.generate(manifest['name']))
+        if cover_path.stat().st_size<=covers.MAX_BYTES and covers.valid(cover_path.read_bytes()):record['profileImagePath']=str(cover_path)
         memory=installation_memory(manifest)
         if memory['allocated']:
             record.update(isMemoryOverride=True,allocatedMemory=memory['allocated'])
@@ -676,7 +683,8 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         notify(100,'整合包已安裝',folder.name)
         return dict(folder=str(folder),name=folder.name,files=len(manifest['files']),downloaded=len(linked),
                     recommendedRam=manifest.get('recommendedRam') or 0,loader=manifest['loader'].get('name',''),
-                    backup=server_backup,profile_import=listing_backup is None,memory=memory,**server_result)
+                    backup=server_backup,profile_import=listing_backup is None,memory=memory,
+                    cover=dict(line='已帶入整合包封面，重新開啟 CurseForge 即可查看。') if record['profileImagePath'] else dict(line='封面圖片無法讀取，已保留預設封面。'),**server_result)
     except BaseException:
         # Only what this install made is removed: the work folder, or the new folder it became.
         if not registered:
@@ -691,7 +699,8 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
     Compared with the content list it was installed with: a file the new version changed or added is
     written, a file it dropped is removed (only when the player did not change it), and options.txt is
     never touched. Every write and removal is one restorable batch, so 「備份與還原」 can undo the update.
-    CurseForge's own records are not touched, so CurseForge may stay open; the game must be closed.
+    Existing custom artwork is retained. A missing profile image is filled separately with
+    CurseForge closed; the game must be closed for all content changes.
     """
     import requests
     from .deployment import apply_reviewed
@@ -710,6 +719,7 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
         for e in manifest['files']:
             new_paths.add(e['path'].casefold())
             if e['path'].casefold()=='options.txt':continue  # the player's own settings
+            if e['path']==covers.FILE and contained(folder,covers.FILE).is_file():continue  # retain the player's image
             current=file_hash(contained(folder,e['path']))
             if current!=e['sha256']:todo.append((e,current))
         bundled=[(e,c) for e,c in todo if e['source']=='zip'];linked=[(e,c) for e,c in todo if e['source']=='curseforge']
@@ -730,7 +740,7 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
             if current is not None and old and current!=old.get(e['path']):replaced.append(e['path'])  # the player had changed it
             records.append(dict(file=e['path'],before=current,after=e['sha256'],reviewed=True,verified=True))
         for path,sha in sorted(old.items()):
-            if path.casefold() in new_paths or path.casefold()=='options.txt':continue
+            if path.casefold() in new_paths or path.casefold() in ('options.txt',covers.FILE.casefold()):continue
             current=file_hash(contained(folder,path))
             if current is None:continue
             if current==sha:records.append(dict(file=path,before=current,after=None,reviewed=True,verified=True))
@@ -748,10 +758,11 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
             jobs.ensure_game_closed(folder)
             backup=str(apply_reviewed(folder,staged,records,home/'output',jobs.waiting_note(notify,85,'備份與更新')))
         remember(home,folder,manifest,file_hash(Path(package)),record.get('guid') or str(uuid.uuid4()))
+        cover=covers.finish(folder,home,notify,cancelled,pause=pause)
         for source in sources:Path(source).unlink(missing_ok=True)
         notify(100,'整合包已更新',folder.name)
         return dict(folder=str(folder),name=folder.name,written=sum(r['after'] is not None for r in records),
                     removed=sum(r['after'] is None for r in records),replaced=replaced,kept=kept,backup=backup,
-                    recommendedRam=manifest.get('recommendedRam') or 0,**server_result)
+                    recommendedRam=manifest.get('recommendedRam') or 0,cover=cover,**server_result)
     finally:
         shutil.rmtree(staged,ignore_errors=True)

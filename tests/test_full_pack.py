@@ -112,6 +112,38 @@ class FullPackTests(unittest.TestCase):
         (self.owner/'minecraftinstance.json').write_text(json.dumps(record))
         with self.assertRaisesRegex(ValueError,'正式版本'):full_pack.build(self.owner,self.root/'x.zip',session=self.server)
 
+    def test_cover_is_bundled_and_registered_with_the_new_local_path(self):
+        from mc_zh_tw_translator import covers
+        selected=self.root/'author-cover.png';selected.write_bytes(covers.generate('Author artwork'))
+        record=json.loads((self.owner/'minecraftinstance.json').read_bytes());record['profileImagePath']=str(selected)
+        (self.owner/'minecraftinstance.json').write_text(json.dumps(record))
+        manifest=full_pack.build(self.owner,self.package,session=self.server,workers=1)
+        entry=next(e for e in manifest['files'] if e['path']==covers.FILE)
+        self.assertEqual(entry['sha256'],full_pack.file_hash(selected))
+        result=self.install();folder=Path(result['folder']);local=json.loads((folder/'minecraftinstance.json').read_bytes())
+        self.assertEqual(local['profileImagePath'],str(folder/covers.FILE))
+        self.assertEqual((folder/covers.FILE).read_bytes(),selected.read_bytes())
+        self.assertEqual(json.loads(self.listing.read_bytes())[-1]['profileImagePath'],local['profileImagePath'])
+
+    def test_old_cloud_package_without_cover_still_gets_one_on_install(self):
+        from mc_zh_tw_translator import covers
+        with zipfile.ZipFile(self.package) as z:items={n:z.read(n) for n in z.namelist()}
+        manifest=json.loads(items[full_pack.MANIFEST]);manifest['files']=[e for e in manifest['files'] if e['path']!=covers.FILE]
+        del items[full_pack.PAYLOAD+covers.FILE];items[full_pack.MANIFEST]=json.dumps(manifest).encode()
+        with zipfile.ZipFile(self.package,'w') as z:
+            for name,raw in items.items():z.writestr(name,raw)
+        result=self.install();folder=Path(result['folder'])
+        self.assertTrue(covers.valid((folder/covers.FILE).read_bytes()))
+        self.assertEqual(json.loads((folder/'minecraftinstance.json').read_bytes())['profileImagePath'],str(folder/covers.FILE))
+
+    def test_cloud_update_preserves_player_cover_pixels_and_profile(self):
+        from mc_zh_tw_translator import covers
+        result=self.install();folder=Path(result['folder']);image=covers.generate('Player choice')
+        (folder/covers.FILE).write_bytes(image);before=(folder/'minecraftinstance.json').read_bytes();cache=self.listing.read_bytes()
+        full_pack.update(self.package,self.home,folder,session=self.server)
+        self.assertEqual((folder/covers.FILE).read_bytes(),image)
+        self.assertEqual((folder/'minecraftinstance.json').read_bytes(),before);self.assertEqual(self.listing.read_bytes(),cache)
+
     def test_card_server_install_update_duplicate_and_restore(self):
         server=dict(name='狗狗貓貓島',address='26.186.50.26')
         result=self.install(server=server)

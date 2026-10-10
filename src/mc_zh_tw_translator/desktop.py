@@ -932,7 +932,7 @@ class MainWindow(QMainWindow):
               f"1. 從分享者的 Google 雲端下載新版本（約 {pack['size']/1024**3:.1f} GB）。\n"
               '2. 只換掉有變動的檔案，新版本拿掉的模組會移除；存檔、遊戲設定和截圖都不會動。\n'
               '3. 換掉和移除的檔案會先備份，之後可在「備份與還原」復原。\n\n'
-              '請先關閉這個整合包的遊戲；CurseForge 不必關閉。\n\n是否繼續？')
+              '請先關閉這個整合包的遊戲；若需要補上封面，最後一步會請你關閉 CurseForge。\n\n是否繼續？')
         if pack.get('server'):text+='\n\n'+server_line(pack['server'])+'同一個位址不重複加入，原有清單保留。'
         if QMessageBox.question(self,'更新整合包',text)!=QMessageBox.Yes:return
         def operation(w):
@@ -958,6 +958,7 @@ class MainWindow(QMainWindow):
         if result.get('server'):
             lines.append(result.get('server_error') or ('已加入伺服器：' if result.get('server_added') else '伺服器清單已有：')+result['server']['name']+'（'+result['server']['address']+'）')
         if result.get('notes'):lines+=['','分享者的說明：',result['notes']]
+        if result.get('cover'):lines+=['',result['cover']['line']]
         self.patch_status.setText('');self.notify_finished('整合包已更新',lines[0])
         QMessageBox.information(self,'整合包已更新','\n'.join(lines))
 
@@ -976,6 +977,7 @@ class MainWindow(QMainWindow):
         if result.get('notes'):lines+=['','分享者的說明：',result['notes']]
         memory=self.memory_advice(dict(recommendedRam=result.get('recommendedRam') or 0,instances=[dict(path=result['folder'])]))
         if result.get('memory'):lines+=['',result['memory']['line']]
+        if result.get('cover'):lines+=['',result['cover']['line']]
         if memory:lines+=['',memory['line']]+[memory[k] for k in ('now','warning') if memory[k]]+['（在「已翻譯整合包」按「怎麼調整記憶體」看步驟）']
         lines+=['','不想要時，在 CurseForge 對它按右鍵刪除即可。']
         self.patch_status.setText('');self.notify_finished('整合包已安裝',lines[0])
@@ -1030,6 +1032,7 @@ class MainWindow(QMainWindow):
                                 None:f"伺服器清單讀不懂，沒有加入「{server['name']}」；可以在「多人遊戲 → 新增伺服器」自己輸入 {server['address']}。"}[server['added']])
         if result['backup']:lines.append('原檔已備份，可在「備份與還原」復原。')
         lines.append('遊戲語言已設為繁體中文（台灣）。' if result['language_set'] else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
+        if result.get('cover'):lines+=['',result['cover']['line']]
         if result.get('notes'):lines+=['','翻譯者的說明：',result['notes']]
         lines+=['',result.get('save_note') or patches.shared_text.SAVE_NOTE]
         memory=self.memory_advice(dict(recommendedRam=patches.instance_identity(Path(result['instance']))['recommendedRam'],

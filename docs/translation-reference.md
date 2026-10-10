@@ -127,6 +127,8 @@
 
 CurseForge 雲端整包登記（2026-10-10）
 
+2026-10-10 封面欄位查證：本機 CurseForge Windows resources/app.asar 的設定畫面將 profileImagePath 對應 thumbnailUrl；ChangeModpackImage 與 createModpack 傳入相同欄位。官方整合包 projectID 不為零時仍由 CurseForge 取得作者封面（本機實際官方記錄 profileImagePath 為 null 但卡片有作者圖片），不得因 null 把原封面改掉。自製整合包設定檔 profileImagePath 為 null 時可填入本機圖片路徑。APP 新建設定檔指定新資料夾的 MCTranslator-cover.png；既有缺封面的自製設定檔只在 CurseForge 關閉時更新匹配的 guid 與 installPath，原紀錄和圖片先備份。以上為程式碼查證及隔離測試，玩家端 CurseForge 卡片實際顯示仍待確認。
+
 本機已安裝的 CurseForge Windows 單檔 Agent 中，Curse.Games.Minecraft 的 MinecraftInstanceService.RefreshAsync 呼叫 ResolveGameInstancesAsync。後者讀 MinecraftSettings.InstanceRoot、列舉直屬資料夾，未登記的路徑呼叫 ImportInstanceAsync；匯入會讀該資料夾的 minecraftinstance.json，反序列化、InitAfterLoadFromDisk、SaveToDisk、AddToDatabase，再掃描模組。缺少設定檔才略過。因此全域 MinecraftGameInstance.json 不是新設定檔匯入的必要前提。
 
 Electron storage.json 的 minecraft-settings 在本機為 JSON 字串，其中 minecraftRoot 指向遊戲根目錄，整合包放 Instances。缺少全域清單時，APP 只接受啟動器自身資料位置中的此設定，且要求絕對路徑及 Instances 已存在；僅在新建資料夾寫入設定檔，由 CurseForge 下次啟動／刷新匯入。不得建立空的全域清單，以免隱藏其他設定檔。全域清單已存在但格式錯誤時不繞過。下載後、登記前再次核對路徑及清單，設定變動則停止並移除本次新建資料夾。
