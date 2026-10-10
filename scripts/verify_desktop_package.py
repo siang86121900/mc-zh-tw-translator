@@ -24,7 +24,7 @@ def main():
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
     from mc_zh_tw_translator.updater import VERSION
     parser=argparse.ArgumentParser();parser.add_argument('--exe',type=Path,default=Path('dist/MCTranslator.exe'))
-    args=parser.parse_args();print(json.dumps(verify(args.exe,VERSION),ensure_ascii=False))
+    args=parser.parse_args();print(json.dumps(verify(args.exe,VERSION),ensure_ascii=True))
 
 
 if __name__=='__main__':main()
