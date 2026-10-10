@@ -59,8 +59,8 @@ MAX_FILES = 200000
 MAX_FILE_SIZE = 2*1024**3
 MAX_TOTAL_SIZE = 24*1024**3
 FOLDER_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-# CurseForge's record of a modpack the player created; personal fields (play time, memory, Java
-# arguments, picture) keep CurseForge's defaults. Taken from a profile CurseForge itself wrote.
+# CurseForge's new profile template; the installer selects this player's memory allocation
+# separately. Play time, Java arguments and picture keep defaults.
 RECORD_TEMPLATE = {
     'isUnlocked': True, 'javaArgsOverride': None, 'lastPlayed': '0001-01-01T00:00:00', 'playedCount': 0, 'timePlayed': 0,
     'manifest': None, 'fileDate': '0001-01-01T00:00:00', 'installedModpack': None, 'projectID': 0, 'fileID': 0,
@@ -481,6 +481,35 @@ def new_record(manifest, folder: Path) -> dict:
     return record
 
 
+def installation_memory(manifest):
+    """Choose a new profile's heap limit from this player's machine, never the owner's RAM setting."""
+    mods=sum(e['path'].startswith('mods/') and e['path'].lower().endswith('.jar') for e in manifest['files'])
+    try:recommended=int(manifest.get('recommendedRam') or 0)
+    except (TypeError,ValueError):recommended=0
+    if not 512<=recommended<=65536:recommended=0
+    estimated=recommended<=0
+    if estimated:recommended=patches.memory_estimate(mods)
+    try:
+        import psutil
+        status=psutil.virtual_memory()
+        total=int(status.total//(1024*1024));available=int(status.available//(1024*1024))
+        if total<=0 or available<0 or available>total:raise ValueError('invalid memory status')
+    except (OSError,ValueError,AttributeError,NotImplementedError):
+        return dict(allocated=0,recommended=recommended,estimated=estimated,
+                    line='無法讀取這台電腦的記憶體，已沿用 CurseForge 的記憶體設定；可在「怎麼調整記憶體」查看調整方式。')
+    if not recommended:return dict(allocated=0,recommended=0,estimated=estimated,line='無法估計整合包的記憶體需求，已沿用 CurseForge 的設定。')
+    # Leave up to 3 GB for Windows, at least half on small machines; available memory
+    # also limits the choice, with 1 GB headroom. Xmx is an upper bound, not preallocation.
+    capacity=min(total-min(3072,total//2),available-1024)
+    allocated=max(512,min(recommended,max(512,capacity//256*256)))
+    line=f'已依這台電腦的記憶體，自動將此整合包設定為 {patches.gb(allocated)} GB。'
+    if estimated:line+=f'需求依 {mods:,} 個模組估計，約 {patches.gb(recommended)} GB（不是作者建議）。'
+    if allocated<recommended:
+        line+='低於整合包建議，仍可嘗試啟動；可能較卡或啟動失敗，請先關閉其他程式。'
+    if capacity<512:line+='目前可用記憶體很少，已設定為 512 MB；請先關閉其他程式再試。'
+    return dict(allocated=allocated,recommended=recommended,estimated=estimated,total=total,available=available,line=line)
+
+
 def register(listing: Path, folder: Path, record: dict, backup_dir: Path):
     """Add one profile to CurseForge's list (CurseForge must be closed). The list is backed up first and
     put back when the result does not read back with the new profile; nothing else in it changes."""
@@ -636,6 +665,9 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
                 server_backup=str(apply_reviewed(folder,staged,[server_record],home/'output',jobs.waiting_note(notify,96,'加入伺服器')))
         finally:shutil.rmtree(staged,ignore_errors=True)
         record=new_record(manifest,folder)
+        memory=installation_memory(manifest)
+        if memory['allocated']:
+            record.update(isMemoryOverride=True,allocatedMemory=memory['allocated'])
         stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
         listing_backup=register(listing,folder,record,home/'output'/folder.name/'CurseForge紀錄備份'/stamp)
         registered=True
@@ -644,7 +676,7 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         notify(100,'整合包已安裝',folder.name)
         return dict(folder=str(folder),name=folder.name,files=len(manifest['files']),downloaded=len(linked),
                     recommendedRam=manifest.get('recommendedRam') or 0,loader=manifest['loader'].get('name',''),
-                    backup=server_backup,profile_import=listing_backup is None,**server_result)
+                    backup=server_backup,profile_import=listing_backup is None,memory=memory,**server_result)
     except BaseException:
         # Only what this install made is removed: the work folder, or the new folder it became.
         if not registered:

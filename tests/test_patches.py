@@ -20,11 +20,13 @@ def make_instance(root):
     (instance/'minecraftinstance.json').write_text(json.dumps({'name':'Demo Pack','projectID':123,'fileID':456,'gameVersion':'1.21.1'}),encoding='utf-8')
     (instance/'mods').mkdir()
     with zipfile.ZipFile(instance/'mods/real.jar','w') as z:
-        z.writestr('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="real"\n')
-        z.writestr('META-INF/CERT.SF','signature')
-        z.writestr('real/Main.class',b'\xca\xfe\xba\xbe')
-        z.writestr('assets/real/lang/en_us.json',json.dumps({'real.a':'Real'}))
-        z.writestr('assets/real/lang/zh_cn.json',json.dumps({'real.a':'真实'}))
+        # Two fixtures must have identical bytes even across a ZIP timestamp boundary.
+        def write(name,data):z.writestr(zipfile.ZipInfo(name,(2026,1,1,0,0,0)),data)
+        write('META-INF/neoforge.mods.toml','modLoader="javafml"\n[[mods]]\nmodId="real"\n')
+        write('META-INF/CERT.SF','signature')
+        write('real/Main.class',b'\xca\xfe\xba\xbe')
+        write('assets/real/lang/en_us.json',json.dumps({'real.a':'Real'}))
+        write('assets/real/lang/zh_cn.json',json.dumps({'real.a':'真实'}))
     (instance/'options.txt').write_text('lang:en_us\n',encoding='utf-8')
     return instance
 
@@ -89,6 +91,7 @@ class PatchTests(unittest.TestCase):
         self.translate()
         out=patches.export_patch(self.translator,self.home)
         z,manifest=patches.read_patch(Path(out['path']))
+        self.addCleanup(z.close)
         receipt={'kubejs/assets/demo/lang/zh_tw.json':{'before':'a'*64,'after':'b'*64}}
         plan_=patches.plan_patch(self.friend,z,manifest,receipt)
         pack=next(p for p in plan_ if p[0].get('file')=='resourcepacks/MCTranslator-zh_tw.zip')
@@ -357,7 +360,8 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(patches.memory_advice(0,16384),{})
         roomy=patches.memory_advice(12128,32768)
         self.assertIn('約 12 GB',roomy['line']);self.assertEqual((roomy['warning'],roomy['now']),('',''))
-        self.assertIn('設定檔選項（Profile Options）',roomy['steps']);self.assertIn('作者推薦（Recommended by Author）',roomy['steps']);self.assertIn('不會修改',roomy['steps'])
+        self.assertIn('設定檔選項（Profile Options）',roomy['steps']);self.assertIn('作者推薦（Recommended by Author）',roomy['steps'])
+        self.assertIn('雲端整包的新安裝',roomy['steps']);self.assertIn('已安裝整合包可在這裡自行調整',roomy['steps'])
         self.assertIn('剩下不多',patches.memory_advice(12128,16384)['warning'])  # over 3/4 of the computer, as CurseForge warns
         self.assertIn('可能開不起來',patches.memory_advice(12128,8192)['warning'])
         self.assertEqual(patches.memory_advice(12128,0)['warning'],'')  # unknown total: no guess

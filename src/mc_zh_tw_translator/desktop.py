@@ -900,7 +900,8 @@ class MainWindow(QMainWindow):
               f"1. 從分享者的 Google 雲端下載整合包（約 {pack['size']/1024**3:.1f} GB）。\n"
               '2. 從 CurseForge 官方下載其餘的模組。\n'
               '3. 逐一核對每個檔案都和分享者的相同，有任何不同就不安裝。\n'
-              '4. 在 CurseForge 建立一個新的設定檔，不會動到你其他的整合包和存檔。\n\n'
+              '4. 在 CurseForge 建立一個新的設定檔，不會動到你其他的整合包和存檔。\n'
+              '5. 依這台電腦的總記憶體與可用量自動分配遊戲記憶體；不足時調低，仍可嘗試啟動，但可能較卡或啟動失敗。\n\n'
               f"需要約 {total/1024**3:.1f} GB 的硬碟空間。"
               +('\n\n你的 CurseForge 現在開著：程式會先下載和核對，最後一步請把 CurseForge 關掉（包含右下角的小圖示），'
                 '關掉後會自動完成；到時也會跳出通知提醒你。\n' if full_pack.curseforge_running() else '最後一步需要 CurseForge 是關閉的，到時會提醒你。\n')+
@@ -974,6 +975,7 @@ class MainWindow(QMainWindow):
         if result.get('backup'):lines.append('伺服器清單的變更已備份，可在「備份與還原」復原。')
         if result.get('notes'):lines+=['','分享者的說明：',result['notes']]
         memory=self.memory_advice(dict(recommendedRam=result.get('recommendedRam') or 0,instances=[dict(path=result['folder'])]))
+        if result.get('memory'):lines+=['',result['memory']['line']]
         if memory:lines+=['',memory['line']]+[memory[k] for k in ('now','warning') if memory[k]]+['（在「已翻譯整合包」按「怎麼調整記憶體」看步驟）']
         lines+=['','不想要時，在 CurseForge 對它按右鍵刪除即可。']
         self.patch_status.setText('');self.notify_finished('整合包已安裝',lines[0])

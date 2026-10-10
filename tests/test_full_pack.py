@@ -61,6 +61,8 @@ class FullPackTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.home=self.root/'app'
         user_home=patch.object(Path,'home',return_value=self.root);user_home.start();self.addCleanup(user_home.stop)
+        memory=patch('psutil.virtual_memory',return_value=Mock(total=16384*1024**2,available=12288*1024**2))
+        memory.start();self.addCleanup(memory.stop)
         self.owner=self.root/'owner/My Pack';(self.owner/'mods').mkdir(parents=True)
         self.served=jar('curseforge mod');self.changed=jar('translated copy');self.handmade=jar('not on curseforge')
         (self.owner/'mods/served.jar').write_bytes(self.served)
@@ -166,7 +168,8 @@ class FullPackTests(unittest.TestCase):
         data=json.loads(after);self.assertEqual(len(data),2)
         entry=data[-1];self.assertEqual(entry['name'],'My Pack');self.assertEqual(entry['installPath'],str(folder)+'\\')
         self.assertEqual(entry['installedAddons'],[]);self.assertEqual(entry['baseModLoader']['name'],'forge-47.4.10')
-        self.assertFalse(entry['isMemoryOverride'])
+        self.assertTrue(entry['isMemoryOverride']);self.assertEqual(entry['allocatedMemory'],10000)
+        self.assertEqual(result['memory']['allocated'],10000)
         self.assertEqual(json.loads((folder/'minecraftinstance.json').read_text(encoding='utf-8'))['guid'],entry['guid'])
         self.assertEqual(len(list(self.home.glob('output/My Pack/CurseForge紀錄備份/*/MinecraftGameInstance.json'))),1)
         self.assertIn(str(folder.resolve()).casefold(),full_pack.installed(self.home))
@@ -237,6 +240,41 @@ class FullPackTests(unittest.TestCase):
     def test_no_curseforge(self):
         with patch.object(full_pack,'profile_curseforge_root',return_value=None),self.assertRaisesRegex(ValueError,'Minecraft 整合包清單'):
             full_pack.install(self.package,self.home,session=self.server,listing=self.root/'missing.json',running=lambda:False)
+
+    def test_memory_is_lowered_on_small_or_busy_computers_and_install_is_allowed(self):
+        for total,available,expected in ((16384,12288,8192),(8192,6144,5120),(6144,4096,3072),
+                                         (4096,2560,1536),(16384,3072,2048),(4096,512,512)):
+            manifest=dict(self.manifest,recommendedRam=8192)
+            with self.subTest(total=total,available=available),patch('psutil.virtual_memory',return_value=Mock(total=total*1024**2,available=available*1024**2)):
+                memory=full_pack.installation_memory(manifest)
+            self.assertEqual(memory['allocated'],expected)
+            if expected<8192:self.assertIn('仍可嘗試啟動',memory['line'])
+        with patch('psutil.virtual_memory',return_value=Mock(total=6144*1024**2,available=4096*1024**2)):
+            result=self.install()
+        profile=json.loads((Path(result['folder'])/'minecraftinstance.json').read_bytes())
+        listing=json.loads(self.listing.read_bytes())[-1]
+        self.assertEqual(profile['allocatedMemory'],3072);self.assertEqual(listing['allocatedMemory'],3072)
+        self.assertTrue(profile['isMemoryOverride']);self.assertIn('低於整合包建議',result['memory']['line'])
+
+    def test_memory_uses_mod_estimate_when_author_did_not_provide_a_number(self):
+        manifest=dict(self.manifest,recommendedRam=0,files=[dict(path=f'mods/{n}.jar') for n in range(279)])
+        memory=full_pack.installation_memory(manifest)
+        self.assertEqual(memory['allocated'],8192);self.assertTrue(memory['estimated'])
+        self.assertIn('不是作者建議',memory['line'])
+
+    def test_memory_read_failure_preserves_launcher_default_and_does_not_prevent_install(self):
+        with patch('psutil.virtual_memory',side_effect=OSError('read failed')):
+            result=self.install()
+        profile=json.loads((Path(result['folder'])/'minecraftinstance.json').read_bytes())
+        self.assertFalse(profile['isMemoryOverride']);self.assertIn('無法讀取',result['memory']['line'])
+
+    def test_update_keeps_memory_the_player_changed(self):
+        folder=Path(self.install()['folder']);profile=folder/'minecraftinstance.json'
+        record=json.loads(profile.read_bytes());record.update(allocatedMemory=3072,isMemoryOverride=True)
+        profile.write_text(json.dumps(record),encoding='utf-8');before=profile.read_bytes();listing=self.listing.read_bytes()
+        with patch('psutil.virtual_memory',side_effect=AssertionError('updates must not reset memory')):
+            full_pack.update(self.package,self.home,folder,session=self.server,pause=lambda _:None)
+        self.assertEqual(profile.read_bytes(),before);self.assertEqual(self.listing.read_bytes(),listing)
 
     def missing_cache_setup(self,as_string=True):
         self.listing=self.root/'程式資料/CurseForge/agent/GameInstances/MinecraftGameInstance.json'

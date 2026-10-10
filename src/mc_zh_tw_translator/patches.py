@@ -210,7 +210,7 @@ def memory_steps(record: dict | None = None) -> dict:
            '2. 找到「記憶體設定（Memory Settings）」，選「自訂記憶體分配（Custom RAM Allocation）」，把記憶體往右拉。'
            'CurseForge 超過電腦記憶體的 75% 會提醒，請留一些給 Windows 和其他程式。\n'
            '3. 關掉視窗後重新開遊戲就會生效。\n\n'
-           '本程式不會修改 CurseForge 的設定，需要你自己調整。')
+           '雲端整包的新安裝會自動分配記憶體；已安裝整合包可在這裡自行調整。')
     return dict(line='',warning='',now=f'這個整合包目前在 CurseForge 設定為 {gb(current)} GB。' if current else '',steps=steps)
 
 
@@ -224,7 +224,7 @@ def memory_estimate(mod_count: int) -> int:
 def memory_advice(recommended: int, total: int = 0, record: dict | None = None, estimated_from: int = 0) -> dict:
     """What to tell a player about memory: the modpack author's figure, whether this computer has room, how to set it.
 
-    The program only explains; CurseForge's own settings are never changed (the player sets them there).
+    This helper only explains; the full-pack installer separately sets a new profile's memory.
     Labels are CurseForge's own English ones (its app has no Chinese), checked in its app.asar.
     """
     if not recommended:return {}
@@ -250,7 +250,7 @@ def memory_advice(recommended: int, total: int = 0, record: dict | None = None, 
              '或選「自訂記憶體分配（Custom RAM Allocation）」，')+
            f'把記憶體拉到約 {gb(recommended)} GB。\n'
            '3. 關掉視窗後重新開遊戲就會生效。\n\n'
-           '本程式不會修改 CurseForge 的設定，需要你自己調整。')
+           '雲端整包的新安裝會依電腦記憶體自動設定，可能低於建議；已安裝整合包可在這裡自行調整。')
     return dict(line=line,warning=warning,now=now,steps=steps)
 
 
