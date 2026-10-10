@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from mc_zh_tw_translator import full_pack, patches, server_list, desktop_jobs
 
@@ -234,8 +234,41 @@ class FullPackTests(unittest.TestCase):
             self.assertEqual(len(full_pack.still_installed(home,Path(d)/'missing.json')),2)
 
     def test_no_curseforge(self):
-        with self.assertRaisesRegex(ValueError,'沒有 CurseForge'):
+        with self.assertRaisesRegex(ValueError,'Minecraft 整合包清單'):
             full_pack.install(self.package,self.home,session=self.server,listing=self.root/'missing.json',running=lambda:False)
+
+    def test_preflight_missing_minecraft_list_does_not_claim_app_is_absent(self):
+        with self.assertRaisesRegex(ValueError,'完成遊戲資料夾設定'):
+            full_pack.require_curseforge_list(self.root/'missing.json')
+        self.assertFalse((self.root/'missing.json').exists())
+
+    def test_detection_uses_existing_local_list_when_roaming_is_missing(self):
+        local=self.root/'local';roaming=self.root/'roaming'
+        listing=local/'CurseForge/agent/GameInstances/MinecraftGameInstance.json'
+        listing.parent.mkdir(parents=True);listing.write_text('[]',encoding='utf-8')
+        with patch.dict('os.environ',APPDATA=str(roaming),LOCALAPPDATA=str(local)), patch.object(Path,'home',return_value=self.root), patch.object(full_pack,'system_curseforge_data_roots',return_value=[]):
+            self.assertEqual(full_pack.curseforge_list(),listing)
+            self.assertEqual(full_pack.require_curseforge_list(),listing)
+
+    def test_detection_falls_back_when_appdata_environment_points_elsewhere(self):
+        listing=self.root/'AppData/Roaming/CurseForge/agent/GameInstances/MinecraftGameInstance.json'
+        listing.parent.mkdir(parents=True);listing.write_text('[]',encoding='utf-8')
+        with patch.dict('os.environ',APPDATA=str(self.root/'wrong'),LOCALAPPDATA=str(self.root/'local')), patch.object(Path,'home',return_value=self.root), patch.object(full_pack,'system_curseforge_data_roots',return_value=[]):
+            self.assertEqual(full_pack.curseforge_list(),listing)
+
+    def test_app_reported_custom_data_location_takes_priority(self):
+        root=self.root/'moved data';listing=root/'agent/GameInstances/MinecraftGameInstance.json'
+        listing.parent.mkdir(parents=True);listing.write_text('[]',encoding='utf-8')
+        with patch.object(full_pack,'system_curseforge_data_roots',return_value=[root]):
+            self.assertEqual(full_pack.curseforge_list(),listing)
+
+    def test_only_curseforge_process_data_directories_are_used(self):
+        moved=str((self.root/'moved data').resolve())
+        procs=[Mock(info=dict(name='CurseForge.exe',cmdline=['CurseForge.exe','--user-data-dir='+moved])),
+               Mock(info=dict(name='browser.exe',cmdline=['browser.exe','--user-data-dir='+str(self.root/'unrelated')]))]
+        with patch('psutil.process_iter',return_value=procs):
+            roots=full_pack.system_curseforge_data_roots()
+        self.assertIn(Path(moved),roots);self.assertNotIn(self.root/'unrelated',roots)
 
     def tampered(self,change):
         with zipfile.ZipFile(self.package) as z:items={n:z.read(n) for n in z.namelist()}

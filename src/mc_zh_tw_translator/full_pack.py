@@ -333,9 +333,57 @@ def download(pack, home: Path, progress=lambda _:None, session=None, cancelled=l
     raise RuntimeError('從 Google 雲端下載一直中斷，請確認網路後再按「安裝」；已下載的部分會保留。') from problem
 
 
+def system_curseforge_data_roots():
+    """Local OS/app evidence for relocated data, without searching other Windows accounts."""
+    roots=[]
+    try:
+        import psutil
+        for proc in psutil.process_iter(['name','cmdline']):
+            try:
+                if (proc.info.get('name') or '').casefold() not in CURSEFORGE_PROCESSES:continue
+                args=proc.info.get('cmdline') or []
+                for i,arg in enumerate(args):
+                    value=arg.split('=',1)[1] if arg.startswith('--user-data-dir=') else args[i+1] if arg=='--user-data-dir' and i+1<len(args) else ''
+                    path=Path(value.strip('"')) if value else None
+                    if path and path.is_absolute():roots.append(path)
+            except (psutil.Error,OSError,ValueError):continue
+    except (ImportError,OSError):pass
+    if os.name=='nt':
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders') as key:
+                for name in ('AppData','Local AppData'):
+                    try:
+                        value,_=winreg.QueryValueEx(key,name)
+                        path=Path(os.path.expandvars(value))
+                        if path.is_absolute():roots.append(path/'CurseForge')
+                    except (OSError,TypeError,ValueError):continue
+        except OSError:pass
+    return roots
+
+
 def curseforge_list() -> Path:
     appdata=Path(os.environ.get('APPDATA',Path.home()/'AppData/Roaming'))
-    return appdata/'CurseForge/agent/GameInstances/MinecraftGameInstance.json'
+    candidates=[appdata,Path.home()/'AppData/Roaming',
+                Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData/Local'))]
+    paths=[p/'agent/GameInstances/MinecraftGameInstance.json' for p in system_curseforge_data_roots()]
+    paths += [p/'CurseForge/agent/GameInstances/MinecraftGameInstance.json' for p in candidates]
+    return next((p for p in paths if p.is_file()),appdata/'CurseForge/agent/GameInstances/MinecraftGameInstance.json')
+
+
+def require_curseforge_list(listing=None) -> Path:
+    """Check Minecraft initialization before downloading a whole pack; absence is not proof of no app."""
+    path=Path(listing) if listing is not None else curseforge_list()
+    if not path.is_file():
+        raise ValueError('找不到 CurseForge 的 Minecraft 整合包清單，無法安全登記新的整合包。'
+                         '這不代表沒有安裝 CurseForge。請先重新開啟 CurseForge，再回來按「安裝」。'
+                         '尚未設定 Minecraft 的玩家才需要進入 Minecraft 頁面完成遊戲資料夾設定。'
+                         '若之前已能玩其他整合包仍遇到此訊息，請提供 CurseForge 的 Minecraft 設定畫面，以確認清單實際位置。')
+    try:data=json.loads(path.read_text(encoding='utf-8-sig'))
+    except (ValueError,UnicodeError) as exc:
+        raise ValueError('CurseForge 的整合包清單格式看不懂，沒有修改。') from exc
+    if not isinstance(data,list):raise ValueError('CurseForge 的整合包清單格式看不懂，沒有修改。')
+    return path
 
 
 def curseforge_root(listing: Path) -> Path:
@@ -468,15 +516,7 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
     import requests
     home=Path(home);session=session or requests.Session()
     manifest=read(package)
-    listing=Path(listing) if listing else curseforge_list()
-    if not listing.is_file():
-        raise ValueError('這台電腦沒有 CurseForge（或從來沒有開過）。請先安裝 CurseForge 並開啟一次，再回來按「安裝」。')
-    # Reject malformed records before falling back to the real default instance folder.
-    # Previously this was only checked at registration, after downloads and staging writes.
-    try:listed=json.loads(listing.read_text(encoding='utf-8-sig'))
-    except (ValueError,UnicodeError) as exc:
-        raise ValueError('CurseForge 的整合包清單格式看不懂，沒有修改。') from exc
-    if not isinstance(listed,list):raise ValueError('CurseForge 的整合包清單格式看不懂，沒有修改。')
+    listing=require_curseforge_list(listing)
     root=curseforge_root(listing);root.mkdir(parents=True,exist_ok=True)
     linked=[e for e in manifest['files'] if e['source']=='curseforge']
     need=manifest['totalSize']+jobs.SPACE_MARGIN

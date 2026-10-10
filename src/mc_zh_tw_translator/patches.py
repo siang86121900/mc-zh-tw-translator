@@ -25,6 +25,7 @@ import io
 import json
 import re
 import shutil
+import threading
 import time
 import uuid
 import zipfile
@@ -40,6 +41,7 @@ from .updater import REPOSITORY, VERSION, release_url
 from .verifier import VerifyResult, check_java_zipfs
 
 PATCH_FORMAT = 'mctranslator-patch-1'
+_receipt_lock = threading.RLock()
 # Format 2 adds per-string edits of config files and scripts (item 'literals'); a patch without them is
 # still written as format 1 so that older versions of the program can install it.
 PATCH_FORMAT_LITERALS = 'mctranslator-patch-2'
@@ -974,11 +976,64 @@ def applied_patches(home: Path) -> dict:
     except (OSError,ValueError):return {}
 
 
+def recheck_partial_patches(home: Path):
+    """Repair stale partial receipts using the cached, hash-checked patch and current readback only.
+
+    No rescanning, AI, downloads or game writes. A missing proof keeps the previous status.
+    This runs in the catalog worker, since hashing mod files must not block the UI.
+    """
+    home=Path(home);data=applied_patches(home);upgrades={}
+    for name,receipt in data.items():
+        if not isinstance(receipt,dict) or receipt.get('consistency')!='partial':continue
+        digest=receipt.get('sha256','')
+        if not re.fullmatch('[0-9a-f]{64}',str(digest)):continue
+        instance=Path(name);cached=home/'downloads'/f'{digest}.zip'
+        if not jobs.is_instance(instance) or not cached.is_file():continue
+        try:
+            if file_hash(cached)!=digest:continue
+            z,manifest=read_patch(cached)
+            with z:
+                if (manifest.get('sharing_status')!='ready' or 'required_mods' not in manifest
+                        or manifest.get('skipped') or manifest.get('text_omissions')):continue
+                if any(state!='present' for _,state in mod_states(instance,manifest['added_mods'])):continue
+                versions=shared_text.local_versions(instance,home)
+                plan=plan_patch(instance,z,manifest,versions)
+                if any(p[1]!='already' for p in plan):continue
+                index=mods_by_hash(instance)
+                for pair in versions.values():
+                    if pair['after'] in index:index.setdefault(pair['before'],index[pair['after']])
+                if any(m['before'] not in index and m['after'] not in index for m in manifest['required_mods']):continue
+                # Require the sender's exact translated source, or a locally recorded chain from the same original.
+                hashes={};rows=[]
+                for u in manifest.get('text_units') or []:
+                    source=shared_text.source_file(u['source'])
+                    if source not in hashes:hashes[source]=file_hash(contained(instance,source))
+                    if (hashes[source]!=u['source_after'] and
+                            versions.get(source,{}).get('before')!=u['requires'][source]):break
+                    rows.append(dict(source=u['source'],key=u['key'],kind=u['kind'],proposed=u['text']))
+                else:
+                    if jobs.check_shown(instance,rows):continue
+                    if any(p[0].get('pack') for p in plan):
+                        options=instance/'options.txt'
+                        if not options.is_file() or jobs.RESOURCE_PACK_ID not in (jobs.enabled_packs(options.read_text(encoding='utf-8')) or []):continue
+                    upgrades[name]=dict(receipt)
+        except (OSError,ValueError,KeyError,TypeError,zipfile.BadZipFile):continue
+    with _receipt_lock:
+        current=applied_patches(home);changed=False
+        for name,earlier in upgrades.items():
+            if current.get(name)==earlier:
+                current[name].update(consistency='matched',rechecked=datetime.now().isoformat(timespec='seconds'))
+                changed=True
+        if changed:jobs.write_json(home/'applied_patches.json',current)
+    return current
+
+
 def record_applied(home: Path, instance: Path, manifest, digest, consistency='unknown',source_versions=None):
-    data=applied_patches(home);pack=manifest.get('modpack') or {}
-    data[str(Path(instance).resolve()).casefold()]=dict(sha256=digest,projectID=pack.get('projectID',0),fileID=pack.get('fileID',0),
-                                                      version=pack.get('version',''),consistency=consistency,source_versions=source_versions or {},applied=datetime.now().isoformat(timespec='seconds'))
-    jobs.write_json(home/'applied_patches.json',data)
+    with _receipt_lock:
+        data=applied_patches(home);pack=manifest.get('modpack') or {}
+        data[str(Path(instance).resolve()).casefold()]=dict(sha256=digest,projectID=pack.get('projectID',0),fileID=pack.get('fileID',0),
+                                                          version=pack.get('version',''),consistency=consistency,source_versions=source_versions or {},applied=datetime.now().isoformat(timespec='seconds'))
+        jobs.write_json(home/'applied_patches.json',data)
 
 
 def catalog_url(url: str) -> str:

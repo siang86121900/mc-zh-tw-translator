@@ -957,7 +957,7 @@ class WorkflowTests(unittest.TestCase):
         from mc_zh_tw_translator.desktop_jobs import discover_instances
         home=Path(self.temp.name)/'home';pack=home/'curseforge/minecraft/Instances/Pack A';(pack/'mods').mkdir(parents=True)
         (home/'curseforge/minecraft/Instances/not-a-pack').mkdir()
-        with patch('pathlib.Path.home',return_value=home),patch.dict('os.environ',{'APPDATA':str(home/'none')}):
+        with patch('pathlib.Path.home',return_value=home),patch.dict('os.environ',{'APPDATA':str(home/'none'),'LOCALAPPDATA':str(home/'local')}),patch('mc_zh_tw_translator.full_pack.system_curseforge_data_roots',return_value=[]):
             found=discover_instances([str(self.instance),'C:/missing/path'])
         self.assertEqual([(l,n) for l,n,_ in found],[('最近使用',self.instance.name),('CurseForge','Pack A')])
 

@@ -50,6 +50,29 @@ class SharedTextTests(unittest.TestCase):
         session['set_language']=True
         return jobs.apply_session(session,self.home,lambda *_:None)
 
+    def test_stale_partial_receipt_rechecks_without_game_writes(self,_):
+        self.translate();out=patches.export_patch(self.sender,self.home)
+        patch_path=Path(out['path'])
+        done=patches.apply_patch(self.friend,patch_path,self.friend_home,set_language=True)
+        self.assertEqual(done['consistency'],'matched')
+        cache=self.friend_home/'downloads'/f"{out['sha256']}.zip";cache.parent.mkdir(parents=True)
+        shutil.copyfile(patch_path,cache)
+        data=patches.applied_patches(self.friend_home);key=str(self.friend.resolve()).casefold()
+        data[key]['consistency']='partial';jobs.write_json(self.friend_home/'applied_patches.json',data)
+        before={p.relative_to(self.friend).as_posix():p.read_bytes() for p in self.friend.rglob('*') if p.is_file()}
+        self.assertEqual(patches.recheck_partial_patches(self.friend_home)[key]['consistency'],'matched')
+        self.assertEqual(before,{p.relative_to(self.friend).as_posix():p.read_bytes() for p in self.friend.rglob('*') if p.is_file()})
+        # An edited source must keep the partial warning, even with a previously successful receipt.
+        data[key]['consistency']='partial';jobs.write_json(self.friend_home/'applied_patches.json',data)
+        (self.friend/'config/fancymenu/customization/menu.txt').write_text('changed',encoding='utf-8')
+        self.assertEqual(patches.recheck_partial_patches(self.friend_home)[key]['consistency'],'partial')
+
+    def test_partial_receipt_with_damaged_cached_patch_is_not_promoted(self,_):
+        self.friend_home.mkdir();digest='a'*64;key=str(self.friend.resolve()).casefold()
+        jobs.write_json(self.friend_home/'applied_patches.json',{key:dict(consistency='partial',sha256=digest)})
+        cache=self.friend_home/'downloads'/f'{digest}.zip';cache.parent.mkdir();cache.write_bytes(b'broken')
+        self.assertEqual(patches.recheck_partial_patches(self.friend_home)[key]['consistency'],'partial')
+
     def test_text_only_recipes_install_same_words_repeat_without_writes_and_restore(self,_):
         before={p.relative_to(self.friend).as_posix():p.read_bytes() for p in self.friend.rglob('*') if p.is_file()}
         self.translate();out=patches.export_patch(self.sender,self.home)

@@ -1326,9 +1326,9 @@ def curseforge_instances():
     Returns dicts with name, path, projectID, fileID and gameVersion; projectID/fileID are 0
     for instances the user created by hand.
     """
-    appdata=Path(os.environ.get('APPDATA',Path.home()/'AppData/Roaming'))
+    from .full_pack import curseforge_list
     try:
-        data=json.loads((appdata/'CurseForge/agent/GameInstances/MinecraftGameInstance.json').read_text(encoding='utf-8-sig'))
+        data=json.loads(curseforge_list().read_text(encoding='utf-8-sig'))
     except (OSError,ValueError):
         data=[]
     result=[];seen=set();roots={Path.home()/'curseforge/minecraft/Instances'}

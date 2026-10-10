@@ -370,7 +370,7 @@ class InstallTests(unittest.TestCase):
         (listed.parent/'half-made').mkdir()  # no record and no mods yet: not a modpack
         store=appdata/'CurseForge/agent/GameInstances';store.mkdir(parents=True)
         (store/'MinecraftGameInstance.json').write_text(json.dumps([dict(name='Old',installPath=str(listed),projectID=1,fileID=2)]),encoding='utf-8')
-        with patch.dict('os.environ',{'APPDATA':str(appdata)}),patch('pathlib.Path.home',return_value=user):
+        with patch.dict('os.environ',{'APPDATA':str(appdata),'LOCALAPPDATA':str(user/'local')}),patch('pathlib.Path.home',return_value=user),patch('mc_zh_tw_translator.full_pack.system_curseforge_data_roots',return_value=[]):
             found=jobs.curseforge_instances()
             self.assertEqual(sorted((x['name'],x['projectID'],x['fileID']) for x in found),[('Demo Pack',123,456),('Old',1,2)])
             (store/'MinecraftGameInstance.json').unlink()  # someone whose CurseForge never wrote the list

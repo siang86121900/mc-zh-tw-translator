@@ -730,7 +730,11 @@ class MainWindow(QMainWindow):
     def refresh_catalog(self):
         self.catalog=[];self.catalog_message('正在讀取已翻譯整合包…','')
         self.catalog_refresh.setEnabled(False)
-        worker=Worker(lambda w:patches.fetch_catalog())
+        def operation(w):
+            packs=patches.fetch_catalog()
+            patches.recheck_partial_patches(self.home)
+            return packs
+        worker=Worker(operation)
         worker.result.connect(self.catalog_loaded)
         worker.failed.connect(lambda text:self.catalog_message('暫時無法連線','請確認網路後按「重新整理」。'))
         worker.finished.connect(lambda w=worker:(self.catalog_refresh.setEnabled(True),self.background.remove(w) if w in self.background else None,w.deleteLater()))
@@ -904,6 +908,7 @@ class MainWindow(QMainWindow):
         if pack.get('server'):text+='\n\n'+server_line(pack['server'])+'同一個位址不重複加入，可在「備份與還原」復原。'
         if QMessageBox.question(self,'安裝整合包',text)!=QMessageBox.Yes:return
         def operation(w):
+            full_pack.require_curseforge_list()
             path=full_pack.download(pack,self.home,lambda v:w.progress.emit(v,'從雲端下載整合包',pack['name']),cancelled=lambda:w.cancelled)
             result=full_pack.install(path,self.home,w.progress.emit,lambda:w.cancelled,server=pack.get('server'))
             path.unlink(missing_ok=True)  # the installed modpack is the copy that matters; the download is gigabytes
