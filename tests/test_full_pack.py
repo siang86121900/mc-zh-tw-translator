@@ -60,6 +60,7 @@ class FullPackTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.home=self.root/'app'
+        user_home=patch.object(Path,'home',return_value=self.root);user_home.start();self.addCleanup(user_home.stop)
         self.owner=self.root/'owner/My Pack';(self.owner/'mods').mkdir(parents=True)
         self.served=jar('curseforge mod');self.changed=jar('translated copy');self.handmade=jar('not on curseforge')
         (self.owner/'mods/served.jar').write_bytes(self.served)
@@ -234,7 +235,7 @@ class FullPackTests(unittest.TestCase):
             self.assertEqual(len(full_pack.still_installed(home,Path(d)/'missing.json')),2)
 
     def test_no_curseforge(self):
-        with self.assertRaisesRegex(ValueError,'Minecraft 整合包清單'):
+        with patch.object(full_pack,'profile_curseforge_root',return_value=None),self.assertRaisesRegex(ValueError,'Minecraft 整合包清單'):
             full_pack.install(self.package,self.home,session=self.server,listing=self.root/'missing.json',running=lambda:False)
 
     def missing_cache_setup(self,as_string=True):
@@ -309,9 +310,42 @@ class FullPackTests(unittest.TestCase):
             self.assertEqual(full_pack.curseforge_list(),self.listing)
 
     def test_preflight_missing_minecraft_list_does_not_claim_app_is_absent(self):
-        with self.assertRaisesRegex(ValueError,'完成遊戲資料夾設定'):
+        with patch.object(full_pack,'profile_curseforge_root',return_value=None),self.assertRaisesRegex(ValueError,'完成遊戲資料夾設定'):
             full_pack.require_curseforge_list(self.root/'missing.json')
         self.assertFalse((self.root/'missing.json').exists())
+
+    def default_profile_setup(self):
+        self.listing=self.root/'roaming/CurseForge/agent/GameInstances/MinecraftGameInstance.json'
+        self.instances=self.root/'curseforge/minecraft/Instances'
+        folder=self.instances/'COBBLEVERSE';(folder/'mods').mkdir(parents=True)
+        record=dict(guid='95b9ac13-d88c-4c4c-8575-5b5019a47ef1',name='COBBLEVERSE',gameVersion='1.21.1',
+                    installPath=str(folder)+'\\',baseModLoader={'name':'fabric-0.16.0'},installedAddons=[])
+        profile=folder/'minecraftinstance.json';profile.write_text(json.dumps(record),encoding='utf-8')
+        return profile
+
+    def test_existing_profile_allows_every_cloud_pack_without_global_cache_or_storage(self):
+        profile=self.default_profile_setup();before=profile.read_bytes()
+        with patch.object(Path,'home',return_value=self.root):
+            result=self.install()
+        folder=Path(result['folder'])
+        self.assertEqual(folder.parent.resolve(),self.instances.resolve());self.assertTrue(result['profile_import'])
+        self.assertFalse(self.listing.exists());self.assertEqual(profile.read_bytes(),before)
+        for e in self.manifest['files']:self.assertEqual(sha((folder/e['path']).read_bytes()),e['sha256'])
+
+    def test_default_directory_requires_real_profile_identity_and_matching_path(self):
+        profile=self.default_profile_setup();record=json.loads(profile.read_bytes())
+        for changes in ({'guid':'not-a-guid'},{'installPath':str(self.root/'somewhere')},{'installPath':'relative'},
+                        {'baseModLoader':None},{'gameVersion':''},{'installedAddons':None}):
+            profile.write_text(json.dumps(dict(record,**changes)),encoding='utf-8')
+            with self.subTest(changes=changes),patch.object(Path,'home',return_value=self.root):
+                self.assertIsNone(full_pack.profile_curseforge_root())
+                with self.assertRaises(ValueError):full_pack.require_curseforge_list(self.listing)
+
+    def test_default_profile_deleted_while_downloading_cancels_install(self):
+        profile=self.default_profile_setup()
+        def running():profile.unlink();return False
+        with patch.object(Path,'home',return_value=self.root),self.assertRaises(ValueError):self.install(running=running)
+        self.assertFalse((self.instances/'My Pack').exists());self.assertFalse(list(self.instances.glob('.mctranslator-*')))
 
     def test_detection_uses_existing_local_list_when_roaming_is_missing(self):
         local=self.root/'local';roaming=self.root/'roaming'

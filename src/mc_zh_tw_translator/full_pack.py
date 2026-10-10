@@ -394,11 +394,38 @@ def configured_curseforge_root(listing: Path):
     except (OSError,ValueError,TypeError):return None
 
 
+def profile_curseforge_root():
+    """Existing launcher-written profiles also prove its default Instances location.
+
+    This covers clients whose global cache/settings are stored differently. Never accept
+    an empty directory or a folder from another launcher merely because it is named Instances.
+    """
+    root=Path.home()/'curseforge/minecraft/Instances'
+    try:
+        for folder in root.iterdir():
+            if not folder.is_dir() or folder.name.startswith('.mctranslator-'):continue
+            try:
+                record=json.loads((folder/'minecraftinstance.json').read_text(encoding='utf-8-sig'))
+                uuid.UUID(record['guid'])
+                path=Path(record['installPath'].rstrip('\\/'))
+                if not path.is_absolute() or path.resolve()!=folder.resolve():continue
+                if not record.get('gameVersion') or not isinstance(record.get('baseModLoader'),dict):continue
+                if not isinstance(record.get('installedAddons'),list) or not jobs.is_instance(folder):continue
+                return root
+            except (OSError,ValueError,TypeError,KeyError,AttributeError):continue
+    except OSError:pass
+    return None
+
+
+def import_curseforge_root(listing: Path):
+    return configured_curseforge_root(listing) or profile_curseforge_root()
+
+
 def require_curseforge_list(listing=None) -> Path:
     """Check Minecraft initialization before downloading a whole pack; absence is not proof of no app."""
     path=Path(listing) if listing is not None else curseforge_list()
     if not path.is_file():
-        if configured_curseforge_root(path):return path
+        if import_curseforge_root(path):return path
         raise ValueError('找不到 CurseForge 的 Minecraft 整合包清單，無法安全登記新的整合包。'
                          '這不代表沒有安裝 CurseForge。請先重新開啟 CurseForge，再回來按「安裝」。'
                          '尚未設定 Minecraft 的玩家才需要進入 Minecraft 頁面完成遊戲資料夾設定。'
@@ -423,7 +450,7 @@ def curseforge_root(listing: Path) -> Path:
         # Only a full path counts: a broken entry ('\\', relative) must never point at the program's own folder.
         if path.is_absolute() and path.parent!=path and path.parent.is_dir() and path.parent.parent!=path.parent:
             counts[path.parent]=counts.get(path.parent,0)+1
-    return max(counts,key=counts.get) if counts else Path.home()/'curseforge/minecraft/Instances'
+    return max(counts,key=counts.get) if counts else profile_curseforge_root() or Path.home()/'curseforge/minecraft/Instances'
 
 
 def curseforge_running() -> bool:
@@ -458,7 +485,7 @@ def register(listing: Path, folder: Path, record: dict, backup_dir: Path):
     """Add one profile to CurseForge's list (CurseForge must be closed). The list is backed up first and
     put back when the result does not read back with the new profile; nothing else in it changes."""
     if not listing.exists():
-        root=configured_curseforge_root(listing)
+        root=import_curseforge_root(listing)
         if root is None or folder.resolve().parent!=root.resolve():
             raise ValueError('CurseForge 的 Minecraft 遊戲資料夾設定已變動，沒有登記。請再按一次「安裝」。')
         # No empty global list: it could hide existing packs. The agent imports the new

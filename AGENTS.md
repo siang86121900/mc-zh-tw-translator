@@ -226,6 +226,7 @@
 - 壓縮檔內含翻譯好的整合包：CurseForge 認得、而且從 CurseForge 檔案伺服器下載後 SHA-256 與分享者的檔案相同的模組，只記網址、大小與 SHA-256（玩家從 CurseForge 下載）；其他模組檔、設定、腳本、任務、資源包與光影放進壓縮檔。存檔、記錄、備份、快取、地圖紀錄、帳號與伺服器清單、個人遊戲選項不放（full_pack.EXCLUDED_*）；options.txt 改放只有語言（zh_tw）與資源包清單的新檔。壓縮檔附每個檔案的路徑與 SHA-256（內容清單）。
 - 玩家只按一次「安裝」並確認：從 Google 雲端下載（只接受 Google 的下載網域，大小與 SHA-256 相符才用；Google 暫停下載時用白話說明稍後再試），從 CurseForge 檔案伺服器下載其餘模組，在 CurseForge 的整合包資料夾新開資料夾（同名改用 (2)、(3)，不覆蓋），每個檔案都和內容清單相符才登記；任何一步失敗就刪除新資料夾，不動其他整合包。
 - 登記設定檔是唯一會寫 CurseForge 紀錄的地方：CurseForge 開著時不寫，等玩家關閉（不替玩家結束程式）；寫入前備份 MinecraftGameInstance.json，只在陣列尾端加入一筆，失敗或讀回不對就還原。新設定檔的 installedAddons 留空、不改記憶體設定；載入器資料（baseModLoader）裡的網址只接受 Forge／NeoForge 官方與 Mojang 的網域。2026-10-02 在使用者電腦實測：CurseForge 關閉時加入的設定檔會出現在「我的建立」並能啟動 Forge 1.20.1（該版 Forge 已裝過）；玩家沒裝過那版載入器時 CurseForge 是否自動安裝，尚待實測。
+- v0.36.3 起：總清單與獨立版設定皆缺少時，預設 Instances 下的既有 CurseForge 個別設定檔亦可作為位置證據；必須驗證 UUID、紀錄路徑與實際路徑相符、版本、載入器及模組清單，不接受僅資料夾存在。既有檔案不修改，新增設定檔仍由 CurseForge 自行匯入。
 - 2026-10-10 起：總清單尚未產生但 CurseForge 的 storage.json 已有有效 Minecraft 遊戲根目錄與 Instances 時，允許在新建資料夾寫入 minecraftinstance.json，由 CurseForge 啟動／刷新時掃描匯入；不建立空總清單、不動其他整合包。現有總清單格式錯誤不繞過，下載後登記前再次檢查設定。程式讀取依據見 docs/translation-reference.md，玩家端實際匯入仍由 EXE 驗證。
 - 代理不能直接寫入使用者真實的 CurseForge 紀錄檔（Claude Code 安全檢查會擋）；真實登記的測試由使用者用 EXE 執行。2026-10-02 使用者以 v0.22.1 實測：Chapter of Yuusha 安裝後已登記到 CurseForge、Forge 載入完成、語言為繁中、正常關閉。
 - 卡片的「已安裝」除了資料夾還在，也要在 CurseForge 的整合包清單裡（full_pack.still_installed）；清單讀不到時只看資料夾。

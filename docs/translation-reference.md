@@ -132,3 +132,5 @@ CurseForge 雲端整包登記（2026-10-10）
 Electron storage.json 的 minecraft-settings 在本機為 JSON 字串，其中 minecraftRoot 指向遊戲根目錄，整合包放 Instances。缺少全域清單時，APP 只接受啟動器自身資料位置中的此設定，且要求絕對路徑及 Instances 已存在；僅在新建資料夾寫入設定檔，由 CurseForge 下次啟動／刷新匯入。不得建立空的全域清單，以免隱藏其他設定檔。全域清單已存在但格式錯誤時不繞過。下載後、登記前再次核對路徑及清單，設定變動則停止並移除本次新建資料夾。
 
 以上為本機程式讀取流程查證與隔離安裝測試，不等於已在回報問題的玩家電腦上實測 CurseForge 匯入或遊戲啟動。
+
+2026-10-10 v0.36.3 補充：使用者提供另一位玩家的實際位置為 C:/Users/USER/curseforge/minecraft/Instances，且確認 v0.36.2 仍在前置檢查受阻。上一版只接受全域清單或獨立版 storage.json，遺漏了已存在於預設 Instances 的個別設定檔。新增 profile_curseforge_root：讀取直接子資料夾的 minecraftinstance.json，驗證 UUID、installPath 的絕對路徑與實際資料夾相符、gameVersion、baseModLoader、installedAddons 及整合包內容。通過才以該預設目錄作為安裝位置；登記前重新驗證，既有設定檔不修改。CurseForge 自動匯入的程式依據同上。此修復仍由 APP 建立個別設定檔，並非呼叫 CurseForge 私有的 createModpack API；官方 ZIP 匯入支援玩家操作，但尚未驗證外部 APP 自動呼叫。
