@@ -50,6 +50,9 @@ jobs:
       - name: Build EXE and checksums
         run: python scripts/package_desktop.py
 
+      - name: Verify packaged cover generation and isolated cloud install
+        run: python scripts/verify_desktop_package.py
+
       - name: Publish public GitHub Release
         # Third-party action with write access to releases: pinned to the exact commit of v2.6.2,
         # so a later change to its moving "v2" tag cannot alter what gets published.

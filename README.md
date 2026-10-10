@@ -4,6 +4,8 @@
 
 ## 下載與使用
 
+v0.38.1 修正 v0.38.0 的 EXE 遺漏圖片元件、產生封面時出現「No module named PIL」的問題。玩家不需另外安裝圖片元件；更新 APP 後重試原本的安裝或更新即可。發布流程會用打包後的 EXE 實際產生、讀取封面並安裝隔離測試整包，失敗就不發布。
+
 v0.38.0 起，兩種整合包安裝流程都處理封面：官方整合包的翻譯補丁保留原作者與玩家自訂封面；雲端整包會帶入分享者設定的本機圖片，沒有圖片時依名稱自動產生標題與幾何風景封面。舊雲端包的新安裝也會自動補上。既有整合包可在更新時補上缺少的封面，需要修改設定時會等待 CurseForge 關閉、先備份，不更動記憶體配置；實際顯示請重新開啟 CurseForge 確認。
 
 **[直接下載最新版 MCTranslator.exe](https://github.com/siang86121900/mc-zh-tw-translator/releases/latest/download/MCTranslator.exe)**，雙擊即可，不需要安裝 Python。瀏覽器若顯示「這個檔案不常被下載」請按「保留」；Windows 若跳出「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」。想看更新說明可到 [最新版下載頁](https://github.com/siang86121900/mc-zh-tw-translator/releases/latest)。

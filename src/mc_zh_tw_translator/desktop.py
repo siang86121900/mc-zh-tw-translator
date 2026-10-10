@@ -2190,6 +2190,16 @@ def main():
                 import ctypes
                 ctypes.windll.user32.MessageBoxW(None,'更新失敗，請重新開啟原程式。\n'+str(exc),'MC Translator',0x10)
         return
+    smoke_dest=sys.argv[sys.argv.index('--smoke-test')+1] if '--smoke-test' in sys.argv else os.environ.get('MC_TRANSLATOR_SMOKE_DEST')
+    smoke_checks={}
+    if smoke_dest:
+        dest=Path(smoke_dest);dest.mkdir(parents=True,exist_ok=True)
+        try:
+            from .release_smoke import check_cover_install
+            smoke_checks=check_cover_install(dest/'cover-check')
+        except Exception as exc:
+            (dest/'smoke.json').write_text(json.dumps(dict(status='failed',version=updater.VERSION,error=f'{type(exc).__name__}: {exc}')),encoding='utf-8')
+            raise SystemExit(1)
     if os.name=='nt':
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('MCTranslator.Desktop')
@@ -2200,7 +2210,8 @@ def main():
     font=QFont();font.setFamilies(['Segoe UI','Microsoft JhengHei UI','Microsoft JhengHei'])
     font.setPointSize(10);font.setStyleHint(QFont.SansSerif);font.setHintingPreference(QFont.PreferFullHinting)
     app.setFont(font);app.setStyle('Fusion')
-    home=app_home()
+    home=Path(smoke_dest)/'application-data' if smoke_dest else app_home()
+    home.mkdir(parents=True,exist_ok=True)
     from logging.handlers import RotatingFileHandler
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s:%(name)s:%(message)s',
                         handlers=[RotatingFileHandler(home/'application.log',maxBytes=1024*1024,backupCount=2,encoding='utf-8')])
@@ -2208,7 +2219,6 @@ def main():
     if not lock.tryLock(50):QMessageBox.information(None,'程式已開啟','請切換到已開啟的 MC Translator 視窗。');return
     updater.clean_leftovers(home)
     window=MainWindow(home);window.show()
-    smoke_dest=sys.argv[sys.argv.index('--smoke-test')+1] if '--smoke-test' in sys.argv else os.environ.get('MC_TRANSLATOR_SMOKE_DEST')
     if smoke_dest:
         dest=Path(smoke_dest);dest.mkdir(parents=True,exist_ok=True)
         def capture():
@@ -2216,7 +2226,7 @@ def main():
             window.navigate(3);app.processEvents();window.grab().save(str(dest/'updates.png'))
             window.navigate(4);app.processEvents();window.grab().save(str(dest/'ai.png'))
             window.navigate(6);app.processEvents();window.grab().save(str(dest/'shared.png'))
-            (dest/'smoke.json').write_text(json.dumps(dict(version=updater.VERSION,window=window.windowTitle(),tabs=window.pages.count(),frozen=bool(getattr(sys,'frozen',False)))),encoding='utf-8')
+            (dest/'smoke.json').write_text(json.dumps(dict(status='passed',version=updater.VERSION,window=window.windowTitle(),tabs=window.pages.count(),frozen=bool(getattr(sys,'frozen',False)),**smoke_checks)),encoding='utf-8')
             window.close()  # waits for the catalog request instead of killing its thread
         QTimer.singleShot(800,capture)
     else:
