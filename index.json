@@ -53,6 +53,29 @@
     },
     {
       "kind": "full",
+      "name": "The Fool 0.3.2",
+      "packId": "the fool",
+      "version": "",
+      "gameVersion": "1.20.1",
+      "loader": "forge-47.4.28",
+      "translator": "MC Translator",
+      "updated": "2026-10-17",
+      "notes": "以塔羅牌與詭秘儀式為主題的冒險整合包（Minecraft 1.20.1 Forge，230 個模組）。任務書分塔羅秘聞、塔羅儀式、變身、強化、巫法等路線，搭配 Goety 巫術、鐵魔法、災變、天境、暮色森林、Alex 的洞穴等內容。包含分享者目前已套用的翻譯（FTB 任務已改成繁中），但部分模組程式內的文字、ageofmythology 寫死的簡中名稱與部分只有簡中的指南書仍未處理，不能視為整包全繁中；未完成遊戲畫面實測。記憶體建議 8 GB（依模組數估計，不是作者建議）。",
+      "recommendedRam": 0,
+      "driveId": "1zknhrSpz6i9IOdcCqnKxh8qRbEk73Ru_",
+      "sha256": "e46b593f81ecd9549f8ecccd322d6385e1d828372c4f5e8c7494430289393410",
+      "size": 849875859,
+      "totalSize": 2035529608,
+      "files": 1346,
+      "mods": 230,
+      "server": {
+        "name": "狗狗貓貓島",
+        "address": "26.186.50.26"
+      },
+      "revision": 1
+    },
+    {
+      "kind": "full",
       "name": "VEFV2.7.1",
       "packId": "vefv",
       "version": "",
