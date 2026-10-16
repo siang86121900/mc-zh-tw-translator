@@ -2774,13 +2774,23 @@ def is_nested(row):
     return row['source'].count('!/')>=2
 
 
+def archive_name(names, entry):
+    """The entry as the archive spells it. target_for names the file zh_tw.lang, but the scan finds a language file in
+    any case and a shader pack can ship zh_TW.lang (Photon 1.3b; Iris lower-cases the name): writing the other spelling
+    would add a second file beside it, and reading it would find nothing (The Fool 2026-10-16 stopped the apply)."""
+    if entry in names:return entry
+    same=[n for n in names if n.casefold()==entry.casefold()]
+    return same[0] if len(same)==1 else entry
+
+
 def read_archive_entry(instance, outer, entry):
     """Read an entry of a mod jar; 'inner.jar!/path' reaches into jar-in-jar libraries."""
     with zipfile.ZipFile(contained(instance,outer)) as z:
-        if '!/' not in entry:return z.read(entry) if entry in z.namelist() else None
+        if '!/' not in entry:
+            entry=archive_name(z.namelist(),entry);return z.read(entry) if entry in z.namelist() else None
         inner,rest=entry.split('!/',1)
         with zipfile.ZipFile(io.BytesIO(z.read(inner))) as nested:
-            return nested.read(rest) if rest in nested.namelist() else None
+            rest=archive_name(nested.namelist(),rest);return nested.read(rest) if rest in nested.namelist() else None
 
 
 RESOURCE_PACK_FILE = 'resourcepacks/MCTranslator-zh_tw.zip'
@@ -3626,8 +3636,8 @@ def stage_and_apply(session, home, notify, work, stage_only=False, pack_base=Non
         try:on_disk=parse(src.read_bytes()) if merged and src.exists() and path.endswith('.json') else {}
         except ValueError:on_disk={}
         by_entry=collections.defaultdict(list)
-        for entry,row in edits:by_entry[entry].append(row)
-        z=zipfile.ZipFile(src) if any(entry is not None for entry in by_entry) else None
+        z=zipfile.ZipFile(src) if any(entry is not None for entry,_ in edits) else None
+        for entry,row in edits:by_entry[archive_name(z.namelist(),entry) if z and entry and '!/' not in entry else entry].append(row)
         flow=None
         try:
             modified={}

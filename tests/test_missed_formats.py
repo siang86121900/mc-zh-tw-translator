@@ -216,6 +216,20 @@ class MissedFormatTests(unittest.TestCase):
         restore_backup(Path(done['backup']), self.instance)
         self.assertEqual((packs/'Photon.zip').read_bytes(), before)
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_a_zh_TW_file_in_capitals_is_written_where_it_is(self, _):
+        # Photon 1.3b ships zh_TW.lang: the apply looked for zh_tw.lang, found nothing and took the file for changed.
+        packs = self.instance/'shaderpacks'; packs.mkdir()
+        with zipfile.ZipFile(packs/'Photon.zip', 'w') as z:
+            z.writestr('shaders/lang/en_US.lang', 'option.B = §9Blue\noption.FOG = Fog Settings\n')
+            z.writestr('shaders/lang/zh_TW.lang', 'option.B = §1蓝色\n')
+        done = apply_session(self.translate(self.make_plan(), {'Fog Settings': '霧氣設定'}), self.home, lambda *_: None)
+        with zipfile.ZipFile(packs/'Photon.zip') as z:
+            self.assertEqual(sorted(z.namelist()), ['shaders/lang/en_US.lang', 'shaders/lang/zh_TW.lang'])
+            written = lang_table(z.read('shaders/lang/zh_TW.lang').decode('utf-8'), 'shaders/lang/zh_TW.lang')
+        self.assertEqual(written['option.FOG'], '霧氣設定')
+        self.assertEqual(done['shown_mismatch'], 0)
+
     # --- books in formats of their own --------------------------------------------------------------------------
 
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
