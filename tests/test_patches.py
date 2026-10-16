@@ -11,6 +11,12 @@ from mc_zh_tw_translator import patches
 from mc_zh_tw_translator.desktop_jobs import apply_session, plan, restore_backup
 
 
+def setUpModule():
+    # These fixtures look like real Forge packs; IMBlocker is tested on its own (test_imblocker), never downloaded here.
+    stub=patch('mc_zh_tw_translator.imblocker.ensure',return_value=dict(state='unsupported',line=''))
+    stub.start();unittest.addModuleCleanup(stub.stop)
+
+
 def make_instance(root):
     instance=root
     lang=instance/'kubejs/assets/demo/lang';lang.mkdir(parents=True)

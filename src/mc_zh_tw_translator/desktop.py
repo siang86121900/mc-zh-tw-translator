@@ -959,6 +959,7 @@ class MainWindow(QMainWindow):
             lines.append(result.get('server_error') or ('已加入伺服器：' if result.get('server_added') else '伺服器清單已有：')+result['server']['name']+'（'+result['server']['address']+'）')
         if result.get('notes'):lines+=['','分享者的說明：',result['notes']]
         if result.get('cover'):lines+=['',result['cover']['line']]
+        if (result.get('imblocker') or {}).get('state') not in (None,'present','cancelled'):lines.append(result['imblocker']['line'])
         self.patch_status.setText('');self.notify_finished('整合包已更新',lines[0])
         QMessageBox.information(self,'整合包已更新','\n'.join(lines))
 
@@ -978,6 +979,7 @@ class MainWindow(QMainWindow):
         memory=self.memory_advice(dict(recommendedRam=result.get('recommendedRam') or 0,instances=[dict(path=result['folder'])]))
         if result.get('memory'):lines+=['',result['memory']['line']]
         if result.get('cover'):lines+=['',result['cover']['line']]
+        if (result.get('imblocker') or {}).get('state') not in (None,'present','cancelled'):lines.append(result['imblocker']['line'])
         if memory:lines+=['',memory['line']]+[memory[k] for k in ('now','warning') if memory[k]]+['（在「已翻譯整合包」按「怎麼調整記憶體」看步驟）']
         lines+=['','不想要時，在 CurseForge 對它按右鍵刪除即可。']
         self.patch_status.setText('');self.notify_finished('整合包已安裝',lines[0])
@@ -1033,6 +1035,7 @@ class MainWindow(QMainWindow):
         if result['backup']:lines.append('原檔已備份，可在「備份與還原」復原。')
         lines.append('遊戲語言已設為繁體中文（台灣）。' if result['language_set'] else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
         if result.get('cover'):lines+=['',result['cover']['line']]
+        if (result.get('imblocker') or {}).get('state') not in (None,'present','cancelled'):lines.append(result['imblocker']['line'])
         if result.get('notes'):lines+=['','翻譯者的說明：',result['notes']]
         lines+=['',result.get('save_note') or patches.shared_text.SAVE_NOTE]
         memory=self.memory_advice(dict(recommendedRam=patches.instance_identity(Path(result['instance']))['recommendedRam'],
@@ -1729,7 +1732,8 @@ class MainWindow(QMainWindow):
         else:
             ai_line='這次不使用 AI；參考來源缺漏的文字會留在報告，之後可在報告頁補翻。'
         prompt=(f'要翻譯並寫入的模組包：「{instance.name}」\n{instance}\n'+(note+'\n' if note else '')
-                +'\n這會掃描整個模組包、翻譯可辨識的玩家文字、建立備份並直接套用。\n'
+                +'\n這會掃描整個模組包、翻譯可辨識的玩家文字、建立備份並直接套用。'
+                +'沒有 IMBlocker（打中文時自動切換輸入法）時會先從 CurseForge 下載加入。\n'
                 +ai_line+'\n\n已確認用途的程式文字會備份並寫入原模組，切換語言也會維持繁中，可從備份還原。'
                 +'遊戲必須先關閉；圖片文字、用途不明的程式文字與特殊格式會列入報告。\n是否繼續？')
         if QMessageBox.question(self,'一鍵完整翻譯',prompt)!=QMessageBox.Yes:return
@@ -1747,6 +1751,7 @@ class MainWindow(QMainWindow):
         # The same two numbers as the start page, read back from the game's files, plus what this run changed.
         view=jobs.home_cards(result);(rate,rate_note),(english,english_note)=view['cards']
         summary=f'中文化完成率 {rate}（{rate_note}）\n還缺中文 {english} 句：{english_note}'+('\n'+view['written'] if view['written'] else '')
+        if (result.get('imblocker') or {}).get('state') not in (None,'present','cancelled'):summary+='\n'+result['imblocker']['line']
         unfinished=bool(jobs.completion_notes(result) or jobs.coverage(result)['total']-jobs.coverage(result)['done'])
         title='本次處理結束，仍有未完成內容' if unfinished else '本次處理完成'
         if result['status'] in ('installed','needs_review'):self.notify_finished(title,f'已辨識範圍中文化 {rate}，還缺中文 {english} 句。'+(' 尚有未解決內容。' if unfinished else ''))

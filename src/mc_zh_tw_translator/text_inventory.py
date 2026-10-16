@@ -19,7 +19,7 @@ import zlib
 from pathlib import Path, PurePosixPath
 
 FORMAT = 'text-inventory-2'
-RULES_VERSION = '2026-10-05.8'
+RULES_VERSION = '2026-10-16.1'
 HAN = re.compile('[㐀-鿿]')
 WORDS = re.compile(r'[A-Za-z]{2,}')
 # Ice and Fire names its bestiary folders ja_jp_0/, es_es_0/ (BestiaryScreen reads lang/bestiary/<language>_0/).

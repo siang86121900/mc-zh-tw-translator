@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import patches
-from . import covers
+from . import covers, imblocker
 from . import server_list
 from .deployment import contained, file_hash, when_free
 from .updater import VERSION
@@ -680,10 +680,12 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         registered=True
         remember(home,folder,manifest,file_hash(Path(package)),record['guid'])
         for source in sources:Path(source).unlink(missing_ok=True)
+        # After registering: a failure here never undoes the install, and the added mod is a batch of its own.
+        ime=imblocker.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
         notify(100,'整合包已安裝',folder.name)
         return dict(folder=str(folder),name=folder.name,files=len(manifest['files']),downloaded=len(linked),
                     recommendedRam=manifest.get('recommendedRam') or 0,loader=manifest['loader'].get('name',''),
-                    backup=server_backup,profile_import=listing_backup is None,memory=memory,
+                    backup=server_backup,profile_import=listing_backup is None,memory=memory,imblocker=ime,
                     cover=dict(line='已帶入整合包封面，重新開啟 CurseForge 即可查看。') if record['profileImagePath'] else dict(line='封面圖片無法讀取，已保留預設封面。'),**server_result)
     except BaseException:
         # Only what this install made is removed: the work folder, or the new folder it became.
@@ -760,9 +762,10 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
         remember(home,folder,manifest,file_hash(Path(package)),record.get('guid') or str(uuid.uuid4()))
         cover=covers.finish(folder,home,notify,cancelled,pause=pause)
         for source in sources:Path(source).unlink(missing_ok=True)
+        ime=imblocker.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
         notify(100,'整合包已更新',folder.name)
         return dict(folder=str(folder),name=folder.name,written=sum(r['after'] is not None for r in records),
                     removed=sum(r['after'] is None for r in records),replaced=replaced,kept=kept,backup=backup,
-                    recommendedRam=manifest.get('recommendedRam') or 0,cover=cover,**server_result)
+                    recommendedRam=manifest.get('recommendedRam') or 0,cover=cover,imblocker=ime,**server_result)
     finally:
         shutil.rmtree(staged,ignore_errors=True)

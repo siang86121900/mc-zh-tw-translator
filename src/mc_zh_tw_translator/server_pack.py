@@ -481,6 +481,75 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+DEFAULT_PROPERTIES = r"""allow-flight=true
+allow-nether=true
+broadcast-console-to-ops=true
+broadcast-rcon-to-ops=true
+difficulty=normal
+enable-command-block=false
+enable-jmx-monitoring=false
+enable-query=false
+enable-rcon=false
+enable-status=true
+enforce-secure-profile=true
+enforce-whitelist=false
+entity-broadcast-range-percentage=100
+force-gamemode=false
+function-permission-level=2
+gamemode=survival
+generate-structures=true
+generator-settings={}
+hardcore=false
+hide-online-players=false
+initial-disabled-packs=
+initial-enabled-packs=vanilla
+level-name=world
+level-seed=
+level-type=minecraft\:normal
+max-chained-neighbor-updates=1000000
+max-players=20
+max-tick-time=60000
+max-world-size=29999984
+motd=A Minecraft Server
+network-compression-threshold=256
+online-mode=true
+op-permission-level=4
+player-idle-timeout=0
+prevent-proxy-connections=false
+pvp=true
+query.port=25565
+rate-limit=0
+rcon.password=
+rcon.port=25575
+require-resource-pack=false
+resource-pack=
+resource-pack-prompt=
+resource-pack-sha1=
+server-ip=
+server-port=25565
+simulation-distance=10
+spawn-animals=true
+spawn-monsters=true
+spawn-npcs=true
+spawn-protection=0
+sync-chunk-writes=true
+text-filtering-config=
+use-native-transport=true
+view-distance=10
+white-list=false
+"""
+
+
+def write_default_properties(server: Path) -> None:
+    """User's defaults for newly built servers; retain extra properties added by newer versions."""
+    path = server/'server.properties'
+    lines = path.read_text(encoding='utf-8', errors='replace').splitlines() if path.exists() else []
+    keys = {line.split('=', 1)[0] for line in DEFAULT_PROPERTIES.splitlines()}
+    extra = [line for line in lines if line.split('=', 1)[0] not in keys]
+    path.write_text('\n'.join(extra)+'\n'+DEFAULT_PROPERTIES if extra else '#Minecraft server properties\n'+DEFAULT_PROPERTIES,
+                    encoding='utf-8')
+
+
 def set_property(server: Path, key: str, value) -> None:
     path = server/'server.properties'
     lines = path.read_text(encoding='utf-8', errors='replace').splitlines() if path.exists() else []
@@ -732,6 +801,7 @@ def build_server(instance: Path, parent: Path, home: Path, notify=lambda *_: Non
     install(server, installer, java, notify, cancelled, loader=loader)
     args = args_file(server)
     (server/'eula.txt').write_text(f'# Agreed in MC Translator by the player ({EULA_URL})\neula=true\n', encoding='utf-8')
+    write_default_properties(server)
     # A free port for the trial, so another server already running on this computer does not get in the way.
     set_property(server, 'server-port', free_port())
     # The trial builds a world of its own, removed afterwards: the player's first start makes a fresh,
@@ -785,8 +855,7 @@ def build_server(instance: Path, parent: Path, home: Path, notify=lambda *_: Non
         else:
             result['problem'] = f'試了 {max_tries} 次仍開不起來，已停止嘗試。'
     finally:
-        set_property(server, 'server-port', GAME_PORT)
-        set_property(server, 'level-name', 'world')
+        write_default_properties(server)
         trial = server/TRIAL_WORLD
         if trial.is_dir() and trial.parent == server:
             shutil.rmtree(trial, ignore_errors=True)

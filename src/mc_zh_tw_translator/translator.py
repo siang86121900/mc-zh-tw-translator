@@ -637,7 +637,9 @@ class CTE2QuestTranslator:
                 result.append(c)
                 i += 1
                 continue
-            if c == '/' and i + 1 < len(text) and text[i+1] == '/':
+            # Minecraft reads language files with Gson's lenient reader, which also takes "#" to the end of the line
+            # as a comment: More Sniffer Flowers 6.7.2 heads its en_us.json sections with "# Blocks".
+            if c == '#' or (c == '/' and i + 1 < len(text) and text[i+1] == '/'):
                 while i < len(text) and text[i] != '\n':
                     i += 1
                 continue

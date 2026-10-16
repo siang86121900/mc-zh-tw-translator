@@ -12,6 +12,12 @@ import test_data_pack as quest_fixture
 from mc_zh_tw_translator import desktop_jobs as jobs, patches, shared_text
 
 
+def setUpModule():
+    # These fixtures look like real Forge packs; IMBlocker is tested on its own (test_imblocker), never downloaded here.
+    stub=patch('mc_zh_tw_translator.imblocker.ensure',return_value=dict(state='unsupported',line=''))
+    stub.start();unittest.addModuleCleanup(stub.stop)
+
+
 @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
 class SharedTextTests(unittest.TestCase):
     def setUp(self):

@@ -373,4 +373,36 @@ class NamesLeftInEnglishTests(unittest.TestCase):
             self.assertEqual((row['proposed'],row['origin']),(self.OLD,'ai_translation'))
 
 
+class PlaceNamesKeptInEnglishTests(unittest.TestCase):
+    # Born in Chaos' graves (Craft to Exile 2, 2026-10-16): AI kept "Grave 2 Dling" whole as a supporter's name, so the
+    # compass list showed English; the word Grave is translated and only the handle stays.
+    KEY='structure.born_in_chaos_v1.grave_2_dling'
+
+    def row(self):
+        return dict(source='mods/born_in_chaos.jar!/assets/born_in_chaos_v1/lang/en_us.json',key=self.KEY,kind='language',
+                    en='Grave 2 Dling',current=None,proposed='Grave 2 Dling',origin='untranslated',supported=True,name_from_id=True)
+
+    def test_a_place_name_kept_whole_in_english_is_asked_once_more(self):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        session=dict(rows=[self.row()]);row=session['rows'][0]
+        self.assertFalse(ai.adopt(session,row,'Grave 2 Dling',dict(translation='Grave 2 Dling',note='玩家名稱'),'m',jobs))
+        self.assertEqual((row['origin'],row['ai_rejected']['reason']),('untranslated','place'))
+        self.assertTrue(ai.retryable(row));self.assertEqual(len(ai.pending_rows(session)),1)
+        self.assertIn('帳號名稱',ai.rejection_problem('Grave 2 Dling',row['ai_rejected']))
+        self.assertTrue(ai.adopt(session,row,'Grave 2 Dling',dict(translation='2Dling 之墓',note=''),'m',jobs))
+        self.assertEqual((row['proposed'],row['origin']),('2Dling 之墓','ai_translation'))
+        other=dict(self.row(),key='item.born_in_chaos_v1.x',en='Code X1',proposed='Code X1')  # not a place: AI may keep it
+        self.assertTrue(ai.adopt(dict(rows=[other]),other,'Code X1',dict(translation='Code X1',note='代碼'),'m',jobs))
+        self.assertEqual(other['origin'],'keep_original')
+
+    def test_an_earlier_keep_for_a_place_name_is_not_reused(self):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        memory=jobs.AiMemory(Path(tempfile.mkdtemp()))
+        for key in (self.KEY,'item.born_in_chaos_v1.x'):
+            memory.entries[jobs.TranslationMemory.ident('born_in_chaos_v1',key,'Grave 2 Dling')]=dict(
+                text='Grave 2 Dling',keep=True,reason='AI 判斷保留原文',made_at='2026-10-16T11:00:00')
+        self.assertIsNone(memory.lookup('born_in_chaos_v1',self.KEY,'Grave 2 Dling'))
+        self.assertTrue(memory.lookup('born_in_chaos_v1','item.born_in_chaos_v1.x','Grave 2 Dling')['keep'])
+
+
 if __name__=='__main__':unittest.main()

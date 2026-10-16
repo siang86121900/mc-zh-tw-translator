@@ -194,12 +194,25 @@ def fake_download(loader, home, notify, cancelled):
 
 
 class BuildTests(unittest.TestCase):
+    def assert_defaults(self, server):
+        lines = (server/'server.properties').read_text(encoding='utf-8').splitlines()
+        pairs = [line.split('=', 1) for line in lines if line and not line.startswith('#')]
+        properties = dict(pairs)
+        for key, value in (('allow-flight', 'true'), ('spawn-protection', '0'), ('max-players', '20'),
+                           ('online-mode', 'true'), ('gamemode', 'survival'), ('difficulty', 'normal'),
+                           ('enable-command-block', 'false'), ('server-port', '25565'), ('level-name', 'world'),
+                           ('level-type', r'minecraft\:normal'), ('initial-enabled-packs', 'vanilla'),
+                           ('view-distance', '10'), ('simulation-distance', '10'), ('pvp', 'true'),
+                           ('server-ip', ''), ('resource-pack', ''), ('level-seed', '')):
+            self.assertEqual(properties[key], value, key)
+        self.assertEqual(len(pairs), len(properties), 'no duplicate properties')
+
     def build(self, outcomes, **kw):
         tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         root = Path(tmp.name); instance = make_instance(root); before = tree_hash(instance)
         starts = FakeStarts(outcomes)
         result = sp.build_server(instance, root/'Minecraft server', root/'home', java=Path('C:/Java/bin/java.exe'), memory_mb=8192,
-                                 name='Demo Pack', download=fake_download, install=fake_install, start=starts, **kw)
+                                 name='Demo Pack', download=fake_download, install=fake_install, start=kw.pop('start', starts), **kw)
         self.assertEqual(tree_hash(instance), before, 'the modpack itself must not change')
         return result, Path(result['folder']), starts
 
@@ -235,9 +248,25 @@ class BuildTests(unittest.TestCase):
         self.assertTrue(result['ok'] and result['stop_hung'])
         self.assertIn('沒有自己結束', (server/sp.NOTE_FILE).read_text(encoding='utf-8-sig'))
 
+    def test_requested_defaults_used_for_trial_and_restored_after_server_rewrites(self):
+        def rewriting_start(server, *args):
+            text = (server/'server.properties').read_text(encoding='utf-8')
+            self.assertIn('allow-flight=true\n', text)
+            self.assertIn('spawn-protection=0\n', text)
+            self.assertIn('level-name='+sp.TRIAL_WORLD+'\n', text)
+            sp.set_property(server, 'allow-flight', 'false')
+            sp.set_property(server, 'spawn-protection', 16)
+            sp.set_property(server, 'new-version-property', 'keep')
+            return dict(ok=True, text='', tail=[])
+        result, server, _ = self.build([], start=rewriting_start)
+        self.assertTrue(result['ok'])
+        self.assert_defaults(server)
+        self.assertIn('new-version-property=keep\n', (server/'server.properties').read_text(encoding='utf-8'))
+
     def test_a_script_error_stops_without_taking_anything_out(self):
         result, server, _ = self.build([FORGE_SCRIPT])
         self.assertFalse(result['ok'])
+        self.assert_defaults(server)
         self.assertIn('kubejs.jar', result['problem']); self.assertIn('沒有拿掉', result['problem'])
         self.assertTrue((server/'mods/kubejs.jar').exists())
         self.assertEqual([x['file'] for x in result['removed']], ['lanprops.jar'])
@@ -264,6 +293,7 @@ class BuildTests(unittest.TestCase):
                             install=fake_install, start=stopped)
         server = root/'srv'/'Demo Pack Server'
         self.assertIn('server-port=25565', (server/'server.properties').read_text(encoding='utf-8'))
+        self.assert_defaults(server)
 
 
 class FakeProcess:

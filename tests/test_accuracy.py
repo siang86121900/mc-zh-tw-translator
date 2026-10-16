@@ -14,6 +14,12 @@ from mc_zh_tw_translator import codex_bridge as ai, desktop_jobs as jobs
 from mc_zh_tw_translator.desktop_jobs import plan, apply_session, full_translation
 
 
+def setUpModule():
+    # These fixtures look like real Forge packs; IMBlocker is tested on its own (test_imblocker), never downloaded here.
+    stub=patch('mc_zh_tw_translator.imblocker.ensure',return_value=dict(state='unsupported',line=''))
+    stub.start();unittest.addModuleCleanup(stub.stop)
+
+
 class FakeClient:
     """Translates by table and reviews by table; records what was sent."""
     sent=[];fixes={};translations={}

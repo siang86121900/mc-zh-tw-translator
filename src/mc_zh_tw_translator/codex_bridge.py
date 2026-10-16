@@ -460,7 +460,12 @@ class CodexClient:
 
 # What an AI answer that failed the checks leaves in the row's issue; reports before v0.9.0 kept only this.
 REJECTED = {'format': 'AI 譯文的參數、格式碼或換行不符，已退回原文，未採用。',
-            'number': 'AI 譯文改動了數值，已退回原文，未採用。'}
+            'number': 'AI 譯文改動了數值，已退回原文，未採用。',
+            'place': 'AI 把地點名稱整句留成英文，已退回，未採用。'}
+# A biome, structure or dimension name is a place on the map and compass (Born in Chaos' Grave 2 Dling, Craft to Exile 2
+# 2026-10-16, which AI kept whole as "a supporter's grave"): its ordinary words are translated, only a person's handle stays.
+PLACE_NOTE = ('這是地圖、指南針與定位清單上的地點名稱，名稱裡的一般英文字（Grave、Tower、Ruins、Camp…）一定要翻成中文；'
+              '名稱含玩家、作者或贊助者的帳號名稱時只保留那個帳號名稱（例：Grave Notch → Notch 之墓），不可整句保留英文')
 
 
 def retryable(row):
@@ -486,6 +491,7 @@ def rejection_problem(original, rejected):
     """What the previous answer got wrong, in words the model can act on."""
     if rejected.get('reason') == 'number':
         return '數字和原文不同：' + (rejected.get('detail') or '請照原文寫出每個阿拉伯數字')
+    if rejected.get('reason') == 'place': return '上次整句保留英文。' + PLACE_NOTE
     lines = original.count('\n'); got = str(rejected.get('text') or '').count('\n')
     if lines != got: return f'換行數不符：原文 {lines} 個，上次 {got} 個'
     from . import embedded_text
@@ -759,6 +765,9 @@ def adopt(session, row, original, value, selected_model, jobs, shared=''):
         # The whole sentence in English is not better than the earlier Chinese; it is remembered again so it is not asked a third time.
         row.update(evidence='ChatGPT/Codex: '+selected_model, issue='AI 判斷名字保留原文：' + (value['note'] or '無需翻譯'))
         return True
+    if text == original and jobs.REGISTRY_KEY.match(row.get('key', '')) and re.search('[A-Za-z]{3,}', original):
+        row['ai_rejected'] = dict(reason='place', text=text, model=selected_model)
+        row['issue'] = REJECTED['place'] + (' 已再試一次，仍保留英文。' if row.get('ai_retried') else ''); return False
     if text == original:
         # AI read it and found nothing to translate (a name, a code, a format example): it is listed under
         # 無需翻譯 with AI's reason, is not sent again, and is remembered so later runs do not ask again.
@@ -814,6 +823,7 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
                 if jobs.embedded_text.text_spans(original) is not None and original.lstrip()[:1] in ('[','{'):
                     item['context']+='；這是 JSON 文字元件：只翻譯 text 的值與陣列裡的文字，其餘欄位、順序與標點符號原樣保留'
                     if len(jobs.embedded_text.text_spans(original)) > 1: item['shape'] = jobs.embedded_text.blank_words(original)
+            if jobs.REGISTRY_KEY.match(row.get('key', '')): item['context'] = PLACE_NOTE
             if '\n' in original: item['lines'] = str(original.count('\n'))
             codes = jobs.required_codes(original)
             if codes: item['codes'] = codes

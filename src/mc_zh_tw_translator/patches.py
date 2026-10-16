@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import server_list, shared_text
-from . import covers
+from . import covers, imblocker
 from .deployment import apply_reviewed, contained, file_hash
 from .translator import is_jar_signature_file
 from .updater import REPOSITORY, VERSION, release_url
@@ -336,7 +336,8 @@ def added_mods(instance: Path, originals=None):
         mods.append(mod)
     try:
         for p in sorted((instance/'mods').iterdir()):
-            if p.is_file() and p.suffix.lower()=='.jar' and p.name.casefold() not in known and 'mods/'+p.name!=jobs.PACK_MOD_FILE:
+            # IMBlocker is not left out: the receiver's own install adds it (imblocker.ensure).
+            if p.is_file() and p.suffix.lower()=='.jar' and p.name.casefold() not in known and 'mods/'+p.name!=jobs.PACK_MOD_FILE and not imblocker.listed(p):
                 left.append(dict(name=p.name,fileName=p.name,reason='不是從 CurseForge 安裝的模組，對方無法自動下載'))
     except OSError:pass
     if len(mods)>MAX_ADDED_MODS:
@@ -829,6 +830,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         jobs.ensure_game_closed(instance)
         mods=install_mods(instance,manifest['added_mods'],home,lambda p,t,d='':notify(int(p*.15),t,d),cancelled,session) if add_mods and manifest['added_mods'] else None
         if cancelled():raise InterruptedError('已停止，翻譯還沒有寫入。'+('加裝的模組已放進模組資料夾，可在「備份與還原」移除。' if mods and mods['installed'] else ''))
+        ime=imblocker.ensure(instance,home,lambda _p,t,d='':notify(15,t,d),cancelled,session)
         versions=shared_text.local_versions(instance,home)
         plan=plan_patch(instance,z,manifest,versions)
         staged.mkdir(parents=True)
@@ -902,7 +904,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         result=dict(instance=str(instance),patch=str(patch),modpack=manifest.get('modpack',{}),backup=backup,applied=applied,
                     already=[p[0]['file'] for p in plan if p[1]=='already'],
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],
-                    language_set=bool(set_language),mods=mods,
+                    language_set=bool(set_language),mods=mods,imblocker=ime,
                     mods_offered=[m['name'] for m in manifest['added_mods']] if mods is None else [])
         result['skipped']+=prepared['skipped']
         result['text_already']=prepared['already']

@@ -611,6 +611,8 @@ class AiMemory:
     def lookup(self,namespace,key,original):
         entry=self.entries.get(TranslationMemory.ident(namespace,key,original)) if namespace and original else None
         if not isinstance(entry,dict) or not isinstance(entry.get('text'),str):return None
+        # A place name AI kept whole in English (Grave 2 Dling) is asked again; AI may no longer keep one (codex_bridge.adopt).
+        if entry.get('keep') and REGISTRY_KEY.match(key or '') and re.search('[A-Za-z]{3,}',original):return None
         if not entry.get('keep') and str(entry.get('made_at') or '')<NAMES_RULE_AT:
             names=english_names_left(original,entry['text'])
             if names:return dict(entry,redo=names)
@@ -2268,8 +2270,11 @@ def full_translation(instance, home, model, notify, cancelled=lambda:False, chec
     """
     def part(low,high):
         return lambda value,title,detail='':notify(low+int((high-low)*max(0,min(100,value))/100),title,detail)
+    # Typing Chinese in the game needs IMBlocker; installed first, so its own text is scanned and translated too.
+    from . import imblocker
+    ime=imblocker.ensure(instance,home,lambda _value,title,detail='':notify(0,title,detail),cancelled)
     result=plan(instance,home,part(0,50),cancelled,checkpoint=checkpoint)
-    result.update(options or {})
+    result.update(options or {},imblocker=ime)
     if result['status'] in ('blocked','cancelled'):return result
     blocked=None
 

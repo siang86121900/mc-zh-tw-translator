@@ -342,6 +342,21 @@ class MissedFormatTests(unittest.TestCase):
         self.assertEqual(jobs.unsupported_note(result), '')  # not a red line: checked, kept on purpose
         self.assertTrue(all(jobs.row_category(r) == 'keep' for r in rows))
 
+    def test_language_file_with_hash_comments_is_read_like_the_game_does(self):
+        # More Sniffer Flowers 6.7.2 (Craft to Exile 2, 2026-10-16): "# Blocks" lines in en_us.json, which Gson's
+        # lenient reader skips; the whole mod was listed as an unsupported format and its items stayed English.
+        en = ('{\r\n\t"item.msf.cropressed_beetroot": "Cropressed Beetroot",\r\n\r\n# Blocks\U0001f3b2\r\n'
+              '\t"block.msf.vine": "Dawnberry Vine #2"\r\n}')
+        self.jar('msf.jar', {'META-INF/mods.toml': mods_toml('msf'), 'assets/msf/lang/en_us.json': en,
+                             'assets/msf/lang/zh_cn.json': {'item.msf.cropressed_beetroot': '稼缩甜菜根',
+                                                            'block.msf.vine': '晨莓藤 #2'}})
+        result = self.make_plan()
+        rows = {r['key']: r for r in result['rows'] if r['source'].startswith('mods/msf.jar!/assets/msf/lang/')}
+        self.assertEqual(rows['item.msf.cropressed_beetroot']['kind'], 'language')
+        self.assertEqual(rows['block.msf.vine']['en'], 'Dawnberry Vine #2')  # a "#" inside a string is text
+        self.assertTrue(rows['item.msf.cropressed_beetroot']['supported'])
+        self.assertFalse([r for r in result['rows'] if r['kind'] == 'unsupported_config_text'])
+
     def test_nbt_strings_are_modified_utf8(self):
         emoji = '😀'.encode('utf-16-le')
         halves = [int.from_bytes(emoji[i:i+2], 'little') for i in (0, 2)]
