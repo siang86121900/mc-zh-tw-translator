@@ -19,7 +19,7 @@ import zlib
 from pathlib import Path, PurePosixPath
 
 FORMAT = 'text-inventory-2'
-RULES_VERSION = '2026-10-16.1'
+RULES_VERSION = '2026-10-16.2'
 HAN = re.compile('[㐀-鿿]')
 WORDS = re.compile(r'[A-Za-z]{2,}')
 # Ice and Fire names its bestiary folders ja_jp_0/, es_es_0/ (BestiaryScreen reads lang/bestiary/<language>_0/).
@@ -139,6 +139,9 @@ def machine_value(path, field, text):
     # A model's bones (majrusz's cerberus_model: "body"), a particle's id, a language key in braces
     # ({chair_pack.geckolib.desc}, Touhou Little Maid packs) and item NBT written as a string.
     if 'bones' in path or ('particle' in path and field=='name'):return True
+    # An attribute modifier's name (Origins powers: "modifier": {"attribute": ..., "name": "Ender Affinity"}) only
+    # labels the modifier inside the game (AttributeModifier, matched by its UUID); the tooltip shows the attribute.
+    if field=='name' and any(isinstance(p,str) and p.endswith(('modifier','modifiers')) for p in path):return True
     return machine_text(text)
 
 
@@ -550,9 +553,11 @@ def reconcile(inventory, rows):
         elif shows_nothing_literal(text,language_keys):
             # {"translate":"incendium.mob.castle.alchemist.name","fallback":"Piglin Alchemist"} with the key defined.
             state = 'covered'
-        elif len(pieces:=component_words(text))==1 and pieces[0] in exact.get((source,item['key']),()):
+        elif len(pieces:=component_words(text))==1 and (pieces[0] in exact.get((source,item['key']),())
+                or source.startswith('config/ftbquests/') and pieces[0] in values.get(source,())):
             # {"extra":[{"text":"Eternatus"}],"text":""}: an empty "text" beside one word is still one piece of words,
-            # which is what the scan made its row of (a lectern book's name in Legendary Monuments).
+            # which is what the scan made its row of (a lectern book's name in Legendary Monuments). FTB Quests
+            # chapters are rows by field ("title", n), not by line: their one piece is matched within the file.
             state = 'covered'
         elif item.get('translation_key') and (text in data_keys.get((source,item['translation_key']),())
                 or text in language_keys.get(item['translation_key'],())):

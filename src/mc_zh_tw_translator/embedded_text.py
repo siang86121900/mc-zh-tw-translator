@@ -37,7 +37,7 @@ PLAIN_FIELDS = {'Category', 'author'}
 
 def is_file(name):
     return bool(STRUCTURE.search(name) or FUNCTION.search(name) or LOOT.search(name) or RCT_TRAINER.search(name)
-                or FANCYMENU.search(name) or REI_GROUPS.search(name))
+                or FANCYMENU.search(name) or REI_GROUPS.search(name) or FTB_QUESTS.search(name) or ORIGINS.search(name))
 
 
 # --- JSON text components -------------------------------------------------------------------------------------
@@ -527,6 +527,111 @@ def rewrite_rei(raw, changes):
     return ''.join(out + [raw[last:]])
 
 
+# --- FTB Quests chapters written inline ------------------------------------------------------------------------------
+
+# FTB Quests before its language files (1902.5.10 for 1.19.2, 2001.4.22 for 1.20.1: no lang/ folder, no translation
+# classes) keeps the words of the quest book in the chapter files themselves: a chapter's or group's "title", a
+# quest's "title", "subtitle" and "description" lines, a task's or reward's "title", an image's "hover" lines.
+# QuestObjectBase shows them through TextUtils.parseRawText: "{a.key}" is a language key (left alone: CtE2), a string
+# that is JSON is a text component ('{"text":"Campaign","color":"#22EE0C"}'), anything else is words with & colour
+# codes. Translated in place (owner 2026-10-16: 「我要看到任務是繁體中文」); quest ids, items and progress are other
+# strings and stay as they are. An item's display Name and Lore inside a quest stay with the config reader.
+FTB_QUESTS = re.compile(r'(?:^|/)config/ftbquests/quests/(?!lang/).+\.snbt$')
+FTB_FIELDS = {'title', 'subtitle', 'description', 'hover'}
+FTB_KEY_TEXT = re.compile(r'\{[^\s"{}]+\}')  # {ftbquests.chapter.x.title}, {@pagebreak}: a key or a marker
+_SNBT_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[{}\[\]:,]|[^\s{}\[\]:,"\']+')
+
+
+def snbt_values(text):
+    """(start, end, quote, value, field) of every quoted value of an SNBT file, in order; `field` is the compound key
+    it is the value of, or the key of the list holding it. Keys themselves are not listed."""
+    out = []; stack = []; key = None; expect_key = False
+    tokens = list(_SNBT_TOKEN.finditer(text))
+    for n, m in enumerate(tokens):
+        t = m[0]
+        if t in '{[':
+            stack.append((t, key)); expect_key = t == '{'; key = None if t == '{' else key
+            continue
+        if t in '}]':
+            if stack:_, key = stack.pop()
+            expect_key = bool(stack) and stack[-1][0] == '{'
+            continue
+        if t == ',':
+            expect_key = bool(stack) and stack[-1][0] == '{'
+            continue
+        if t == ':':continue
+        following = tokens[n + 1][0] if n + 1 < len(tokens) else ''
+        if stack and stack[-1][0] == '{' and following == ':':
+            key = snbt_unquote(t) if t[:1] in '"\'' else t
+            continue
+        if t[:1] in '"\'':
+            field = key if stack and stack[-1][0] == '{' else stack[-1][1] if stack else None
+            out.append((m.start(), m.end(), t[0], snbt_unquote(t), field))
+        if stack and stack[-1][0] == '{':expect_key = True
+    return out
+
+
+def ftb_units(text):
+    """[(key, text, place)] of a chapter file's shown words; key = [field, n], n counting that field's strings in file
+    order (the same before and after a translation is written). place = (start, end, quote, how)."""
+    units = []; counts = {}
+    for start, end, quote, value, field in snbt_values(text):
+        if field not in FTB_FIELDS:continue
+        n = counts[field] = counts.get(field, -1) + 1
+        if not WORDS.search(value) or FTB_KEY_TEXT.fullmatch(value.strip()):continue
+        if value.lstrip()[:1] in ('{', '['):
+            unit = component_unit(value)
+            if unit:units.append((json.dumps([field, n]), unit[0], (start, end, quote, unit[1])))
+            continue
+        units.append((json.dumps([field, n]), value, (start, end, quote, ('plain', None))))
+    return units
+
+
+def rewrite_ftb(text, changes):
+    places = {key: (value, place) for key, value, place in ftb_units(text)}
+    edits = []
+    for key, (expected, new) in changes.items():
+        if key not in places or places[key][0] != expected:raise ValueError('任務檔的文字已變動，請重新翻譯')
+        start, end, quote, how = places[key][1]
+        value = new if how[0] == 'plain' else put_component(snbt_unquote(text[start:end]), how, new)
+        edits.append((start, end, snbt_quote(value, quote)))
+    for start, end, value in sorted(edits, reverse=True):text = text[:start] + value + text[end:]
+    return text
+
+
+# --- Origins (Forge) origins and layers -------------------------------------------------------------------------
+
+# Origins for Forge (1.19.2 1.7.1.7, 1.20.1 1.10.0.9) reads an origin's "name" and "description" and a layer's "name",
+# "missing_name" and "missing_description" with calio's COMPONENT_CODEC (Component.Serializer.fromJson): a plain
+# string is a literal component, shown as written on the choose-origin screen (Cisco's Rpg Origins "Demi-God Umbra",
+# layer "Divine Blessing"). A power's name and description are not here: PowerData.getName hands them to
+# Component.translatable, so they are language keys (full_translation_audit.DATA_KEY_SENTENCES).
+ORIGINS = re.compile(r'(?:^|/)data/[^/]+/(origins|origin_layers)/.+\.json$')
+ORIGIN_FIELDS = {'origins': ('name', 'description'), 'origin_layers': ('name', 'missing_name', 'missing_description')}
+
+
+def origin_spans(name, raw):
+    try:tree = _positioned(raw)
+    except (ValueError, IndexError):return []
+    if not isinstance(tree, dict):return []
+    fields = ORIGIN_FIELDS[ORIGINS.search(name)[1]]
+    return [(k, tree[k].start, tree[k].end, str(tree[k])) for k in fields if isinstance(tree.get(k), _Str)]
+
+
+def origin_units(name, raw):
+    return [(json.dumps([k]), v, (s, e)) for k, s, e, v in origin_spans(name, raw) if WORDS.search(v)]
+
+
+def rewrite_origin(name, raw, changes):
+    places = {key: (value, place) for key, value, place in origin_units(name, raw)}
+    edits = []
+    for key, (expected, new) in changes.items():
+        if key not in places or places[key][0] != expected:raise ValueError('Origins 資料的文字已變動，請重新翻譯')
+        edits.append((*places[key][1], json.dumps(new, ensure_ascii=False)))
+    for start, end, value in sorted(edits, reverse=True):raw = raw[:start] + value + raw[end:]
+    return raw
+
+
 # --- one entry point ---------------------------------------------------------------------------------------------
 
 def units(name, raw):
@@ -537,6 +642,8 @@ def units(name, raw):
     if RCT_TRAINER.search(name):return [(k, t) for k, t, _ in trainer_units(raw.decode('utf-8-sig'))]
     if FANCYMENU.search(name):return [(k, t) for k, t, _ in fancymenu_units(raw.decode('utf-8-sig'))]
     if REI_GROUPS.search(name):return [(k, t) for k, t, _ in rei_units(raw.decode('utf-8-sig'))]
+    if FTB_QUESTS.search(name):return [(k, t) for k, t, _ in ftb_units(raw.decode('utf-8-sig'))]
+    if ORIGINS.search(name):return [(k, t) for k, t, _ in origin_units(name, raw.decode('utf-8-sig'))]
     return []
 
 
@@ -551,5 +658,7 @@ def rewrite(name, raw, changes):
     elif RCT_TRAINER.search(name):out = rewrite_trainer(text, changes)
     elif FANCYMENU.search(name):out = rewrite_fancymenu(text, changes)
     elif REI_GROUPS.search(name):out = rewrite_rei(text, changes)
+    elif FTB_QUESTS.search(name):out = rewrite_ftb(text, changes)
+    elif ORIGINS.search(name):out = rewrite_origin(name, text, changes)
     else:raise ValueError('不支援的檔案：' + name)
     return (b'\xef\xbb\xbf' if bom else b'') + out.encode('utf-8')

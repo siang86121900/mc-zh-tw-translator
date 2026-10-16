@@ -551,4 +551,28 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(),b'MZ')
 
 
+class ScanCacheTests(unittest.TestCase):
+    """A mod file's scan is cached under SCAN_CACHE_VERSION. v0.39.0 taught the reader "#" comments without a new
+    version, so Craft to Exile 2 kept More Sniffer Flowers as "unsupported" from the cache (2026-10-16)."""
+    RULES=Path(__file__).parent/'fixtures'/'scan_rules.json'
+    FILES=('scripts/full_translation_audit.py','src/mc_zh_tw_translator/class_text.py','src/mc_zh_tw_translator/embedded_text.py',
+           'src/mc_zh_tw_translator/quest_lang.py','src/mc_zh_tw_translator/translator.py')
+
+    def fingerprint(self):
+        import hashlib
+        root=Path(__file__).resolve().parents[1];h=hashlib.sha256()
+        for name in self.FILES:h.update(name.encode()+b'\0'+(root/name).read_bytes().replace(b'\r\n',b'\n')+b'\0')
+        return h.hexdigest()
+
+    def test_scan_code_changes_come_with_a_new_cache_version(self):
+        recorded=json.loads(self.RULES.read_text(encoding='utf-8'))
+        now=self.fingerprint()
+        if now!=recorded['sha256']:
+            self.assertNotEqual(jobs.SCAN_CACHE_VERSION,recorded['version'],
+                '掃描程式改了：請遞增 desktop_jobs.SCAN_CACHE_VERSION，再把 tests/fixtures/scan_rules.json 更新為 '
+                +json.dumps(dict(version=jobs.SCAN_CACHE_VERSION,sha256=now)))
+            self.fail('請把 tests/fixtures/scan_rules.json 更新為 '+json.dumps(dict(version=jobs.SCAN_CACHE_VERSION,sha256=now)))
+        self.assertEqual(jobs.SCAN_CACHE_VERSION,recorded['version'],'scan_rules.json 記錄的版本和 SCAN_CACHE_VERSION 不同')
+
+
 if __name__=='__main__':unittest.main()

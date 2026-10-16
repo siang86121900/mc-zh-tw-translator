@@ -283,4 +283,133 @@ class EmbeddedTextTests(unittest.TestCase):
             self.assertFalse([r for _, r in ai.pending_rows(reset) if r['kind'] == 'embedded_text'])
 
 
+CHAPTER = ('{\n\tfilename: "the_squires_trials"\n\tgroup: "4F1E"\n\tid: "1A2B"\n\tquests: [{\n'
+           '\t\tdescription: [\n\t\t\t"&6Cisco &fsensed a familiar &cpower&f."\n\t\t\t""\n\t\t\t"{@pagebreak}"\n'
+           '\t\t\t"{image:cisco:textures/a.png width:50 height:50}"\n\t\t]\n\t\tid: "5C6D"\n\t\tsubtitle: "New Adventure"\n'
+           '\t\ttasks: [{ id: "7E8F", item: { Count: 1b, id: "minecraft:bread", tag: { display: { Name: \'{"text":"Old Bread"}\' } } }, type: "item" }]\n'
+           '\t\ttitle: "{ftbquests.chapter.x.title}"\n\t}]\n'
+           '\ttitle: "{\\"text\\":\\"The Champion\'s Trials\\",\\"color\\":\\"light_purple\\"}"\n}\n')
+ORIGIN = '{\n    "name": "Demi-God Umbra",\n    "description": "A dark power slumbers within you.",\n    "powers": ["x:ender_affinity"],\n    "impact": 2\n}'
+LAYER = '{\n    "order": 3,\n    "origins": ["x:demi_god_umbra"],\n    "name": "Divine Blessing"\n}'
+POWER = ('{\n    "name": "Ender Affinity",\n    "description": "You gain a 350 % boost to ender spell power.",\n'
+         '    "type": "origins:attribute",\n    "modifier": {"attribute": "x:ender", "value": 3.5, "name": "Ender Affinity"}\n}')
+
+
+class InlineQuestAndOriginTests(unittest.TestCase):
+    client = EmbeddedTextTests.client
+    def test_quest_units_skip_keys_markers_and_items(self):
+        units = dict(et.units('config/ftbquests/quests/chapters/the_squires_trials.snbt', CHAPTER.encode()))
+        self.assertEqual(units, {'["description", 0]': '&6Cisco &fsensed a familiar &cpower&f.',
+                                 '["subtitle", 0]': 'New Adventure', '["title", 1]': "The Champion's Trials"})
+        self.assertFalse(et.is_file('/config/ftbquests/quests/lang/en_us.snbt'))  # FTB Quests' own language files
+        new = et.rewrite('config/ftbquests/quests/chapters/the_squires_trials.snbt', CHAPTER.encode(), {
+            '["title", 1]': ("The Champion's Trials", '勇者的試煉'), '["subtitle", 0]': ('New Adventure', '新的「冒險」')}).decode()
+        self.assertIn('title: "{\\"text\\":\\"勇者的試煉\\",\\"color\\":\\"light_purple\\"}"', new)
+        self.assertIn('subtitle: "新的「冒險」"', new)
+        self.assertEqual(new.replace('勇者的試煉', "The Champion's Trials").replace('新的「冒險」', 'New Adventure'), CHAPTER)
+
+    def test_origin_names_are_literal_power_names_are_keys(self):
+        self.assertEqual(et.units('data/x/origins/demi_god_umbra.json', ORIGIN.encode()),
+                         [('["name"]', 'Demi-God Umbra'), ('["description"]', 'A dark power slumbers within you.')])
+        self.assertEqual(et.units('data/x/origin_layers/divineblessings.json', LAYER.encode()), [('["name"]', 'Divine Blessing')])
+        self.assertFalse(et.is_file('/data/x/powers/ender_affinity.json'))
+        from full_translation_audit import shown_as_key
+        self.assertTrue(shown_as_key('You have trained with a bow .\nYou deal 30 percent more.', True))
+        self.assertTrue(shown_as_key('You gain a 350 % boost.', True))
+        self.assertFalse(shown_as_key('Deals %s damage.', True))
+        self.assertFalse(shown_as_key('You gain a 350 % boost.'))  # elsewhere % stays a reason to leave a sentence out
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_inline_quests_and_origins_are_translated_in_place(self, _):
+        refs = ([{}, {}], {'sources': ['tw', 'cn']})
+        answers = {'&6Cisco &fsensed a familiar &cpower&f.': '&6Cisco &f感受到一股熟悉的&c力量&f。', 'New Adventure': '新的冒險',
+                   "The Champion's Trials": '勇者的試煉', 'Demi-God Umbra': '半神・暗影', 'A dark power slumbers within you.': '你體內沉睡著黑暗的力量。',
+                   'Divine Blessing': '神之祝福', 'Ender Affinity': '終界親和', 'You gain a 350 % boost to ender spell power.': '終界法術強度提升 350 %。'}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); instance = root / 'instance'; home = root / 'app'
+            chapters = instance / 'config/ftbquests/quests/chapters'; chapters.mkdir(parents=True); (instance / 'mods').mkdir()
+            quest = chapters / 'the_squires_trials.snbt'; quest.write_text(CHAPTER, encoding='utf-8')
+            (instance / 'config/paxi/datapacks').mkdir(parents=True)
+            pack = instance / 'config/paxi/datapacks/origins.zip'
+            with zipfile.ZipFile(pack, 'w') as z:
+                z.writestr('pack.mcmeta', '{"pack":{"pack_format":15,"description":"x"}}')
+                z.writestr('data/x/origins/demi_god_umbra.json', ORIGIN)
+                z.writestr('data/x/origin_layers/divineblessings.json', LAYER)
+                z.writestr('data/x/powers/ender_affinity.json', POWER)
+            with zipfile.ZipFile(instance / 'mods/x.jar', 'w') as z:
+                z.writestr('META-INF/mods.toml', 'modLoader="javafml"\n[[mods]]\nmodId="x"\n')
+                z.writestr('assets/x/lang/en_us.json', '{"item.x.a":"A"}')
+            before = (quest.read_bytes(), pack.read_bytes())
+            session = jobs.plan(instance, home, lambda *_: None, references=refs)
+            sent = {r['current'] or r['en'] for _, r in ai.pending_rows(session)}
+            self.assertTrue(set(answers) <= sent, set(answers) - sent)
+            self.assertFalse({'{ftbquests.chapter.x.title}', '{@pagebreak}', 'Old Bread', 'x:ender'} & sent)
+            ai.supplement(session, home, 'test-model', lambda *_: None, client_factory=self.client(answers))
+            jobs.prepare_to_apply(session)
+            done = jobs.apply_session(session, home, lambda *_: None)
+            self.assertEqual(session['shown_mismatch'], 0)
+            text = quest.read_text(encoding='utf-8')
+            self.assertIn('"&6Cisco &f感受到一股熟悉的&c力量&f。"', text); self.assertIn('{\\"text\\":\\"勇者的試煉\\"', text)
+            self.assertIn('id: "5C6D"', text); self.assertIn('"{@pagebreak}"', text)
+            with zipfile.ZipFile(pack) as z:
+                self.assertEqual(json.loads(z.read('data/x/origins/demi_god_umbra.json'))['name'], '半神・暗影')
+                self.assertEqual(z.read('data/x/powers/ender_affinity.json').decode(), POWER)  # a key, so untouched
+            with zipfile.ZipFile(instance / jobs.RESOURCE_PACK_FILE) as z:
+                lang = json.loads(z.read('assets/x/lang/zh_tw.json'))
+            self.assertEqual(lang['Ender Affinity'], '終界親和')
+            self.assertEqual(lang['You gain a 350 % boost to ender spell power.'], '終界法術強度提升 350 %。')
+            self.assertEqual(jobs.applicable_count(jobs.plan(instance, home, lambda *_: None, references=refs)), 0)
+            jobs.restore_backup(Path(done['backup']), instance)
+            self.assertEqual((quest.read_bytes(), pack.read_bytes()), before)
+
+
+class LanguageDetourTests(unittest.TestCase):
+    def test_a_broken_zh_tw_below_the_pack_gets_a_namespace_of_its_own(self):
+        self.assertFalse(jobs.game_reads_lang(b'{"a": "b",\n "c: "d"}'))
+        self.assertFalse(jobs.game_reads_lang(b'  '))
+        self.assertFalse(jobs.game_reads_lang(b'{"a": ["b"]}'))
+        self.assertFalse(jobs.game_reads_lang(b'{"a": "b",}'))
+        self.assertTrue(jobs.game_reads_lang(b'{\n# Blocks\n"a": "b" // c\n}'))
+        with tempfile.TemporaryDirectory() as folder:
+            instance = Path(folder); (instance / 'mods').mkdir()
+            with zipfile.ZipFile(instance / 'mods/cataclysm.jar', 'w') as z:
+                z.writestr('assets/cataclysm/lang/zh_tw.json', '{"block.cataclysm.void_crystal: "虛空水晶塊"}')
+            with zipfile.ZipFile(instance / 'mods/fine.jar', 'w') as z:
+                z.writestr('assets/fine/lang/zh_tw.json', '{"a": "甲"}')
+            mine = b'{"item.cataclysm.witherite_ingot": "\xe5\x87\x8b\xe9\x9b\xb6\xe5\x90\x88\xe9\x87\x91\xe9\x8c\xa0"}'
+            files = {'assets/cataclysm/lang/zh_tw.json': mine, 'assets/fine/lang/zh_tw.json': b'{"a": "\xe7\x94\xb2"}',
+                     'assets/mctranslator_fix.gone/lang/zh_tw.json': b'{}'}
+            sources = {'assets/cataclysm/lang/zh_tw.json': {'mods/cataclysm.jar': 'h1'}, 'assets/fine/lang/zh_tw.json': {'mods/fine.jar': 'h2'}}
+            out = jobs.lang_detours(instance, files, sources)
+            self.assertEqual(out['assets/mctranslator_fix.cataclysm/lang/zh_tw.json'], mine)
+            self.assertNotIn('assets/mctranslator_fix.fine/lang/zh_tw.json', out)
+            self.assertNotIn('assets/mctranslator_fix.gone/lang/zh_tw.json', out)  # a mod fixed since: the copy goes
+
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_applying_writes_the_copy_and_a_pack_without_it_is_rewritten(self, _):
+        refs = ([{}, {}], {'sources': ['tw', 'cn']})
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); instance = root / 'instance'; home = root / 'app'; (instance / 'mods').mkdir(parents=True)
+            with zipfile.ZipFile(instance / 'mods/cataclysm.jar', 'w') as z:
+                z.writestr('META-INF/mods.toml', 'modLoader="javafml"\n[[mods]]\nmodId="cataclysm"\n')
+                z.writestr('assets/cataclysm/lang/en_us.json', '{"item.cataclysm.a": "Witherite Ingot", "item.cataclysm.b": "Blazing Grips"}')
+                z.writestr('assets/cataclysm/lang/zh_cn.json', '{"item.cataclysm.a": "凋零合金锭", "item.cataclysm.b": "烈焰手套"}')
+                z.writestr('assets/cataclysm/lang/zh_tw.json', '{"item.cataclysm.a: "凋零"}')
+            session = jobs.plan(instance, home, lambda *_: None, references=refs)
+            for r in session['rows']:
+                if r['supported'] and r['changed'] and r['key'] == 'item.cataclysm.a':r['reviewed'] = True
+            jobs.apply_session(session, home, lambda *_: None)
+            pack = instance / jobs.RESOURCE_PACK_FILE
+            with zipfile.ZipFile(pack) as z:
+                self.assertEqual(json.loads(z.read('assets/mctranslator_fix.cataclysm/lang/zh_tw.json'))['item.cataclysm.a'], '凋零合金錠')
+                files = {n: z.read(n) for n in z.namelist() if not n.startswith('assets/mctranslator_fix.')}
+            with zipfile.ZipFile(pack, 'w') as z:  # a pack written by v0.39.0: no copy
+                for n, b in files.items():z.writestr(n, b)
+            session = jobs.plan(instance, home, lambda *_: None, references=refs)
+            for r in session['rows']:
+                if r['supported'] and r['changed'] and not r.get('installed'):r['reviewed'] = True
+            jobs.apply_session(session, home, lambda *_: None)
+            with zipfile.ZipFile(pack) as z:self.assertIn('assets/mctranslator_fix.cataclysm/lang/zh_tw.json', z.namelist())
+
+
 if __name__ == '__main__':unittest.main()

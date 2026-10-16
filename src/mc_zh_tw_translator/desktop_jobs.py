@@ -19,10 +19,10 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from full_translation_audit import (Audit, parse, lang_table, inline_field, parse_binary_nbt, rewrite_binary_nbt, placeholders, at, string_literals,
-                                    LOOSE_FOLDERS, CONTENT_PACK_FOLDERS, FANCYMENU, plain_text, VAULTPATCHER_MODULE)
+                                    LOOSE_FOLDERS, CONTENT_PACK_FOLDERS, FANCYMENU, plain_text, VAULTPATCHER_MODULE, decode)
 from .deployment import apply_reviewed, contained, file_hash, atomic_copy, when_free
 from .desktop_references import refresh, pick_reference, HUMAN_TW_KINDS, to_taiwan, has_simplified, VANILLA_STRUCTURE_NAMES
-from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file
+from .translator import MINECRAFT_GLOSSARY, is_jar_signature_file, CTE2QuestTranslator
 from . import quest_lang
 from . import embedded_text
 from .verifier import VerifyResult, check_java_zipfs
@@ -1491,7 +1491,10 @@ def present_mods(z, depth=0):
 # scan-23: book pages the author wrote out only in Simplified Chinese follow the Chinese pages (cn_shape)
 # scan-24: owo rich language pieces are rows (rich); resource-read text files (RESOURCE_TEXTS); single-word data keys; Konkrete locals
 # scan-25: a Chinese book shape only for paragraphs the English has no place for; stand-in English kept for coverage
-SCAN_CACHE_VERSION = 'scan-25'
+# scan-26: "#" comments in language files (v0.39.0 changed the reader but not this, so More Sniffer Flowers stayed
+#          "unsupported" from the cache), FTB Quests chapters and Origins written inline (embedded_text), Origins powers.
+#          tests/test_safeguards.ScanCacheTests fails when the scan's code changes without a new version here.
+SCAN_CACHE_VERSION = 'scan-26'
 
 
 def scan_cache(home, instance):
@@ -1544,6 +1547,9 @@ def generated_copy(path):
 # Resource packs the Paxi mod loads (VEFV2.7.1 keeps its translation packs there, among them a compass structure
 # translation in Simplified Chinese for 1,901 structures). Read as references only: they are the modpack author's files.
 PAXI_PACKS = 'config/paxi/resourcepacks'
+# Data packs Paxi loads into every world (Cisco's Rpg Origins: the origins, their names and powers). Scanned like any
+# other data pack archive; before 2026-10-16 only the coverage check listed their text, as not supported.
+PAXI_DATAPACKS = 'config/paxi/datapacks'
 # "[地牢浮现之时]飞艇(Small Blimp)": a translation pack's mod name in front and the English after; the name is in between.
 DECORATED_NAME = re.compile(r'^\s*(?:\[[^\]]{1,40}\]\s*)?(.+?)\s*(?:[(（]([^()（）]*[A-Za-z][^()（）]*)[)）])?\s*$')
 
@@ -1566,7 +1572,7 @@ def scan(instance, report, notify, cancelled, cache=None, details='compressed'):
     audit.source_hashes={}
     archives=[]
     # shaderpacks/: a shader pack's option names (shaders/lang/*.lang), which Iris and Oculus show in the game's language.
-    for folder in ('mods','resourcepacks','datapacks','config/openloader',PAXI_PACKS,'shaderpacks')+CONTENT_PACK_FOLDERS:
+    for folder in ('mods','resourcepacks','datapacks','config/openloader',PAXI_PACKS,PAXI_DATAPACKS,'shaderpacks')+CONTENT_PACK_FOLDERS:
         for p in (instance/folder).rglob('*'):
             if p.suffix.lower() in ('.jar','.zip') and p.is_file() and not generated_copy(p.relative_to(instance).as_posix()):
                 contained(instance,p.relative_to(instance).as_posix())
@@ -3282,8 +3288,46 @@ def build_pack(instance, staged, pack_rows, session, notify, pack_base=None):
     return stage_resource_pack(instance,staged,{**existing,**built},sources)
 
 
+# Minecraft reads a namespace's zh_tw.json from every pack in turn, bottom to top, inside one try (ClientLanguage.loadFrom,
+# 1.19.2 and 1.20.1): the first file it cannot read ("Skipped language file: cataclysm:lang/zh_tw.json") ends that
+# namespace, so the files above it, this pack's among them, are never read. L_Ender's Cataclysm 2.46 for 1.19.2 ships a
+# zh_tw.json missing a quote (line 257); with it every Cataclysm item stayed English (Cisco's Ultimate, 2026-10-16).
+# Language keys are global, not tied to the folder they sit in, so the same translations are also written under a
+# namespace of this pack's own, which no broken file shares.
+LANG_DETOUR='mctranslator_fix.'
+
+
+def game_reads_lang(raw):
+    """Whether the game's language loader reads this JSON language file: lenient Gson (comments allowed, no trailing
+    comma), an object whose values are plain strings or numbers. An empty file reads as null and fails as well."""
+    try:text=decode(raw)
+    except (UnicodeError,ValueError):return False
+    if not text.strip():return False
+    try:data=json.loads(CTE2QuestTranslator._strip_json_comments(text),strict=False)
+    except ValueError:return False
+    return isinstance(data,dict) and all(isinstance(v,(str,int,float)) for v in data.values())
+
+
+def lang_detours(instance, files, sources):
+    """`files` with a copy of each zh_tw.json whose mod also ships a zh_tw.json the game cannot read (see LANG_DETOUR)."""
+    files={n:b for n,b in files.items() if not n.startswith('assets/'+LANG_DETOUR)}
+    for name in sorted(files):
+        m=re.fullmatch(r'assets/([^/]+)/lang/zh_tw\.json',name)
+        if not m:continue
+        for jar in sources.get(name) or {}:
+            path=Path(instance)/jar
+            if '!/' in jar or not path.is_file():continue
+            try:
+                with zipfile.ZipFile(path) as z:raw=z.read(name) if name in z.namelist() else None
+            except (OSError,zipfile.BadZipFile,KeyError):continue
+            if raw is not None and not game_reads_lang(raw):
+                files[f'assets/{LANG_DETOUR}{m[1]}/lang/zh_tw.json']=files[name];break
+    return files
+
+
 def stage_resource_pack(instance, staged, files, sources):
     """Write the translation resource pack into the staging folder; [] when it would equal the one in place."""
+    files=lang_detours(instance,files,sources)
     dst=contained(staged,RESOURCE_PACK_FILE);dst.parent.mkdir(parents=True,exist_ok=True)
     # Fixed timestamps and order: the same translations always give the same file, so a rerun writes nothing.
     stamp=(2020,1,1,0,0,0)
@@ -3562,7 +3606,11 @@ def stage_and_apply(session, home, notify, work, stage_only=False, pack_base=Non
     if staged.exists():
         staged=report/('staged-'+uuid.uuid4().hex[:8])
     staged.mkdir();work.append(staged)
-    records=build_pack(instance,staged,pack_rows,session,notify,pack_base) if pack_rows else []
+    if pack_rows:records=build_pack(instance,staged,pack_rows,session,notify,pack_base)
+    else:
+        # No new pack text, but a pack written before LANG_DETOUR (or before a mod's zh_tw broke) still needs its copy.
+        existing,sources=read_resource_pack(instance) if pack_base is None else pack_base
+        records=stage_resource_pack(instance,staged,existing,sources) if existing and lang_detours(instance,existing,sources)!=existing else []
     if data_rows:records+=build_data_pack(instance,home,staged,data_rows)
     changed_classes=[]
     for i,(path,edits) in enumerate(changes.items()):

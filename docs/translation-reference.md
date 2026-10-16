@@ -26,6 +26,14 @@
 
 ## 已知漏翻與覆蓋案例
 
+- 2026-10-16 Cisco's Fantasy Medieval RPG（Ultimate 1.19.2、Dragonfyre 1.20.1）與 Craft to Exile 2 截圖查證：
+  - L_Ender's Cataclysm 2.46（1.19.2）自帶的 `assets/cataclysm/lang/zh_tw.json` 第 257 行 `"block.cataclysm.void_crystal: "虛空水晶塊"` 少一個引號。遊戲記錄 `Skipped language file: cataclysm:lang/zh_tw.json`；1.19.2／1.20.1 的 ClientLanguage.loadFrom 對每個命名空間用一個 try 由下往上讀全部資源包，壞檔丟例外後整個命名空間結束，翻譯資源包雖然排在上面也沒被讀，所以災變全部英文。修法是把同一份譯文另放在 `assets/mctranslator_fix.cataclysm/lang/zh_tw.json`（語系鍵是全域的）。
+  - Origins for Forge 1.10.0.9（1.20.1）與 1.7.1.7（1.19.2）：`io/github/edwinmindcraft/origins/api/origin/Origin` 與 `OriginLayer` 的 name、description（圖層另有 missing_name、missing_description）用 calio 的 `CalioCodecHelper.COMPONENT_CODEC`，它呼叫 `Component.Serializer.fromJson`，純字串就是照字面的文字；apoli 2.9.0.8／2.6.1.7 的 `PowerData.getName()`／`getDescription()` 則是 `Component.translatable(name)`，能力名稱與說明是語系鍵。Cisco's Rpg Origins 放在 `config/paxi/datapacks`，以前只有文字涵蓋檢查列出、沒有讀取器。
+  - FTB Quests 2001.4.22（1.20.1）與 1902.5.10（1.19.2）的模組檔沒有任何 translation 類別，任務文字只存在章節 snbt；`{鍵}` 形式（Craft to Exile 2）才查語系檔。
+  - Patchouli 1.19.2-77：book.json 沒有 `use_resource_pack` 的書（Apotheosis 6.5.2 `data/apotheosis/patchouli_books/apoth_chronicle`）由 `BookContentClasspathLoader` 直接讀模組檔，資源包無法覆蓋；CurseForge 管理的模組會被換回，因此列為無法寫入。
+  - 照字面寫在 CurseForge 管理模組程式裡、無法保留的文字：Cisco's mod（cisco_mod 9.6、cisco_mod_legacy 2.5）盔甲說明、AllTheLeaks 的記憶體警告、Mine and Meals 的「Chaos Boost Ⅱ」料理效果說明。
+  - Craft to Exile 2 用 v0.39.0 重跑後 More Sniffer Flowers 仍是「格式尚未支援」：v0.39.0 改了讀取器卻沒有遞增 `SCAN_CACHE_VERSION`，沒變動的模組檔沿用舊掃描結果。
+
 
 - 翻譯與掃描都必須以 `en_us`、`zh_cn`、`zh_tw` 的 key 聯集為基礎，不能只遍歷英文檔。只有簡中檔存在的玩家可見 key 也要補翻；例如 `tooltip.xiangcaomengjia.bulk_bonus_hint`、`variety_bonus_hint`。沒有英文時，以相符的中文來源檢查佔位符與語意，不可直接略過。
 - 不能用「值包含任意中文字」判定翻譯完成。`Holds:藥水…` 這類中英混雜值仍須處理；按鍵、模組名等合理英文應逐段判斷，不可因此放過整句操作提示。

@@ -397,17 +397,23 @@ DATA_TEXT_FORMATS=[(re.compile(r'(?:^|/)data/[a-z0-9_.\-]+/whisperingquests/(?:t
 # - Cobblemon 1.7.3 dialogues (data/<mod>/dialogues/): a page's "lines" and an option's "text" given as plain strings
 #   (DialogueTextAdapter: a JSON string becomes asTranslated, Component.translatable).
 # - Apotheosis 7.4.3 minibosses: "name", set over the mob as Component.translatable(name) (ApothMiniboss).
+# - Origins for Forge powers (apoli 2.9.0.8 PowerData.getName / getDescription: Component.translatable of the string),
+#   the abilities listed under an origin ("Ender Affinity", "You gain a 350 % boost ..."). Their % is a percent sign:
+#   TranslatableContents shows a text whose % is no %s / %1$s as written, so it is kept (shown_as_key(percent=True)),
+#   and so is a line break ("... all your life .\nYou deal 30 percent ..."): the key is the whole string, breaks included.
 # Text holding % is left out (translatable reads it as a format), and so is a language key or id itself
 # (pixelmon.npc.dialogue.battle.trainer.wild).
 DATA_KEY_SENTENCES=[(re.compile(r'(?:^|/)data/pixelmon/pixelmon/npc/.+\.json$'),{'title','message','pages'}),
                     (re.compile(r'(?:^|/)data/[a-z0-9_.\-]+/dialogues/.+\.json$'),{'lines','text'}),
-                    (re.compile(r'(?:^|/)data/apotheosis/minibosses/.+\.json$'),{'/name'})]
+                    (re.compile(r'(?:^|/)data/apotheosis/minibosses/.+\.json$'),{'/name'}),
+                    (ORIGIN_POWERS:=re.compile(r'(?:^|/)data/[a-z0-9_.\-]+/powers/.+\.json$'),{'/name','/description'})]
 
 
-def shown_as_key(text):
+def shown_as_key(text,percent=False):
     """Whether a string from DATA_KEY_SENTENCES is words a player reads, not a key or an id."""
     return bool(re.search(r'[A-Za-z]{2}',text) and not re.fullmatch(r'[a-z0-9_.:\-/]+',text.strip())
-                and '%' not in text and '\n' not in text and not re.search(r'\b(?:q|c|v|t)\.[a-z_]+',text))
+                and ('%' not in text if not percent else not re.search(r'%(?:\d+\$)?[A-Za-z%]',text))
+                and ('\n' not in text or percent) and not re.search(r'\b(?:q|c|v|t)\.[a-z_]+',text))
 DATA_TEXT=re.compile('|'.join(f'(?:{r.pattern})' for r,_ in DATA_TEXT_FORMATS))
 DATA_TEXT_FIELDS=set().union(*(f for _,f in DATA_TEXT_FORMATS))  # every format's fields (older callers)
 
@@ -907,7 +913,7 @@ class Audit:
                 except ValueError:data=None
                 for path,field,value in leaves(data) if data is not None else ():
                     # "/name": only the file's own top-level field (a miniboss's gear has names of its own)
-                    if (field in fields or (len(path)==1 and '/'+field in fields)) and shown_as_key(value):
+                    if (field in fields or (len(path)==1 and '/'+field in fields)) and shown_as_key(value,bool(ORIGIN_POWERS.search('/'+n))):
                         self.extra_keys.append([source_of(m[1]),value,value,None,dict(key_from_data=where,
                             key_from_data_path=json.dumps(path),key_sentence=True)])
             for key,fallback in data_key_refs(text):
@@ -1100,14 +1106,19 @@ class Audit:
                     # FTB Quests 1.20.1 and other SNBT files hold their text inline: every Chinese string that is
                     # not a key (titles, subtitles, descriptions) is a row of its own, keyed by line.
                     lines=raw.splitlines()
-                    for lineno,i,value,is_key,_,_ in string_literals(raw,'.snbt'):
-                        if is_key:continue
+                    # A quest chapter's titles, subtitles, descriptions and hover lines are read as words shown as
+                    # written (embedded_text.ftb_units, in collection above); the rest of the file stays here.
+                    quests=embedded_text.FTB_QUESTS.search(n)
+                    claimed={start for start,_,_,_,field in embedded_text.snbt_values(raw) if field in embedded_text.FTB_FIELDS} if quests else set()
+                    for lineno,i,value,is_key,start,_ in string_literals(raw,'.snbt'):
+                        if is_key or start in claimed:continue
                         # English is listed where the line names it as display text (title: "..."); array lines are below.
                         line=lines[lineno-1]
                         if HAN.search(value) or (LATIN.search(value) and re.search(r'\b(title|subtitle|text|Name)\b',line)
                                                  and not re.search(r'\b(?:description|Lore):\s*\[',line)):
                             self.add(n,f'{lineno}:{i}',None,value,kind='snbt_display_array')
-                    for m in re.finditer(r'\b(?:description|Lore):\s*\[(?:"(?:\\.|[^"\\])*"|[^"\]])*\]',raw):
+                    for m in re.finditer(r'\b(?:Lore):\s*\[(?:"(?:\\.|[^"\\])*"|[^"\]])*\]' if quests else
+                                         r'\b(?:description|Lore):\s*\[(?:"(?:\\.|[^"\\])*"|[^"\]])*\]',raw):
                         for i,s in enumerate(re.finditer(r'"(?:\\.|[^"\\])*"',m[0])):
                             value=json.loads(s[0])
                             if not HAN.search(value):self.add(n,f'array@{m.start()}:{i}',None,value,kind='snbt_display_array')
@@ -1271,7 +1282,7 @@ def main():
     ap=argparse.ArgumentParser();ap.add_argument('root',type=Path);ap.add_argument('--output',type=Path,required=True);ap.add_argument('--decisions',type=Path);args=ap.parse_args()
     decisions=json.loads(args.decisions.read_text(encoding='utf-8')) if args.decisions else {}
     audit=Audit(args.output,decisions)
-    for folder in ('mods','resourcepacks','datapacks','config/openloader'):
+    for folder in ('mods','resourcepacks','datapacks','config/openloader','config/paxi/datapacks'):
         for p in sorted((args.root/folder).rglob('*')):
             if p.suffix in ('.jar','.zip'):audit.archive(p,p.relative_to(args.root).as_posix())
     audit.loose(args.root)
