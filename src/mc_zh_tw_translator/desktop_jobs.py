@@ -1494,7 +1494,7 @@ def present_mods(z, depth=0):
 # scan-26: "#" comments in language files (v0.39.0 changed the reader but not this, so More Sniffer Flowers stayed
 #          "unsupported" from the cache), FTB Quests chapters and Origins written inline (embedded_text), Origins powers.
 #          tests/test_safeguards.ScanCacheTests fails when the scan's code changes without a new version here.
-SCAN_CACHE_VERSION = 'scan-26'
+SCAN_CACHE_VERSION = 'scan-27'
 
 
 def scan_cache(home, instance):
@@ -2990,6 +2990,7 @@ HELD_CURSEFORGE_DATA = '在模組檔裡、不是資源包能覆蓋的語系檔�
 HELD_MIXIN = '另一個模組會在遊戲啟動時修改這段程式，可能要找這句原文；改了可能讓遊戲無法啟動，所以沒有寫入'
 HELD_OLD_REPORT = '這份報告是舊版程式產生的，還不知道哪些程式會被其他模組修改；請重新按「一鍵完整翻譯並套用」再寫入程式文字'
 HELD_NESTED = '在內嵌函式庫的資料檔裡，資源包無法覆蓋，也不能安全改寫，所以沒有寫入'
+HELD_NBT_CHARS = '譯文含有結構檔無法保存的字元（例如表情符號），寫入會讓文字變亂碼，所以這一句沒有寫入'
 
 
 HELD_TOOLTIP_PARTS = '是一段多行設定說明的其中一行；同一段還有其他行沒翻好，整段翻好才一起寫入'
@@ -3193,6 +3194,8 @@ def write_route(row, curseforge):
     """
     if row.get('kind')=='data_text':return HELD_NO_DATAPACK if row.get('no_data_pack') else 'datapack'
     path,entry=target_for(row)
+    # One unsavable sentence is held by itself instead of stopping the whole batch.
+    if row.get('kind')=='embedded_text' and not embedded_text.storable(entry or path,row.get('proposed')):return HELD_NBT_CHARS
     if entry is None or not path.startswith('mods/'):return 'file'
     if book_title(row) or (row.get('kind')!='class_display' and pack_resource(entry)):return 'pack'
     curseforge=managed(curseforge,row)

@@ -202,7 +202,17 @@ def rewrite_nbt(raw, changes):
 
 def safe(text):
     # NBT and class strings are Modified UTF-8: characters outside the BMP and NUL would be written differently.
-    if any(ord(c) > 0xFFFF or c == '\0' for c in text):raise ValueError('譯文含有遊戲檔案無法保存的字元')
+    if not storable_text(text):raise ValueError('譯文含有遊戲檔案無法保存的字元')
+
+
+def storable_text(text):
+    return not any(ord(c) > 0xFFFF or c == '\0' for c in text)
+
+
+def storable(name, text):
+    """Whether `text` can be written into the file `name`. Only structure files (NBT) are limited; the text formats are
+    UTF-8 and keep an emoji the original already had (The Fool 2026-10-16: a 🐱 in an FTB quest stopped the whole apply)."""
+    return storable_text(text or '') if STRUCTURE.search(name) else True
 
 
 # --- functions (.mcfunction) and command block commands ---------------------------------------------------------
@@ -650,7 +660,6 @@ def units(name, raw):
 def rewrite(name, raw, changes):
     """The file with {key: (expected, new)} written in; the same bytes when nothing changes."""
     if not changes:return raw
-    for _, new in changes.values():safe(new)
     if STRUCTURE.search(name):return rewrite_nbt(raw, changes)
     text = raw.decode('utf-8-sig'); bom = raw.startswith(b'\xef\xbb\xbf')
     if FUNCTION.search(name):out = rewrite_function(text, changes)

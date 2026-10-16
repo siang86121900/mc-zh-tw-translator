@@ -308,6 +308,17 @@ class InlineQuestAndOriginTests(unittest.TestCase):
         self.assertIn('subtitle: "新的「冒險」"', new)
         self.assertEqual(new.replace('勇者的試煉', "The Champion's Trials").replace('新的「冒險」', 'New Adventure'), CHAPTER)
 
+    def test_an_emoji_stops_only_a_structure_sentence(self):
+        # The Fool 2026-10-16: an FTB quest line with 🐱 raised '無法保存的字元' and no file of the batch was written.
+        name = 'config/ftbquests/quests/chapters/the_squires_trials.snbt'
+        new = et.rewrite(name, CHAPTER.encode(), {'["subtitle", 0]': ('New Adventure', '新的冒險喵！🐱')}).decode()
+        self.assertIn('subtitle: "新的冒險喵！🐱"', new)
+        self.assertTrue(et.storable(name, '🔍'))
+        self.assertFalse(et.storable('data/x/structures/house.nbt', '告示🐱'))
+        held = {'kind': 'embedded_text', 'source': 'mods/x.jar!/data/x/structures/house.nbt', 'key': '[]', 'proposed': '告示🐱'}
+        self.assertEqual(jobs.write_route(held, False), jobs.HELD_NBT_CHARS)
+        self.assertEqual(jobs.write_route(dict(held, proposed='告示'), False), 'file')
+
     def test_origin_names_are_literal_power_names_are_keys(self):
         self.assertEqual(et.units('data/x/origins/demi_god_umbra.json', ORIGIN.encode()),
                          [('["name"]', 'Demi-God Umbra'), ('["description"]', 'A dark power slumbers within you.')])
