@@ -51,6 +51,7 @@ SCRIPT_SUFFIXES = ('.js', '.zs', '.mcfunction')
 SCRIPT_LIMIT = 4 * 1024 * 1024
 
 # Same keys, order and values as the file Forge writes for 1.1.2; only the player-visible text differs.
+# The wording is Elemental Awakening's own (its author's config, 世界之聲), which the owner picked (2026-10-29).
 CONFIG_TEXT = '''
 [sweeper_maid-common-config]
 \t#If 0, disable item sweeping. If > 0, cool down (in seconds) between two item sweeping.
@@ -60,7 +61,7 @@ CONFIG_TEXT = '''
 \t#Range: 1 ~ 6400000
 \tITEM_OVERLOAD_THRESHOLD = 640
 \t#Message to be sent when item overload threshold is exceeded. "$1" stands for chunk X position, "$2" stands for chunk Z position, and "$3" stands for item count.
-\tOVERLOAD_MESSAGE = "[掃地女僕]：區塊（$1, $2）的掉落物太多了，共有 $3 個！"
+\tOVERLOAD_MESSAGE = "世界之聲：區域（$1，$2）的掉落物過多，共有 $3 個！"
 \t#Other entities of types will be killed when cleaning, e.g. arrows. You can also kill mobs or even players by setting this.
 \tEXTRA_ENTITY_TYPES = ["minecraft:arrow", "minecraft:spectral_arrow", "oceanworld:drip_ice"]
 \t#Items in this list will never be cleaned and will be kept as item entity until it disappear.
@@ -68,20 +69,20 @@ CONFIG_TEXT = '''
 \t#Items in this list will be cleaned but not added to the dustbin.
 \tITEM_BLACKLIST = ["minecraft:cobblestone", "minecraft:sand"]
 \t#What message will be sent to players when there's 15s, 30s and 60s left to sweep. "$1" stands for the remaining time (in seconds).
-\tMESSAGE_BEFORE_SWEEP_15_30_60 = "[掃地女僕]：再過 $1 秒就要清掃地上的掉落物囉！"
+\tMESSAGE_BEFORE_SWEEP_15_30_60 = "世界之聲：注意！還有 $1 秒就要清理垃圾了"
 \t#What message will be sent to players when there's 1s~10s left to sweep. "$1" stands for the remaining time (in seconds).
-\tMESSAGE_BEFORE_SWEEP_1_10 = "[掃地女僕]：再過 $1 秒就要清掃地上的掉落物囉！"
+\tMESSAGE_BEFORE_SWEEP_1_10 = "世界之聲：注意！還有 $1 秒就要清理垃圾了"
 \t#What message will be sent to players after a sweep. "$1" stands for the number of killed dropped items, "$2" stands for the number of killed entities, and "$3" stands for the number of blacklisted items.
-\tMESSAGE_AFTER_SWEEP = "[掃地女僕]：這次清掉了 $1 個掉落物、$2 個多餘的實體和 $3 個黑名單物品。"
+\tMESSAGE_AFTER_SWEEP = "世界之聲：這次一共清理掉了 $1 個掉落物，$2 個其他實體和 $3 個黑名單物品"
 \t#What message will be sent to players when open a wrong dustbin.
-\tMESSAGE_WRONG_DUSTBIN = "[掃地女僕]：沒有這個垃圾桶。"
+\tMESSAGE_WRONG_DUSTBIN = "世界之聲：垃圾桶編號錯誤。"
 \t#Name of dustbins.
 \tDUSTBIN_NAME = "垃圾桶 "
 \t#Count of dustbins
 \t#Range: 1 ~ 64
 \tDUSTBIN_COUNT = 8
 \t#What chat message will be sent to players after a sweep. Command will be appended to the end of the chat message.
-\tCHAT_MESSAGE_AFTER_SWEEP = "[掃地女僕]：有東西不見了嗎？到垃圾桶找找看："
+\tCHAT_MESSAGE_AFTER_SWEEP = "世界之聲：有物品不見了？可以檢視垃圾桶："
 \t#Permission level of a player to open the dustbin.
 \t#Range: 0 ~ 4
 \tPERMISSION_LEVEL_DUSTBIN = 0
