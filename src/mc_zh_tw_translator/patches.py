@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import server_list, shared_text
-from . import covers, imblocker
+from . import covers, imblocker, sweeper
 from .deployment import apply_reviewed, contained, file_hash
 from .translator import is_jar_signature_file
 from .updater import REPOSITORY, VERSION, release_url
@@ -299,6 +299,11 @@ def checked_mod(mod):
                 name=str(mod.get('name') or name)[:120],page=page[:300])
 
 
+def own_mod(path: Path) -> bool:
+    """A mod this program installs from its own list (IMBlocker, Sweeper Maid); the receiver gets it the same way."""
+    return imblocker.listed(path) or sweeper.listed(path)
+
+
 def added_mods(instance: Path, originals=None):
     """(mods, left_out): what the owner added through CurseForge on top of the modpack.
 
@@ -336,8 +341,8 @@ def added_mods(instance: Path, originals=None):
         mods.append(mod)
     try:
         for p in sorted((instance/'mods').iterdir()):
-            # IMBlocker is not left out: the receiver's own install adds it (imblocker.ensure).
-            if p.is_file() and p.suffix.lower()=='.jar' and p.name.casefold() not in known and 'mods/'+p.name!=jobs.PACK_MOD_FILE and not imblocker.listed(p):
+            # IMBlocker and Sweeper Maid are not left out: the receiver's own install adds them (imblocker/sweeper.ensure).
+            if p.is_file() and p.suffix.lower()=='.jar' and p.name.casefold() not in known and 'mods/'+p.name!=jobs.PACK_MOD_FILE and not own_mod(p):
                 left.append(dict(name=p.name,fileName=p.name,reason='不是從 CurseForge 安裝的模組，對方無法自動下載'))
     except OSError:pass
     if len(mods)>MAX_ADDED_MODS:
@@ -423,6 +428,9 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     out=folder/f'{safe}{"-"+identity["version"] if identity["version"] else ""}-繁中翻譯-{stamp}.zip'
     manifest=dict(format=PATCH_FORMAT,app_version=VERSION,created=datetime.now().isoformat(timespec='seconds'),
                   modpack=identity,files=[],added_mods=mods,left_out_mods=left_out)
+    # The owner's modpack got Sweeper Maid before publishing (sweeper.ensure): the receiver's app adds the same file.
+    found=sweeper.present(instance)
+    if found and found['enabled'] and sweeper.listed(instance/'mods'/found['file']):manifest['sweeper']=True
     groups,unit_omissions=shared_text.collect(instance,home,files)
     restricted={s['file'] for s in unit_omissions if '用途未確認' in s['reason']}
     units=[];recipe_targets=set()
@@ -442,6 +450,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 if file==jobs.DEFAULT_OPTIONS_FILE:continue  # the pack switched on again; installing redoes it
                 if file==server_list.FILE:continue  # the card's server; each card adds its own, a list is never shared
                 if item['after'] is None:continue  # removed by a whole-modpack update; nothing to share
+                if file==sweeper.CONFIG and item['before'] is None:continue  # the receiver's sweeper.ensure writes the same file
+                if archive and item['before'] is None and path.is_file() and own_mod(path):continue  # installed by the receiver's own app
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
                 if file in restricted:
                     text_recipe(file)
@@ -516,13 +526,16 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
             manifest['text_units']=units
             shared_text.validate(units,clean_path)
             manifest['required_mods']=[dict(file='mods/'+p.name,before=originals.get('mods/'+p.name) or file_hash(p),
-                after=file_hash(p),size=original_sizes.get('mods/'+p.name) or p.stat().st_size) for p in sorted((instance/'mods').glob('*.jar')) if 'mods/'+p.name!=jobs.PACK_MOD_FILE]
+                after=file_hash(p),size=original_sizes.get('mods/'+p.name) or p.stat().st_size) for p in sorted((instance/'mods').glob('*.jar'))
+                if 'mods/'+p.name!=jobs.PACK_MOD_FILE and not own_mod(p)]  # CurseForge never puts these in place
             manifest['source_hash_aliases']={u['source_after']:h for u in units for h in u['requires'].values() if u['source_after']!=h}
             manifest['sharing_status']='partial' if manifest['skipped'] else 'ready'
             manifest['save_note']=shared_text.SAVE_NOTE
             manifest['minimum_app_version']='0.32.1'  # a name read back as one coloured piece counts as shown from 0.32.1
             if any(f['file'].casefold().startswith('vaultpatcher/') for f in manifest['files']):
                 manifest['minimum_app_version']='0.34.0'  # VaultPatcher modules are refused before 0.34.0, and their cache cleared from it
+            if manifest.get('sweeper'):
+                manifest['minimum_app_version']='0.41.0'  # earlier apps ignore 'sweeper' though the card says it is added
             w.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
             w.writestr('授權與來源.txt',ATTRIBUTION)
             # Per-string sources (AI, converted, reference), so the receiver's report keeps the same labels.
@@ -831,6 +844,9 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         mods=install_mods(instance,manifest['added_mods'],home,lambda p,t,d='':notify(int(p*.15),t,d),cancelled,session) if add_mods and manifest['added_mods'] else None
         if cancelled():raise InterruptedError('已停止，翻譯還沒有寫入。'+('加裝的模組已放進模組資料夾，可在「備份與還原」移除。' if mods and mods['installed'] else ''))
         ime=imblocker.ensure(instance,home,lambda _p,t,d='':notify(15,t,d),cancelled,session)
+        # Agreeing to the translator's added mods covers Sweeper Maid too (the card lists it among them).
+        sweep=(sweeper.ensure(instance,home,lambda _p,t,d='':notify(15,t,d),cancelled,session,check_cleaner=False)
+               if add_mods and manifest.get('sweeper') else None)
         versions=shared_text.local_versions(instance,home)
         plan=plan_patch(instance,z,manifest,versions)
         staged.mkdir(parents=True)
@@ -904,7 +920,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         result=dict(instance=str(instance),patch=str(patch),modpack=manifest.get('modpack',{}),backup=backup,applied=applied,
                     already=[p[0]['file'] for p in plan if p[1]=='already'],
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],
-                    language_set=bool(set_language),mods=mods,imblocker=ime,
+                    language_set=bool(set_language),mods=mods,imblocker=ime,sweeper=sweep,
                     mods_offered=[m['name'] for m in manifest['added_mods']] if mods is None else [])
         result['skipped']+=prepared['skipped']
         result['text_already']=prepared['already']

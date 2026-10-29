@@ -1036,6 +1036,8 @@ class MainWindow(QMainWindow):
         lines.append('遊戲語言已設為繁體中文（台灣）。' if result['language_set'] else '請在遊戲的「選項 → 語言」選擇繁體中文（台灣）。')
         if result.get('cover'):lines+=['',result['cover']['line']]
         if (result.get('imblocker') or {}).get('state') not in (None,'present','cancelled'):lines.append(result['imblocker']['line'])
+        sweep=result.get('sweeper') or {}
+        if sweep.get('state') not in (None,'present','cancelled') or sweep.get('config_backup'):lines.append(sweep['line'])
         if result.get('notes'):lines+=['','翻譯者的說明：',result['notes']]
         lines+=['',result.get('save_note') or patches.shared_text.SAVE_NOTE]
         memory=self.memory_advice(dict(recommendedRam=patches.instance_identity(Path(result['instance']))['recommendedRam'],

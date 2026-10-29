@@ -33,7 +33,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
-from mc_zh_tw_translator import full_pack, server_list  # noqa: E402
+from mc_zh_tw_translator import full_pack, server_list, sweeper  # noqa: E402
 from mc_zh_tw_translator.patches import export_patch, instance_identity, read_patch  # noqa: E402
 from mc_zh_tw_translator.updater import REPOSITORY  # noqa: E402
 
@@ -169,11 +169,26 @@ def refresh_patch_card(args):
     update_catalog(entry, lambda p: p is cards[0] or p == cards[0], f"整合包卡片資料：{entry['name']}", dry_run=args.dry_run, revise=False)
 
 
+def add_sweeper(args, instance):
+    """Published modpacks get Sweeper Maid unless something in them already clears dropped items (使用者 2026-10-29)."""
+    if args.no_sweeper:
+        print('依 --no-sweeper，沒有檢查或加裝 Sweeper Maid。')
+        return
+    if not args.home:
+        sys.exit('加裝 Sweeper Maid 需要 --home（MCTranslatorData 資料夾，存放可還原的備份）；不加裝請用 --no-sweeper。')
+    if args.dry_run:
+        found = sweeper.present(instance)
+        print('試跑：', '已有 Sweeper Maid' if found else (sweeper.cleaner(instance) or '會加裝 Sweeper Maid'))
+        return
+    print(sweeper.ensure(instance, args.home, lambda _p, t, d='': print(t, d, flush=True))['line'], flush=True)
+
+
 def publish_full(args):
     instance = args.patch.resolve()
     folder = args.drive_folder
     if not folder or not folder.is_dir():
         sys.exit('請用 --drive-folder 指定 Google 雲端硬碟電腦版裡要放整合包的資料夾。')
+    add_sweeper(args, instance)
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         out = Path(tmp)/'pack.zip'
         shown = [0.0]
@@ -235,6 +250,7 @@ def main():
     parser.add_argument('--server-name', default='', help='安裝時加到玩家「多人遊戲」清單的伺服器名稱')
     parser.add_argument('--server-address', default='', help='伺服器位址，例如 26.186.50.26')
     parser.add_argument('--no-server', action='store_true', help='拿掉卡片上的伺服器')
+    parser.add_argument('--no-sweeper', action='store_true', help='不檢查也不加裝 Sweeper Maid（清理掉落物的模組）')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     if args.full and args.card_only:
@@ -248,6 +264,7 @@ def main():
         return
     if args.patch.is_dir():
         if not args.home:sys.exit('給整合包資料夾時，請用 --home 指定 MCTranslatorData 資料夾（含套用紀錄）。')
+        add_sweeper(args, args.patch.resolve())
         exported = export_patch(args.patch, args.home)
         for s in exported['skipped']:print('略過：', s['file'], s['reason'])
         args.patch = Path(exported['path'])
@@ -270,7 +287,9 @@ def main():
                  translator=args.translator, updated=date.today().isoformat(), notes=args.notes,
                  recommendedRam=args.ram or int(pack.get('recommendedRam') or 0),
                  sharingStatus=manifest.get('sharing_status','unknown'),minimumAppVersion=manifest.get('minimum_app_version',''),
-                 addedMods=[dict(name=m['name'], size=m['size']) for m in manifest['added_mods']],
+                 # Sweeper Maid is installed by the receiver's app with the added mods, so the card lists it with them.
+                 addedMods=[dict(name=m['name'], size=m['size']) for m in manifest['added_mods']]
+                           + ([dict(name='Sweeper Maid（定時清理地上的掉落物）', size=sweeper.FILES[0][5])] if manifest.get('sweeper') else []),
                  url=RAW+relative, sha256=digest, size=len(data), **card_server(args))
     update_catalog(entry, lambda p: p.get('projectID') == pack['projectID'] and p.get('fileID') == pack['fileID'],
                    f"已翻譯整合包：{pack['name']} {pack.get('version', '')}", [(args.patch, relative)], args.dry_run)

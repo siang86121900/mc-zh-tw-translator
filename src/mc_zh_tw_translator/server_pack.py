@@ -324,6 +324,96 @@ def declared_client_only(mods: Path) -> list[str]:
     return found
 
 
+def jar_mixin_configs(z: zipfile.ZipFile) -> list[str]:
+    """The mixin config files a jar declares: MixinConfigs in its manifest, [[mixins]] in mods.toml, "mixins" in fabric.mod.json."""
+    names = set(z.namelist()); found = []
+    if 'META-INF/MANIFEST.MF' in names:
+        # A manifest line longer than 72 bytes goes on in the next line, which starts with one space.
+        manifest = re.sub(r'\r?\n ', '', z.read('META-INF/MANIFEST.MF').decode('utf-8', 'replace'))
+        m = re.search(r'(?m)^MixinConfigs:\s*(.+)$', manifest)
+        if m:
+            found += [x.strip() for x in m[1].split(',') if x.strip()]
+    for meta in ('META-INF/neoforge.mods.toml', 'META-INF/mods.toml'):
+        if meta in names:
+            for block in z.read(meta).decode('utf-8', 'replace').split('[[')[1:]:
+                if block.startswith('mixins]]'):
+                    found += re.findall(r'(?m)^\s*config\s*=\s*["\']([^"\']+)["\']', block)
+    mixins = fabric_meta(z).get('mixins')
+    for x in mixins if isinstance(mixins, list) else []:
+        config = x.get('config') if isinstance(x, dict) else x
+        if isinstance(config, str):
+            found.append(config)
+    return found
+
+
+def mixin_configs(mods: Path) -> dict[str, str]:
+    """Mixin config file name → the jar in the mods folder that declares it (also for the small mods a jar carries inside)."""
+    index = {}
+    for jar in sorted(mods.glob('*.jar')):
+        try:
+            with zipfile.ZipFile(jar) as z:
+                for config in jar_mixin_configs(z):
+                    index.setdefault(config, jar.name)
+                for inner in z.namelist():
+                    if inner.startswith(('META-INF/jarjar/', 'META-INF/jars/')) and inner.endswith('.jar'):
+                        try:
+                            with zipfile.ZipFile(io.BytesIO(z.read(inner))) as nested:
+                                for config in jar_mixin_configs(nested):
+                                    index.setdefault(config, jar.name)
+                        except (zipfile.BadZipFile, OSError, KeyError, RuntimeError):
+                            continue
+        except (zipfile.BadZipFile, OSError, KeyError):
+            continue
+    return index
+
+
+# A mixin that refers to a class of the player's game: Mixin cannot find that class on a server.
+# "ClassMetadataNotFoundException: net.minecraft.client.Minecraft" (The Fool 0.3.2, 2026-10-17).
+CLIENT_METADATA = re.compile(r'ClassMetadataNotFoundException:?\s+(?:net[/.]minecraft[/.]client[/.]|com[/.]mojang[/.]blaze3d[/.]|org[/.]lwjgl[/.])\S*')
+# [17Oct2026 10:00:00.123] [modloading-worker-0/DEBUG] [mixin/]: Mixing create.X from shouldersurfing.forge.compat.mixins.json into com.simibubi.create.Y
+LOG_THREAD = re.compile(r'^\[[^\]]*\] \[([^\]/]+)/\w+\]')
+MIXING = re.compile(r'Mixing (\S+) from (\S+\.json) into (\S+)')
+
+
+def mixin_culprit(text: str, log: str, configs: dict[str, str], present: set[str], failed: set[str]) -> dict | None:
+    """The mod whose mixin brought a class of the player's game into another mod, from the server's debug.log.
+
+    The crash report names only the mod the mixin went into (Create), never the mixin's own mod: that one is
+    the last "Mixing ... from <config>.json" line of the same thread before the error. None when the error is
+    something else, or the line or its jar cannot be found, or the mixin is the failed mod's own."""
+    missing = CLIENT_METADATA.search(text) or CLIENT_METADATA.search(log)
+    if not missing or not log:
+        return None
+    lines = log.splitlines()
+    at = next((i for i, line in enumerate(lines) if CLIENT_METADATA.search(line)), None)
+    if at is None:
+        return None
+    thread = next((m[1] for m in (LOG_THREAD.match(lines[i]) for i in range(at, -1, -1)) if m), None)
+    for line in reversed(lines[:at]):
+        m = MIXING.search(line)
+        if not m:
+            continue
+        header = LOG_THREAD.match(line)
+        if thread and header and header[1] != thread:
+            continue
+        name = configs.get(m[2])
+        if not name or name not in present or name in failed:
+            return None
+        return dict(file=name, mod='', kind='client_mixin', into=m[3],
+                    detail=f'{line[line.find("Mixing"):].strip()} → {missing[0]}'[:300])
+    return None
+
+
+def start_log(server: Path) -> str:
+    """The log of the last start: debug.log has the mixin lines, latest.log when there is no debug.log."""
+    for name in ('debug.log', 'latest.log'):
+        try:
+            return (server/'logs'/name).read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+    return ''
+
+
 ISSUE = re.compile(r'-- Mod loading issue(?: for: (\S+))? --')
 MOD_FILE = re.compile(r'Mod [Ff]ile: (.+)')
 FAILURE = re.compile(r'Failure message: (.+)')
@@ -468,6 +558,9 @@ def plain_reason(item: dict) -> str:
         return '玩家端專用（會用到畫面、按鍵或聲音，伺服器沒有這些，開啟時會當掉）'
     if item['kind'] == 'client_config':
         return '玩家端專用（要讀只有玩家端才有的設定，伺服器上讀不到而當掉）'
+    if item['kind'] == 'client_mixin':
+        into = f"「{item['into_file']}」" if item.get('into_file') else '別的模組'
+        return f'玩家端專用（它塞進{into}的程式會用到只有玩家端才有的畫面，伺服器沒有而當掉；被塞的那個模組本身沒問題，所以保留）'
     if item['kind'] == 'declared':
         return '模組自己標明只給玩家端用'
     if item['kind'] == 'requires':
@@ -828,14 +921,22 @@ def build_server(instance: Path, parent: Path, home: Path, notify=lambda *_: Non
                 break
             present = {p.name for p in (server/'mods').glob('*.jar')}
             found = (fabric_culprits if loader['kind'] == 'fabric' else culprits)(attempt['text'], index, present)
-            if not found:
-                result['problem'] = ('伺服器開不起來，但當機紀錄沒有指出是哪個模組，程式不敢亂拿。'
-                                     '\n（技術細節：'+last_error(attempt.get('tail') or [])+'）')
-                break
             # Only what is certainly the player's-game-only part goes: a client-only mod, or a mod that needs
             # one taken out here. Anything else (a script error, a bug in a mod, a library) is the player's call:
             # taking out KubeJS for one broken script would break the whole modpack.
             removable = [x for x in found if x['kind'] in ('client', 'client_config') or (x['kind'] == 'requires' and x.get('needs') in removed_mods)]
+            if not removable and loader['kind'] != 'fabric':
+                # The mod the crash names (Create) may only be where another mod's mixin went in.
+                owner = mixin_culprit(attempt['text'], start_log(server), mixin_configs(server/'mods'), present,
+                                      {x['file'] for x in found})
+                if owner:
+                    failed = [x['file'] for x in found if x['kind'] == 'error']
+                    owner['into_file'] = failed[0] if len(failed) == 1 else ''
+                    removable = [owner]
+            if not found and not removable:
+                result['problem'] = ('伺服器開不起來，但當機紀錄沒有指出是哪個模組，程式不敢亂拿。'
+                                     '\n（技術細節：'+last_error(attempt.get('tail') or [])+'）')
+                break
             if not removable:
                 x = found[0]
                 why = (f"需要「{x['needs']}」，但整合包裡本來就沒有它（或版本不對）" if x['kind'] == 'requires'

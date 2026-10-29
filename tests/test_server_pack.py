@@ -75,6 +75,28 @@ FORGE_SCRIPT = """Description: Mod loading error has occurred
 \t\tjava.lang.RuntimeException: There were KubeJS startup script syntax errors! See logs/kubejs/startup.log for more info
 \tException message: java.lang.RuntimeException: There were KubeJS startup script syntax errors!
 """
+# The Fool 0.3.2 (2026-10-17): ShoulderSurfing's mixin into Create refers to the player's game.
+CREATE_MIXIN = """---- Minecraft Crash Report ----
+Description: Mod loading error has occurred
+
+-- Mod loading issue for: create --
+Details:
+\tMod File: /C:/x/mods/create.jar
+\tFailure message: Create (create) has failed to load correctly
+\t\torg.spongepowered.asm.mixin.transformer.throwables.MixinTransformerError: An unexpected critical error was encountered
+\tMod Version: 0.5.1.j
+\tException message: org.spongepowered.asm.mixin.throwables.ClassMetadataNotFoundException: net.minecraft.client.Minecraft
+\tSuspected Mods: NONE
+"""
+SURF_LINE = ('[17Oct2026 10:00:02.200] [modloading-worker-0/DEBUG] [mixin/]: Mixing create.MixinContraptionHandlerClient_0_5_0 '
+             'from shouldersurfing.forge.compat.mixins.json into com.simibubi.create.content.contraptions.ContraptionHandlerClient\n')
+MIXIN_LOG = ('[17Oct2026 10:00:01.000] [modloading-worker-1/DEBUG] [mixin/]: Mixing OtherMixin from other.mixins.json into a.B\n'
+             + SURF_LINE +
+             '[17Oct2026 10:00:02.300] [modloading-worker-1/DEBUG] [mixin/]: Mixing LateMixin from other.mixins.json into c.D\n'
+             '[17Oct2026 10:00:02.400] [modloading-worker-0/ERROR] [net.minecraftforge.fml.javafmlmod.FMLModContainer/LOADING]: Failed to create mod instance.\n'
+             'org.spongepowered.asm.mixin.transformer.throwables.MixinTransformerError: An unexpected critical error was encountered\n'
+             '\tat org.spongepowered.asm.mixin.transformer.MixinProcessor.applyMixins(MixinProcessor.java:392)\n'
+             'Caused by: org.spongepowered.asm.mixin.throwables.ClassMetadataNotFoundException: net.minecraft.client.Minecraft\n')
 
 
 class LoaderTests(unittest.TestCase):
@@ -277,6 +299,55 @@ class BuildTests(unittest.TestCase):
         result, server, _ = self.build([text])
         self.assertFalse(result['ok']); self.assertIn('architectury', result['problem'])
         self.assertTrue((server/'mods/menu.jar').exists())
+
+    def mixin_start(self, log):
+        """A start that crashes in Create with a client class from a mixin, writing debug.log like Forge does."""
+        def start(server, *_):
+            with zipfile.ZipFile(server/'mods/create.jar', 'w') as z:
+                z.writestr('META-INF/mods.toml', 'modLoader="javafml"\n[[mods]]\nmodId="create"\n[[mixins]]\nconfig="create.mixins.json"\n')
+            with zipfile.ZipFile(server/'mods/ShoulderSurfing-Forge-1.20.1-4.22.12.jar', 'w') as z:
+                # A long manifest line goes on in the next line after one space.
+                z.writestr('META-INF/MANIFEST.MF', 'Manifest-Version: 1.0\r\nMixinConfigs: shouldersurfing.mixins.json,shouldersurfi\r\n'
+                                                   ' ng.forge.compat.mixins.json\r\n')
+                z.writestr('META-INF/mods.toml', 'modLoader="javafml"\n[[mods]]\nmodId="shouldersurfing"\n')
+            with zipfile.ZipFile(server/'mods/other.jar', 'w') as z:
+                z.writestr('META-INF/mods.toml', 'modLoader="javafml"\n[[mods]]\nmodId="other"\n[[mixins]]\nconfig="other.mixins.json"\n')
+            (server/'logs').mkdir(exist_ok=True)
+            (server/'logs/debug.log').write_text(log, encoding='utf-8')
+            return dict(ok=False, text=CREATE_MIXIN, tail=[], timed_out=False)
+        return start
+
+    def test_client_mixin_in_another_mod_takes_out_the_mixins_mod(self):
+        # The Fool 0.3.2 (2026-10-17): the report names only Create; ShoulderSurfing's mixin went into it.
+        tries = []
+        def start(server, *args):
+            tries.append(1)
+            if len(tries) == 1:
+                return inner(server, *args)
+            names = [p.name for p in (server/'mods').glob('*.jar')]
+            self.assertIn('create.jar', names); self.assertNotIn('ShoulderSurfing-Forge-1.20.1-4.22.12.jar', names)
+            return dict(ok=True, text='', tail=[])
+        inner = self.mixin_start(MIXIN_LOG)
+        result, server, _ = self.build([], start=start)
+        self.assertTrue(result['ok'])
+        self.assertEqual([x['file'] for x in result['removed']], ['lanprops.jar', 'ShoulderSurfing-Forge-1.20.1-4.22.12.jar'])
+        self.assertTrue((server/sp.REMOVED_DIR/'ShoulderSurfing-Forge-1.20.1-4.22.12.jar').exists())
+        self.assertTrue((server/'mods/create.jar').exists())
+        note = (server/sp.NOTE_FILE).read_text(encoding='utf-8-sig')
+        self.assertIn('ShoulderSurfing-Forge-1.20.1-4.22.12.jar：玩家端專用', note)
+        self.assertIn('「create.jar」', note)
+        self.assertIn('當機紀錄：Mixing create.MixinContraptionHandlerClient_0_5_0 from shouldersurfing.forge.compat.mixins.json', note)
+
+    def test_client_mixin_that_matches_no_jar_takes_nothing_out(self):
+        for log in (MIXIN_LOG.replace('shouldersurfing.forge.compat', 'unknown.compat'),  # config of no jar here
+                    MIXIN_LOG.replace('shouldersurfing.forge.compat', 'create'),  # Create's own mixin: Create's bug
+                    MIXIN_LOG.replace(SURF_LINE, '')):  # only another thread's mixin before the error
+            result, server, _ = self.build([], start=self.mixin_start(log))
+            self.assertFalse(result['ok'])
+            self.assertIn('create.jar', result['problem']); self.assertIn('沒有拿掉', result['problem'])
+            self.assertTrue((server/'mods/create.jar').exists())
+            self.assertTrue((server/'mods/ShoulderSurfing-Forge-1.20.1-4.22.12.jar').exists())
+            self.assertEqual([x['file'] for x in result['removed']], ['lanprops.jar'])
 
     def test_unknown_crash_and_try_limit(self):
         result, _, _ = self.build(['Exception in server tick loop'])
