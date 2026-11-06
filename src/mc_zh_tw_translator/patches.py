@@ -409,6 +409,9 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     restored or edited afterwards is listed as skipped.
     """
     instance=Path(instance).resolve()
+    from . import publish_checks
+    publish_checks.check_ysm(instance)
+    publish_checks.required_packs(instance)
     batches=installed_batches(home,instance)
     if not batches:raise ValueError('這個模組包還沒有套用過翻譯，無法匯出。請先完成「一鍵完整翻譯並套用」。')
     files={}
@@ -427,7 +430,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     safe=re.sub(r'[\\/:*?"<>|]+','_',identity['name']).strip() or 'modpack'
     out=folder/f'{safe}{"-"+identity["version"] if identity["version"] else ""}-繁中翻譯-{stamp}.zip'
     manifest=dict(format=PATCH_FORMAT,app_version=VERSION,created=datetime.now().isoformat(timespec='seconds'),
-                  modpack=identity,files=[],added_mods=mods,left_out_mods=left_out)
+                  modpack=identity,files=[],added_mods=mods,left_out_mods=left_out,
+                  publish_checks=1)
     # The owner's modpack got Sweeper Maid before publishing (sweeper.ensure): the receiver's app adds the same file.
     found=sweeper.present(instance)
     if found and found['enabled'] and sweeper.listed(instance/'mods'/found['file']):manifest['sweeper']=True
@@ -543,6 +547,7 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 manifest['minimum_app_version']='0.41.0'  # earlier apps ignore 'sweeper' though the card says it is added
             if manifest.get('backup_mod'):
                 manifest['minimum_app_version']=backup_mod.MINIMUM_APP_VERSION
+            manifest['minimum_app_version']='0.42.1'
             w.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
             w.writestr('授權與來源.txt',ATTRIBUTION)
             # Per-string sources (AI, converted, reference), so the receiver's report keeps the same labels.
@@ -904,7 +909,9 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         applied=sorted(set(applied)|{r['file'] for r in prepared['records'] if r['file'] not in ('options.txt',jobs.DEFAULT_OPTIONS_FILE)})
         uses_pack=any(r['file']==jobs.RESOURCE_PACK_FILE for r in records) or (instance/jobs.RESOURCE_PACK_FILE).is_file()
         activation_error=''
-        try:record=jobs.options_record(instance,staged,set_language,uses_pack)
+        from . import publish_checks
+        required=publish_checks.required_packs(instance,staged)
+        try:record=jobs.options_record(instance,staged,set_language,uses_pack,required)
         except ValueError:
             record=jobs.options_record(instance,staged,set_language,False)
             activation_error='翻譯資源包未能自動啟用，請在遊戲的資源包設定啟用 MC Translator 繁體中文翻譯。'

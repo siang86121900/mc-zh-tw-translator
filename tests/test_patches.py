@@ -53,6 +53,24 @@ class PatchTests(unittest.TestCase):
         session['set_language']=True
         return apply_session(session,self.home,lambda *_:None)
 
+    def test_patch_install_enables_local_required_art_and_restores_it(self,_):
+        for instance in (self.translator,self.friend):
+            config=instance/'config/tooltipoverhaul/custom_frames.json';config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({'frames':[{'texture':'tooltipoverhaul:textures/overlay/wr_common_frame.png'}]}),encoding='utf-8')
+            art=instance/'resourcepacks/Rarity Tooltips.zip';art.parent.mkdir(parents=True)
+            with zipfile.ZipFile(art,'w') as z:z.writestr('assets/tooltipoverhaul/textures/overlay/wr_common_frame.png',b'image')
+        self.translate()
+        out=patches.export_patch(self.translator,self.home)
+        z,manifest=patches.read_patch(Path(out['path']));z.close()
+        self.assertEqual(manifest['publish_checks'],1)
+        self.assertEqual(manifest['minimum_app_version'],'0.42.1')
+        original=(self.friend/'options.txt').read_bytes()
+        result=patches.apply_patch(self.friend,Path(out['path']),Path(self.temp.name)/'friend-app')
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        self.assertIn('file/Rarity Tooltips.zip',jobs.enabled_packs((self.friend/'options.txt').read_text(encoding='utf-8')))
+        jobs.restore_backup(Path(result['backup']),self.friend)
+        self.assertEqual((self.friend/'options.txt').read_bytes(),original)
+
     def test_export_contains_only_translation_text(self,_):
         self.translate()
         out=patches.export_patch(self.translator,self.home)

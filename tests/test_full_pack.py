@@ -516,6 +516,28 @@ class FullPackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'找不到要更新'):
             full_pack.update(self.package,self.home,self.root/'gone',session=self.server)
 
+    @patch('mc_zh_tw_translator.imblocker.ensure',return_value=dict(state='unsupported',line=''))
+    def test_update_enables_required_art_preserves_settings_reruns_and_restores(self,_):
+        folder=Path(self.install()['folder'])
+        from mc_zh_tw_translator import publish_checks
+        config=self.owner/'config/tooltipoverhaul/custom_frames.json';config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({'frames':[{'texture':'tooltipoverhaul:textures/overlay/wr_common_frame.png'}]}),encoding='utf-8')
+        art=self.owner/'resourcepacks/Rarity Tooltips.zip'
+        with zipfile.ZipFile(art,'w') as z:z.writestr('assets/tooltipoverhaul/textures/overlay/wr_common_frame.png',b'image')
+        full_pack.build(self.owner,self.package,session=self.server,workers=1)
+        original=b'lang:en_us\nkey_key.jump:key.keyboard.j\nresourcePacks:["vanilla","file/personal.zip","file/MCTranslator-zh_tw.zip"]\n'
+        (folder/'options.txt').write_bytes(original)
+        result=full_pack.update(self.package,self.home,folder,session=self.server)
+        text=(folder/'options.txt').read_text(encoding='utf-8')
+        self.assertIn('key.keyboard.j',text);self.assertIn('lang:en_us',text)
+        self.assertEqual(desktop_jobs.enabled_packs(text),['vanilla','file/personal.zip','file/Rarity Tooltips.zip',desktop_jobs.RESOURCE_PACK_ID])
+        self.assertEqual(publish_checks.required_packs(folder),['file/Rarity Tooltips.zip'])
+        again=full_pack.update(self.package,self.home,folder,session=self.server)
+        self.assertEqual(again['written'],0)
+        desktop_jobs.restore_backup(Path(result['backup']),folder)
+        self.assertEqual((folder/'options.txt').read_bytes(),original)
+        self.assertFalse((folder/'resourcepacks/Rarity Tooltips.zip').exists())
+
     def test_same_modpack_across_versions_is_one_card(self):
         for a,b in (('The Foll v0.3.0','The Foll v0.4.0'),('VEFV2.7.1','VEFV2.8.0'),('Chapter of Yuusha v3.13.15','Chapter of Yuusha v3.14')):
             self.assertEqual(full_pack.pack_id(a),full_pack.pack_id(b))

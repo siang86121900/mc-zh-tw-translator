@@ -92,6 +92,7 @@
 - 地點名稱與地圖一致：AI 新翻的地名也要再檢查（check_ai_names）；官方生態域名稱提供給 AI 當用詞。
 
 ## 特殊文字的處理
+- YSM（modId yes_steve_model）有原檔完整性限制（publish_checks）：不改 JAR、不送程式文字或內嵌文字給 AI，語系與書本走翻譯資源包；舊報告與部署同樣防堵。上架、整包安裝與更新核對官方校驗碼；未核對版本停止並說明，不自動替換真實整合包。官方核對清單依 YSM 官方 Modrinth 發布資料維護。上架檢查 Tooltip Overhaul 的 custom_frames.json 圖片路徑，圖片缺少或多個資源包來源未確認時停止；補丁安裝、整包安裝與更新補啟用必要本機材質包，保留玩家其他設定與資源包順序、翻譯包最高優先，既有設定走 apply_reviewed 備份還原。補丁不散布圖片，接收端重新檢查本機來源。
 - 模組語系檔與書本頁一律寫進 resourcepacks/MCTranslator-zh_tw.zip（options.txt 資源包清單最後、最高優先），模組檔不修改。包內含模組原有 zh_tw 與本程式譯文，mctranslator.json 記每檔對應的模組檔與 SHA-256；重跑以包內容判斷遊戲目前顯示的文字，相同就不重寫。同命名空間有遊戲讀不了的模組 zh_tw（壞檔、空檔、值是陣列）時，同一份譯文另寫在 assets/mctranslator_fix.<命名空間>/lang/zh_tw.json（desktop_jobs.lang_detours），模組修好後自動拿掉。
 - 整合包有 Default Options 時，套用把翻譯資源包加到 config/defaultoptions-common.toml 的 defaultResourcePacks 最後（desktop_jobs.default_packs_record），可還原、不進分享補丁。
 - 模組用自帶字型畫介面、字型沒有中文時（own_font_without_chinese 標 no_chinese_font）保留英文、不送 AI，先前寫入的中文改回一次，報告列「無需翻譯」並寫出字型檔（使用者 2026-10-02 選擇）。主選單按鈕是圖片時，報告灰字說明不是漏翻（desktop_jobs.image_menus），不改圖片。

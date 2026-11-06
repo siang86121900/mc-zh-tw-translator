@@ -109,6 +109,26 @@ class ClassTextTests(unittest.TestCase):
         # A section comment and a value whose name is computed are not linked to any key.
         self.assertNotIn('Section about food',found);self.assertNotIn('Name is not a constant',found)
 
+    @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
+    def test_ysm_program_text_is_never_sent_to_ai_but_language_uses_pack(self,_):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);instance=root/'instance';home=root/'app';(instance/'mods').mkdir(parents=True)
+            jar=instance/'mods/renamed.jar'
+            self.help_jar(jar,{'META-INF/mods.toml':'modLoader="javafml"\n[[mods]]\nmodId="yes_steve_model"\n',
+                'assets/yes_steve_model/lang/en_us.json':'{"item.yes_steve_model.test":"Test"}',
+                'assets/yes_steve_model/lang/zh_cn.json':'{"item.yes_steve_model.test":"测试"}'})
+            original=jar.read_bytes()
+            session=jobs.plan(instance,home,lambda *_:None,references=([{},{}],{'tested':True}))
+            program=[r for r in session['rows'] if r['kind']=='class_display']
+            self.assertTrue(program)
+            self.assertTrue(all(not r['supported'] and 'YSM' in r['issue'] for r in program))
+            self.assertFalse([r for _,r in ai.pending_rows(session) if r['kind']=='class_display'])
+            jobs.prepare_to_apply(session)
+            jobs.apply_session(session,home,lambda *_:None)
+            self.assertEqual(jar.read_bytes(),original)
+            with zipfile.ZipFile(instance/jobs.RESOURCE_PACK_FILE) as z:
+                self.assertEqual(json.loads(z.read('assets/yes_steve_model/lang/zh_tw.json'))['item.yes_steve_model.test'],'測試')
+
     def test_shared_tooltip_conflicts_and_existing_language_are_not_overwritten(self):
         from full_translation_audit import exclude_tooltip_conflicts
         def row(text,part=0,parts=1):

@@ -128,7 +128,8 @@ def generated_options(instance: Path) -> bytes:
     new=jobs.with_option('','lang','zh_tw')
     packs=jobs.enabled_packs(text)
     if packs:new=jobs.with_option(new,'resourcePacks',json.dumps(packs,ensure_ascii=False,separators=(',',':')))
-    return new.encode('utf-8')
+    from . import publish_checks
+    return publish_checks.merge_options(new,publish_checks.required_packs(instance)).encode('utf-8')
 
 
 def curseforge_mods(instance: Path, record):
@@ -178,6 +179,9 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
     if not jobs.is_instance(instance):raise ValueError('找不到整合包資料夾（需要有 mods、config 或 kubejs）。')
     record=patches.curseforge_record(instance);identity=patches.instance_identity(instance)
     if identity['projectID']:raise ValueError('這個整合包在 CurseForge 上有正式版本，請改用一般的翻譯上架（只分享翻譯）。')
+    from . import publish_checks
+    publish_checks.check_ysm(instance)
+    publish_checks.required_packs(instance)
     loader=check_loader(record.get('baseModLoader'))
     files=modpack_files(instance);served=curseforge_mods(instance,record)
     notify(0,'整理整合包檔案',f'{len(files):,} 個檔案')
@@ -650,6 +654,14 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
                 raise ValueError('有檔案和分享者的不同（'+e['path']+'），沒有建立整合包。請再按一次「安裝」。')
             if i%200==0:notify(70+int(25*i/max(1,len(manifest['files']))),'逐檔核對內容',e['path'])
         start=clock()
+        from . import publish_checks
+        publish_checks.check_ysm(work)
+        required=publish_checks.required_packs(work)
+        if required:
+            options=work/'options.txt'
+            text=options.read_text(encoding='utf-8') if options.is_file() else ''
+            updated=publish_checks.merge_options(text,required)
+            if updated!=text:options.write_text(updated,encoding='utf-8')
         while running():
             if cancelled():raise InterruptedError('已停止，沒有建立整合包。')
             if clock()-start>wait_limit:raise ValueError('一直等不到 CurseForge 關閉，沒有建立整合包。關閉 CurseForge 後再按一次「安裝」，已下載的檔案不必重新下載。')
@@ -758,6 +770,16 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
             if not vr.ok:raise ValueError('更新的模組檔沒有通過檢查：'+'; '.join(vr.errors))
         server_record,server_result=prepare_server(folder,staged,server)
         if server_record:records.append(server_record)
+        from . import publish_checks
+        publish_checks.check_ysm(folder,list((staged/'mods').glob('*.jar')))
+        required=publish_checks.required_packs(folder,staged,[r['file'] for r in records if r['after'] is None])
+        if required:
+            options=folder/'options.txt'
+            text=options.read_text(encoding='utf-8') if options.is_file() else ''
+            updated=publish_checks.merge_options(text,required)
+            if updated!=text:
+                (staged/'options.txt').write_text(updated,encoding='utf-8')
+                records.append(dict(file='options.txt',before=file_hash(options),after=file_hash(staged/'options.txt'),reviewed=True,verified=True))
         jobs.require_space(folder,home,[r['file'] for r in records])
         backup=None
         if records:

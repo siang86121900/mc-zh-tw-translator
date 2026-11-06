@@ -1618,6 +1618,10 @@ class CTE2QuestTranslator:
         if not p.exists():
             print(f"找不到檔案: {jar_path}")
             return
+        from . import publish_checks
+        if publish_checks.protected(p):
+            print(publish_checks.YSM_NOTE)
+            return
         if output_path is None:
             output_path = str(p.parent / f"{p.stem}_translated.jar")
 

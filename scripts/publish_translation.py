@@ -238,8 +238,8 @@ def publish_full(args):
                  notes=args.notes, recommendedRam=args.ram or int(manifest.get('recommendedRam') or 0),
                  driveId=file_id, sha256=digest, size=size, totalSize=manifest['totalSize'], files=len(manifest['files']),
                  mods=sum(1 for e in manifest['files'] if re.fullmatch(r'mods/[^/]+\.jar', e['path'])), **card_server(args))
+    entry['minimumAppVersion']='0.42.1'
     if manifest.get('backup_mod'):
-        entry['minimumAppVersion'] = backup_mod.MINIMUM_APP_VERSION
         entry['addedMods'] = [dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])]
     # Players download anonymously; prove that works (and that the bytes are the same) before listing it.
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
@@ -296,6 +296,8 @@ def main():
         print('已匯出：', args.patch)
     z, manifest = read_patch(args.patch)
     z.close()
+    if manifest.get('publish_checks')!=1:
+        sys.exit('這份補丁尚未檢查 YSM 原檔與提示框材質，請用整合包資料夾重新匯出後上架。')
     pack = manifest['modpack']
     # Mods the owner added through CurseForge: named in the catalog, downloaded by each player from CurseForge.
     for mod in manifest['added_mods']:print('加裝的模組：', mod['name'], mod['fileName'], f"{mod['size']:,} bytes", '' if mod['url'] else '（作者只開放由 CurseForge 安裝，對方需自行加裝）')

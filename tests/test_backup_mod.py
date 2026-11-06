@@ -143,7 +143,7 @@ class SharedBackupTests(unittest.TestCase):
             with zipfile.ZipFile(out['path']) as z:
                 manifest=json.loads(z.read('manifest.json'))
                 self.assertTrue(manifest['backup_mod'])
-                self.assertEqual(manifest['minimum_app_version'],b.MINIMUM_APP_VERSION)
+                self.assertEqual(manifest['minimum_app_version'],'0.42.1')
                 self.assertFalse(any(n.endswith('.class') for n in z.namelist()))
                 self.assertFalse(any(x['file']=='mods/backup-test.jar' for x in manifest['required_mods']))
                 self.assertFalse(any(x['file']==b.CONFIG for x in manifest['files']))

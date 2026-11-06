@@ -2,6 +2,11 @@
 
 配合根目錄 AGENTS.md 使用；遇到相應模組或修改 class 時，先讀相關段落。案例不能當成不分版本的自動替換白名單。
 
+## YSM 原檔與提示框材質
+
+- YSM 的原生程式庫在 JAR 修改後可能回報 `err: 51`，官方問題區 [#348](https://github.com/YesSteveModel/YSM-Wiki-Issues/issues/348) 有同樣的修改資源後失敗回報，貢獻者建議外部資源包。2026-11-07 核對官方 [YSM FAQ](https://yesstevemodel.github.io/en/wiki/faq/) 的 Modrinth 連結，讀取官方專案 `86xjpqqS` 發布 API，將六份 2.6.5 檔案的 SHA-512 存在 `publish_checks.YSM_SHA512`；只讀公開校驗資料，未下載或執行模組。其他版本可核對本機 CurseForge 安裝紀錄的官方 SHA-1，沒有證據時阻擋上架。掃描、舊報告、舊版 JAR 翻譯與 deployment 都保護原檔；不對真實整合包自動修復。
+- The God Ascender 1.6.2 的 `config/tooltipoverhaul/custom_frames.json` 使用 `tooltipoverhaul:textures/overlay/*.png` 原樣指定提示框圖片。啟動紀錄直接回報找不到 `wr_common_frame.png`、`golden_knight_frame.png` 等圖；分別存在未啟用的 `Rarity Tooltips.zip`、`JollyTooltips-2.0.0.zip`。`publish_checks.required_packs` 從設定內的 texture 欄位解析並核對模組、KubeJS 與本機資源包的實際檔案，不把圖片當翻譯文字，不憑包名硬套。更新以已驗證的暫存檔覆蓋來源進行核對，排除將移除的包；設定與資源包清單保留玩家其他項目。
+
 ## 術語與自然組句
 
   - `爬行者`、`爬山虎` -> `苦力怕`

@@ -1494,7 +1494,7 @@ def present_mods(z, depth=0):
 # scan-26: "#" comments in language files (v0.39.0 changed the reader but not this, so More Sniffer Flowers stayed
 #          "unsupported" from the cache), FTB Quests chapters and Origins written inline (embedded_text), Origins powers.
 #          tests/test_safeguards.ScanCacheTests fails when the scan's code changes without a new version here.
-SCAN_CACHE_VERSION = 'scan-27'
+SCAN_CACHE_VERSION = 'scan-28'
 
 
 def scan_cache(home, instance):
@@ -1758,6 +1758,9 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     last_publish=time.monotonic();decided=[]
     older=older_copies(instance,{r['source'].split('!/')[0] for r in audit.rows
                                  if r['source'].startswith('mods/') and r['kind'] in ('language','book')})
+    from . import publish_checks
+    protected={path for path in {r['source'].split('!/')[0] for r in audit.rows if r['source'].startswith('mods/')}
+               if publish_checks.protected(instance/path)}
     for i,r in enumerate(audit.rows):
         if i%200==0:
             if cancelled():
@@ -1769,6 +1772,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
                 result['source_counts']=dict(counts)
                 publish();last_publish=time.monotonic()
         if r['source'].startswith(OWN_PACK):continue  # our own output; its text is what the mod rows below show
+        if r['source'].split('!/')[0] in protected and r['kind'] not in ('language','book'):
+            decided.append(dict(slim(r),proposed=r['current'],origin='keep_original',supported=False,
+                                changed=False,reviewed=False,issue=publish_checks.YSM_NOTE))
+            continue
         if r['kind']=='data_text':
             if r['source'].startswith(OWN_DATA):continue  # our data pack; its text is what the rows of the original show
             resource=data_resource(r)
@@ -3436,7 +3443,7 @@ def game_added_packs(instance):
     return found
 
 
-def options_record(instance, staged, set_language=False, enable_pack=False):
+def options_record(instance, staged, set_language=False, enable_pack=False, required_packs=()):
     """Stage options.txt so the game opens in Traditional Chinese (when asked) and uses the translation
     resource pack, placed last so it is above every other pack. None when nothing needs to change."""
     src=instance/'options.txt';text=src.read_text(encoding='utf-8') if src.exists() else '';new=text
@@ -3456,6 +3463,9 @@ def options_record(instance, staged, set_language=False, enable_pack=False):
         packs+=[p for p in game_added_packs(instance) if p not in packs]
         packs.append(RESOURCE_PACK_ID)
         new=with_option(new,'resourcePacks',json.dumps(packs,ensure_ascii=False,separators=(',',':')))
+    if required_packs:
+        from . import publish_checks
+        new=publish_checks.merge_options(new,required_packs)
     if new==text:return None
     dst=staged/'options.txt';dst.write_text(new,encoding='utf-8')
     return dict(file='options.txt',before=file_hash(src) if src.exists() else None,after=file_hash(dst),reviewed=True,verified=True)
@@ -3584,7 +3594,13 @@ def stage_and_apply(session, home, notify, work, stage_only=False, pack_base=Non
     # Program text is rewritten only with this run's knowledge of other mods' Mixins (reports from v0.18.0
     # and earlier have none; their program text waits for a new scan).
     patched=session.get('mixin_targets')
+    from . import publish_checks
+    protected={path for path in {r['source'].split('!/')[0] for r in ready
+               if r['source'].startswith('mods/') and routes[id(r)]=='file'}
+               if publish_checks.protected(instance/path)}
     for r in ready:
+        if r['source'].split('!/')[0] in protected and routes[id(r)]=='file':
+            routes[id(r)]=publish_checks.YSM_NOTE
         if r['kind']=='class_display' and routes[id(r)]=='file' and r.get('origin')!='keep_original' and (
                 patched is None or class_name(r) in patched):
             routes[id(r)]=HELD_MIXIN if patched is not None else HELD_OLD_REPORT

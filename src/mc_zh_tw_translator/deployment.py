@@ -127,6 +127,13 @@ def apply_reviewed(instance: Path, staged: Path, records: list[dict], output_roo
                 raise ValueError(f'要移除的檔案沒有校驗碼，已停止：{row["file"]}')
         elif not source.is_file() or file_hash(source) != row['after']:
             raise ValueError(f'準備寫入的內容在檢查後被改動，已停止：{row["file"]}')
+        if row.get('after') is not None and row['file'].replace('\\','/').casefold().startswith('mods/') and source.suffix.casefold()=='.jar':
+            from . import publish_checks
+            if publish_checks.protected(target) or publish_checks.protected(source):
+                # A translated copy must never replace a native-protected mod, even from an old report.
+                if not publish_checks.protected(source):
+                    raise ValueError(publish_checks.YSM_NOTE)
+                publish_checks.check_ysm(instance,[source])
         if 'before' not in row or file_hash(target) != row['before']:
             raise ValueError(f'整合包裡的檔案在翻譯後被改動（可能是遊戲或啟動器更新），已停止，請重新翻譯：{row["file"]}')
         paths.append((row, source, target))

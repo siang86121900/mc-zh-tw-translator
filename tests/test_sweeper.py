@@ -138,7 +138,7 @@ class SharedSweeperTests(unittest.TestCase):
             out=patches.export_patch(self.translator,self.home)
             with zipfile.ZipFile(out['path']) as z:manifest=json.loads(z.read('manifest.json'))
             self.assertTrue(manifest['sweeper'])
-            self.assertEqual((manifest['sharing_status'],manifest['left_out_mods'],manifest['minimum_app_version']),('ready',[],'0.41.0'))
+            self.assertEqual((manifest['sharing_status'],manifest['left_out_mods'],manifest['minimum_app_version']),('ready',[],'0.42.1'))
             self.assertNotIn('mods/sweeper_maid-test.jar',[m['file'] for m in manifest['required_mods']])
             self.assertFalse(any(f['file'] in (sweeper.CONFIG,'mods/sweeper_maid-test.jar') for f in manifest['files']))
             friend_home=Path(self.temp.name)/'friend-app'
