@@ -961,6 +961,7 @@ class MainWindow(QMainWindow):
         if result.get('cover'):lines+=['',result['cover']['line']]
         if (result.get('imblocker') or {}).get('state') not in (None,'present','cancelled'):lines.append(result['imblocker']['line'])
         self.patch_status.setText('');self.notify_finished('整合包已更新',lines[0])
+        if result.get('backup_mod'):lines.append(result['backup_mod']['line'])
         QMessageBox.information(self,'整合包已更新','\n'.join(lines))
 
     def full_pack_installed(self,result):
@@ -983,6 +984,7 @@ class MainWindow(QMainWindow):
         if memory:lines+=['',memory['line']]+[memory[k] for k in ('now','warning') if memory[k]]+['（在「已翻譯整合包」按「怎麼調整記憶體」看步驟）']
         lines+=['','不想要時，在 CurseForge 對它按右鍵刪除即可。']
         self.patch_status.setText('');self.notify_finished('整合包已安裝',lines[0])
+        if result.get('backup_mod'):lines.append(result['backup_mod']['line'])
         QMessageBox.information(self,'整合包已安裝','\n'.join(lines))
 
     def cancel_install(self):
@@ -1038,6 +1040,7 @@ class MainWindow(QMainWindow):
         if (result.get('imblocker') or {}).get('state') not in (None,'present','cancelled'):lines.append(result['imblocker']['line'])
         sweep=result.get('sweeper') or {}
         if sweep.get('state') not in (None,'present','cancelled') or sweep.get('config_backup'):lines.append(sweep['line'])
+        if result.get('backup_mod'):lines.append(result['backup_mod']['line'])
         if result.get('notes'):lines+=['','翻譯者的說明：',result['notes']]
         lines+=['',result.get('save_note') or patches.shared_text.SAVE_NOTE]
         memory=self.memory_advice(dict(recommendedRam=patches.instance_identity(Path(result['instance']))['recommendedRam'],

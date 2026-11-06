@@ -33,7 +33,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
-from mc_zh_tw_translator import full_pack, server_list, sweeper  # noqa: E402
+from mc_zh_tw_translator import full_pack, server_list, sweeper, backup_mod  # noqa: E402
 from mc_zh_tw_translator.patches import export_patch, instance_identity, read_patch  # noqa: E402
 from mc_zh_tw_translator.updater import REPOSITORY  # noqa: E402
 
@@ -183,12 +183,32 @@ def add_sweeper(args, instance):
     print(sweeper.ensure(instance, args.home, lambda _p, t, d='': print(t, d, flush=True))['line'], flush=True)
 
 
+def add_backup_mod(args, instance):
+    """Only newly published packs get automatic world backups (使用者 2026-11-06)."""
+    if args.no_backup_mod:
+        print('依 --no-backup-mod，沒有檢查或加裝 FTB Backups 2。')
+        return
+    if not args.home:
+        sys.exit('加裝備份模組需要 --home 保存可還原批次；不加裝請用 --no-backup-mod。')
+    if args.dry_run:
+        found = backup_mod.present(instance)
+        mod, why = (None, '') if found else backup_mod.choose(instance)
+        print('試跑：', '已有 FTB Backups 2（保留設定並核對中文通知）' if found else
+              (backup_mod.other_backup(instance) or why or '會加裝 FTB Backups 2 與繁中通知'))
+        return
+    result = backup_mod.ensure(instance, args.home, lambda _p, t, d='': print(t, d, flush=True))
+    print(result['line'], flush=True)
+    if result['state'] in ('failed', 'cancelled'):
+        sys.exit('備份模組設定尚未完成，沒有上架；請先處理上面的原因，或用 --no-backup-mod 明確略過。')
+
+
 def publish_full(args):
     instance = args.patch.resolve()
     folder = args.drive_folder
     if not folder or not folder.is_dir():
         sys.exit('請用 --drive-folder 指定 Google 雲端硬碟電腦版裡要放整合包的資料夾。')
     add_sweeper(args, instance)
+    add_backup_mod(args, instance)
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         out = Path(tmp)/'pack.zip'
         shown = [0.0]
@@ -218,6 +238,9 @@ def publish_full(args):
                  notes=args.notes, recommendedRam=args.ram or int(manifest.get('recommendedRam') or 0),
                  driveId=file_id, sha256=digest, size=size, totalSize=manifest['totalSize'], files=len(manifest['files']),
                  mods=sum(1 for e in manifest['files'] if re.fullmatch(r'mods/[^/]+\.jar', e['path'])), **card_server(args))
+    if manifest.get('backup_mod'):
+        entry['minimumAppVersion'] = backup_mod.MINIMUM_APP_VERSION
+        entry['addedMods'] = [dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])]
     # Players download anonymously; prove that works (and that the bytes are the same) before listing it.
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         for attempt in range(20):
@@ -251,6 +274,7 @@ def main():
     parser.add_argument('--server-address', default='', help='伺服器位址，例如 26.186.50.26')
     parser.add_argument('--no-server', action='store_true', help='拿掉卡片上的伺服器')
     parser.add_argument('--no-sweeper', action='store_true', help='不檢查也不加裝 Sweeper Maid（清理掉落物的模組）')
+    parser.add_argument('--no-backup-mod', action='store_true', help='不檢查也不加裝 FTB Backups 2（世界自動備份）')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     if args.full and args.card_only:
@@ -265,6 +289,7 @@ def main():
     if args.patch.is_dir():
         if not args.home:sys.exit('給整合包資料夾時，請用 --home 指定 MCTranslatorData 資料夾（含套用紀錄）。')
         add_sweeper(args, args.patch.resolve())
+        add_backup_mod(args, args.patch.resolve())
         exported = export_patch(args.patch, args.home)
         for s in exported['skipped']:print('略過：', s['file'], s['reason'])
         args.patch = Path(exported['path'])
@@ -289,7 +314,8 @@ def main():
                  sharingStatus=manifest.get('sharing_status','unknown'),minimumAppVersion=manifest.get('minimum_app_version',''),
                  # Sweeper Maid is installed by the receiver's app with the added mods, so the card lists it with them.
                  addedMods=[dict(name=m['name'], size=m['size']) for m in manifest['added_mods']]
-                           + ([dict(name='Sweeper Maid（定時清理地上的掉落物）', size=sweeper.FILES[0][5])] if manifest.get('sweeper') else []),
+                           + ([dict(name='Sweeper Maid（定時清理地上的掉落物）', size=sweeper.FILES[0][5])] if manifest.get('sweeper') else [])
+                           + ([dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])] if manifest.get('backup_mod') else []),
                  url=RAW+relative, sha256=digest, size=len(data), **card_server(args))
     update_catalog(entry, lambda p: p.get('projectID') == pack['projectID'] and p.get('fileID') == pack['fileID'],
                    f"已翻譯整合包：{pack['name']} {pack.get('version', '')}", [(args.patch, relative)], args.dry_run)

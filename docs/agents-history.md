@@ -278,3 +278,9 @@
 - 本機測試用 .venv-desktop 的 Python，設定 PYTHONPATH=src;scripts、QT_QPA_PLATFORM=offscreen 後執行 python -m unittest discover -s tests；Windows 市集的 python 捷徑在沙箱中會直接失敗。打包用 scripts/package_desktop.py，EXE 可用 --smoke-test <資料夾> 截圖並自動結束。
 - 使用方式、功能範圍、費用／資料傳送說明或更新行為改變時同步 README；開發原則改變同步本文件，不另建 AGENT.md 造成兩份規則。
 - 交付白話說明改了什麼、驗證結果、EXE 位置（如有）、是否已發布與剩餘限制。不只貼測試筆數，也不承諾未驗證的「全翻譯」或「一定不會出錯」。
+
+## 2026-11-06：後續上架整合包的世界備份
+
+使用者同意比照 IMBlocker、Sweeper Maid，在後續上架整合包加入 FTB Backups 2 與繁中通知。新設定每 30 分鐘、最新 5 份、無玩家略過、ZIP、至少保留 10 GB、不因空間不足額外刪舊備份；既有模組、停用與設定保留。使用者後續指定通知直接顯示在聊天室，所有玩家都看得到，因此 notify_op_only 預設 false、do_not_notify false。原伺服器設定僅唯讀核對，未修改；本次未授權發布 APP 或上架整合包。
+
+使用者 2026-11-06 後續指定「發布吧」，授權發布 APP v0.42.0；不包含重新上架任何整合包。

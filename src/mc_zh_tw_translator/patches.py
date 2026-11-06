@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import server_list, shared_text
-from . import covers, imblocker, sweeper
+from . import covers, imblocker, sweeper, backup_mod
 from .deployment import apply_reviewed, contained, file_hash
 from .translator import is_jar_signature_file
 from .updater import REPOSITORY, VERSION, release_url
@@ -301,7 +301,7 @@ def checked_mod(mod):
 
 def own_mod(path: Path) -> bool:
     """A mod this program installs from its own list (IMBlocker, Sweeper Maid); the receiver gets it the same way."""
-    return imblocker.listed(path) or sweeper.listed(path)
+    return imblocker.listed(path) or sweeper.listed(path) or backup_mod.listed(path)
 
 
 def added_mods(instance: Path, originals=None):
@@ -431,6 +431,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     # The owner's modpack got Sweeper Maid before publishing (sweeper.ensure): the receiver's app adds the same file.
     found=sweeper.present(instance)
     if found and found['enabled'] and sweeper.listed(instance/'mods'/found['file']):manifest['sweeper']=True
+    found=backup_mod.present(instance)
+    if found and found['enabled'] and backup_mod.listed(instance/'mods'/found['file']):manifest['backup_mod']=True
     groups,unit_omissions=shared_text.collect(instance,home,files)
     restricted={s['file'] for s in unit_omissions if '用途未確認' in s['reason']}
     units=[];recipe_targets=set()
@@ -451,6 +453,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 if file==server_list.FILE:continue  # the card's server; each card adds its own, a list is never shared
                 if item['after'] is None:continue  # removed by a whole-modpack update; nothing to share
                 if file==sweeper.CONFIG and item['before'] is None:continue  # the receiver's sweeper.ensure writes the same file
+                if file==backup_mod.CONFIG and item['before'] is None:continue
+                if archive and path.is_file() and backup_mod.listed(path):continue  # local display edits are rebuilt, never shared as class files
                 if archive and item['before'] is None and path.is_file() and own_mod(path):continue  # installed by the receiver's own app
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
                 if file in restricted:
@@ -488,10 +492,11 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                     if not entries:
                         if not extra:skipped.append((file,'翻譯資源包裡沒有可對應到模組版本的翻譯'))
                         continue
-                    requires={n:{jar:originals.get(jar) or h for jar,h in mods.items()} for n,mods in requires.items()}
+                    requires={n:{jar:(h if backup_mod.listed(instance/jar) else originals.get(jar) or h) for jar,h in mods.items()} for n,mods in requires.items()}
                     for name,data in entries.items():w.writestr(f'payload/{file}/{name}',data)
                     jars={jar for mods in requires.values() for jar in mods}
-                    sizes={jar:original_sizes.get(jar) or contained(instance,jar).stat().st_size for jar in sorted(jars) if contained(instance,jar).is_file()}
+                    sizes={jar:(contained(instance,jar).stat().st_size if backup_mod.listed(instance/jar) else
+                                original_sizes.get(jar) or contained(instance,jar).stat().st_size) for jar in sorted(jars) if contained(instance,jar).is_file()}
                     manifest['files'].append(dict(file=file,archive=True,pack=True,before=None,
                                                   entries={n:sha256(d) for n,d in entries.items()},requires=requires,sizes=sizes))
                     continue
@@ -536,6 +541,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 manifest['minimum_app_version']='0.34.0'  # VaultPatcher modules are refused before 0.34.0, and their cache cleared from it
             if manifest.get('sweeper'):
                 manifest['minimum_app_version']='0.41.0'  # earlier apps ignore 'sweeper' though the card says it is added
+            if manifest.get('backup_mod'):
+                manifest['minimum_app_version']=backup_mod.MINIMUM_APP_VERSION
             w.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
             w.writestr('授權與來源.txt',ATTRIBUTION)
             # Per-string sources (AI, converted, reference), so the receiver's report keeps the same labels.
@@ -847,6 +854,8 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         # Agreeing to the translator's added mods covers Sweeper Maid too (the card lists it among them).
         sweep=(sweeper.ensure(instance,home,lambda _p,t,d='':notify(15,t,d),cancelled,session,check_cleaner=False)
                if add_mods and manifest.get('sweeper') else None)
+        backup_result=(backup_mod.ensure(instance,home,lambda _p,t,d='':notify(15,t,d),cancelled,session)
+                       if add_mods and manifest.get('backup_mod') else None)
         versions=shared_text.local_versions(instance,home)
         plan=plan_patch(instance,z,manifest,versions)
         staged.mkdir(parents=True)
@@ -920,7 +929,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         result=dict(instance=str(instance),patch=str(patch),modpack=manifest.get('modpack',{}),backup=backup,applied=applied,
                     already=[p[0]['file'] for p in plan if p[1]=='already'],
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],
-                    language_set=bool(set_language),mods=mods,imblocker=ime,sweeper=sweep,
+                    language_set=bool(set_language),mods=mods,imblocker=ime,sweeper=sweep,backup_mod=backup_result,
                     mods_offered=[m['name'] for m in manifest['added_mods']] if mods is None else [])
         result['skipped']+=prepared['skipped']
         result['text_already']=prepared['already']

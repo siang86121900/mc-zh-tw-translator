@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import patches
-from . import covers, imblocker
+from . import covers, imblocker, backup_mod
 from . import server_list
 from .deployment import contained, file_hash, when_free
 from .updater import VERSION
@@ -205,6 +205,9 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
     manifest=dict(format=FORMAT,name=identity['name'],version=identity['version'],gameVersion=identity['gameVersion'] or record.get('gameVersion') or '',
                   recommendedRam=identity['recommendedRam'],loader=loader,created=datetime.now().isoformat(timespec='seconds'),
                   program=VERSION,files=[dict(e,source=e.get('source','zip')) for e in entries.values()])
+    backup_found=backup_mod.present(instance)
+    if backup_found and backup_found['enabled'] and backup_mod.listed(instance/'mods'/backup_found['file']):
+        manifest['backup_mod']=True
     manifest['totalSize']=sum(e['size'] for e in manifest['files'])
     out.parent.mkdir(parents=True,exist_ok=True);part=out.with_name(out.name+'.partial')
     bundled=[e for e in manifest['files'] if e['source']=='zip']
@@ -682,10 +685,12 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         for source in sources:Path(source).unlink(missing_ok=True)
         # After registering: a failure here never undoes the install, and the added mod is a batch of its own.
         ime=imblocker.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
+        backup_result=(backup_mod.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
+                       if manifest.get('backup_mod') else None)
         notify(100,'整合包已安裝',folder.name)
         return dict(folder=str(folder),name=folder.name,files=len(manifest['files']),downloaded=len(linked),
                     recommendedRam=manifest.get('recommendedRam') or 0,loader=manifest['loader'].get('name',''),
-                    backup=server_backup,profile_import=listing_backup is None,memory=memory,imblocker=ime,
+                    backup=server_backup,profile_import=listing_backup is None,memory=memory,imblocker=ime,backup_mod=backup_result,
                     cover=dict(line='已帶入整合包封面，重新開啟 CurseForge 即可查看。') if record['profileImagePath'] else dict(line='封面圖片無法讀取，已保留預設封面。'),**server_result)
     except BaseException:
         # Only what this install made is removed: the work folder, or the new folder it became.
@@ -763,9 +768,11 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
         cover=covers.finish(folder,home,notify,cancelled,pause=pause)
         for source in sources:Path(source).unlink(missing_ok=True)
         ime=imblocker.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
+        backup_result=(backup_mod.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
+                       if manifest.get('backup_mod') else None)
         notify(100,'整合包已更新',folder.name)
         return dict(folder=str(folder),name=folder.name,written=sum(r['after'] is not None for r in records),
                     removed=sum(r['after'] is None for r in records),replaced=replaced,kept=kept,backup=backup,
-                    recommendedRam=manifest.get('recommendedRam') or 0,cover=cover,imblocker=ime,**server_result)
+                    recommendedRam=manifest.get('recommendedRam') or 0,cover=cover,imblocker=ime,backup_mod=backup_result,**server_result)
     finally:
         shutil.rmtree(staged,ignore_errors=True)

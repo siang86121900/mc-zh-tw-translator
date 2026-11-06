@@ -144,3 +144,19 @@ Electron storage.json 的 minecraft-settings 在本機為 JSON 字串，其中 m
 以上為本機程式讀取流程查證與隔離安裝測試，不等於已在回報問題的玩家電腦上實測 CurseForge 匯入或遊戲啟動。
 
 2026-10-10 v0.36.3 補充：使用者提供另一位玩家的實際位置為 C:/Users/USER/curseforge/minecraft/Instances，且確認 v0.36.2 仍在前置檢查受阻。上一版只接受全域清單或獨立版 storage.json，遺漏了已存在於預設 Instances 的個別設定檔。新增 profile_curseforge_root：讀取直接子資料夾的 minecraftinstance.json，驗證 UUID、installPath 的絕對路徑與實際資料夾相符、gameVersion、baseModLoader、installedAddons 及整合包內容。通過才以該預設目錄作為安裝位置；登記前重新驗證，既有設定檔不修改。CurseForge 自動匯入的程式依據同上。此修復仍由 APP 建立個別設定檔，並非呼叫 CurseForge 私有的 createModpack API；官方 ZIP 匯入支援玩家操作，但尚未驗證外部 APP 自動呼叫。
+## FTB Backups 2：上架自動備份與繁中通知
+
+使用者 2026-11-06 同意只對之後上架的整合包自動加裝，已有其他備份功能不重複安裝；新設定每 30 分鐘、最新 5 份、無玩家遊玩略過、ZIP、在聊天室通知所有玩家、至少保留 10 GB、空間不足不額外刪舊備份。既有設定與停用狀態保留。實作在 `mc_zh_tw_translator.backup_mod`。
+
+核對檔案：[CurseForge 4834403](https://www.curseforge.com/minecraft/mc-mods/ftb-backups-2/files/4834403)，`ftbbackups2-forge-1.20-1.0.23.jar`，1,954,591 bytes，SHA-256 `19cea280a56e533b9669d4f866aef38ebe54f6d8627efe6798016e17b6b4afda`。2026-11-06 從 `mediafilez.forgecdn.net/files/4834/403/` 實際下載核對，與使用者伺服器的原檔相同。官方列 Minecraft 1.20／1.20.1 Forge／NeoForge；JAR 宣告必須有 Architectury >= 9.0.7、PolyLib >= 1200.0.0。未核對的版本不安裝，也不替換或自動補裝這兩個相依模組。
+
+`assets/ftbbackups/lang/en_us.json` 只有 starting／failed／finished 三個語系鍵，繁中同鍵寫到翻譯資源包。`javap -c -p` 唯讀核對官方 JAR：
+
+- `BackupHandler.lambda$createBackup$1` 以 `Component.translatable` 顯示 starting／failed。`lambda$createBackup$2` 把完成耗時與選用檔案大小組成字串後交給 `Component.translatable`；完整動態句子無固定鍵，因此不能只加語系檔。
+- `createBackup` 的無法備份訊息將 private static `failReason` 接到前綴後交給 `Component.translatable` 和 logger。`canCreateBackup` 寫入的原因只用於這些顯示位置，沒有比對、查表或公開常數用途。備份執行中的同一句也用於 logger，沒有邏輯判斷用途。
+- `BackupCommand.execute` 的手動備份間隔訊息由整數與文字組句後直接交給 `Component.literal`，再呼叫 `CommandSourceStack.sendFailure`（混淆名 `m_81352_`）。保留原來參數及其數值，不修改上游傳入值。
+- `BackupHandler.format` 回傳的時間單位 m／s／ms 保留；指令名稱 start／snapshot、檔名、識別值、記錄檔與其他字串保持原樣。備份邏輯與方法位元組不修改。
+
+`CLASS_EDITS` 只支援上述已逐處查核的固定版本組句，綁定兩個 class 的原始 SHA-256，重新檢查原文，保留 `\u0001` 組句參數順序、Modified UTF-8 與全部常數索引。每次從官方原檔建立、用 Java 解析 class 與 ZipFS 驗證後才可套用；中文 JAR 固定校驗碼也須符合。任何模組（含內嵌 JAR）的 Mixin 提及這兩個 class，或 CurseForge 會還原原檔時，不改寫。補丁僅帶本機功能標記，接收者由自己的 APP 執行同樣驗證與中文化，不散布 class 位元組。
+
+本機隔離測試檢查通知內容、參數保留、原有設定、同意／拒絕加裝、重跑零寫入與還原；Java 格式檢查不等於遊戲畫面實測。現有伺服器僅用於唯讀核對，未改動。
