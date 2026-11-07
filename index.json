@@ -83,12 +83,12 @@
       "loader": "forge-47.4.28",
       "translator": "MC Translator",
       "updated": "2026-11-07",
-      "notes": "現況分享／部分繁中。Minecraft 1.20.1 Forge，308 個模組。收錄目前已套用翻譯；資源包依提供的作者截圖排序，MCTranslator 繁中包最高優先。Vestiges of the Present、Punchy! 已下載並啟用，安裝後不必再到 DLC 管理器下載。YSM 已核對官方原檔，提示框材質包已啟用。附 Sweeper Maid、既有 FTB Backups 2 繁中通知。已盤點 The God Ascender 1.6.2；仍有 42 類待查、18 份檔案讀取失敗（含原包 MVS 3 個結構檔校驗失敗、1 份語系檔、14 份槍械資料），不代表整包全繁中或所有功能正常，尚未完成完整遊戲實測。建議記憶體 10 GB（依模組數的程式估計，不是作者建議）。伺服器：狗狗貓貓島（26.186.50.26），需先加入分享者的 Radmin VPN；網路名稱與密碼不公開。需 MC Translator v0.42.1 以上。",
+      "notes": "現況分享／部分繁中。Minecraft 1.20.1 Forge，308 個模組。收錄目前已套用翻譯；資源包依提供的作者截圖排序，MCTranslator 繁中包最高優先。Vestiges of the Present、Punchy! 已下載並啟用，安裝後不必再到 DLC 管理器下載。YSM 已核對官方原檔，提示框材質包已啟用。附 Sweeper Maid、既有 FTB Backups 2 繁中通知。已盤點 The God Ascender 1.6.2；仍有 42 類待查、18 份檔案讀取失敗（含原包 MVS 3 個結構檔校驗失敗、1 份語系檔、14 份槍械資料），不代表整包全繁中或所有功能正常，尚未完成完整遊戲實測。建議記憶體 10 GB（依模組數的程式估計，不是作者建議）。伺服器：狗狗貓貓島（26.186.50.26），需先加入分享者的 Radmin VPN；網路名稱與密碼不公開。需 MC Translator v0.42.1 以上。 此版換上專屬方塊奇幻插畫封面。",
       "recommendedRam": 0,
-      "driveId": "1f1IXxsWXMgYvFivaQxzCFNJjKUWVnwn2",
-      "sha256": "72435d41f163c5bef567a82af2f1e4c416469d538be75ce243fc4b25146d9940",
-      "size": 2338237510,
-      "totalSize": 2717685565,
+      "driveId": "1Z3DBqP3_cbqhUIOP46u22yo8GYpGLNr2",
+      "sha256": "e94bc9bd3e7d21b90c518ded38c7d115d1ea118103cf1279354412c4413759bb",
+      "size": 2340189008,
+      "totalSize": 2719637061,
       "files": 9549,
       "mods": 308,
       "server": {
@@ -102,7 +102,7 @@
           "size": 1954591
         }
       ],
-      "revision": 1
+      "revision": 2
     },
     {
       "kind": "full",
