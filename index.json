@@ -96,7 +96,7 @@
       "gameVersion": "1.20.1",
       "translator": "MC Translator",
       "updated": "2026-11-22",
-      "notes": "Society Sunlit Valley 4.2.0 繁中翻譯補丁，需先安裝相同版本的整合包。2026-11-22 更新，補回 Konkrete 介面、quality_food 的「銥」與兩份光影語系，並加入其他已套用的翻譯。這次匯出未略過項目。重新盤點本整合包仍有 27 類文字未確認涵蓋，其中有 7 項讀取問題，遊戲中仍可能遇到英文。Sweeper Maid 隨補丁提供加裝選項。分享端既有 FTB Backups 2 由 CurseForge 管理，已保留原設定，中文通知未能完整套用。",
+      "notes": "Society Sunlit Valley 4.2.0 繁中翻譯補丁，需先安裝相同版本的整合包。2026-11-22 修正 Complementary Reimagined 搭配 Colorwheel 的原檔校驗，從第 2 版升級可補裝原先跳過的 721 筆光影設定譯文，無須重新翻譯。APP v0.42.2 仍可能把已安裝的光影、Konkrete 介面或書名誤列為略過，請以對應文字是否已顯示為準。重新盤點本整合包共 27 類未確認涵蓋或未讀完，其中有 9 項讀取問題，遊戲中仍可能遇到英文。Sweeper Maid 可選擇加裝。原有 FTB Backups 2 設定保留，中文通知未能完整套用。",
       "recommendedRam": 0,
       "sharingStatus": "ready",
       "minimumAppVersion": "0.42.1",
@@ -114,10 +114,10 @@
           "size": 1954591
         }
       ],
-      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/9721472-1e178c6f.zip",
-      "sha256": "1e178c6fe979b649b2144e9f7faa698ef1d9f1086a80bef900cf0a2151b2d044",
-      "size": 3472812,
-      "revision": 2
+      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/9721472-95367659.zip",
+      "sha256": "9536765962731355adafbff51c50c630a9a3224aa797ce5c7b07ef48cb393fda",
+      "size": 3472813,
+      "revision": 3
     },
     {
       "kind": "full",
