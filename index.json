@@ -95,10 +95,10 @@
       "modpackDate": "2026-11-20",
       "gameVersion": "1.20.1",
       "translator": "MC Translator",
-      "updated": "2026-11-21",
-      "notes": "Society Sunlit Valley 4.2.0 繁中翻譯補丁，需先安裝相同版本原整合包。2026-11-21 重新盤點本整合包：仍有 27 類未確認涵蓋及 7 項讀取問題。本次工作報告列有 3109 筆缺翻、96 筆待套用；僅分享目前已套用且可安全匯出的翻譯，不代表整包已翻完或已經遊戲內驗收。有 5 項檔案或文字紀錄因目前內容與套用紀錄不符而略過，包含 Konkrete 介面、quality_food 語系、Sweeper Maid 模組檔及兩份光影語系；此補丁屬部分分享。FTB Backups 2 保留原設定，中文通知未完成。",
+      "updated": "2026-11-22",
+      "notes": "Society Sunlit Valley 4.2.0 繁中翻譯補丁，需先安裝相同版本的整合包。2026-11-22 更新，補回 Konkrete 介面、quality_food 的「銥」與兩份光影語系，並加入其他已套用的翻譯。這次匯出未略過項目。重新盤點本整合包仍有 27 類文字未確認涵蓋，其中有 7 項讀取問題，遊戲中仍可能遇到英文。Sweeper Maid 隨補丁提供加裝選項。分享端既有 FTB Backups 2 由 CurseForge 管理，已保留原設定，中文通知未能完整套用。",
       "recommendedRam": 0,
-      "sharingStatus": "partial",
+      "sharingStatus": "ready",
       "minimumAppVersion": "0.42.1",
       "addedMods": [
         {
@@ -106,14 +106,18 @@
           "size": 232400
         },
         {
+          "name": "Sweeper Maid（定時清理地上的掉落物）",
+          "size": 955805
+        },
+        {
           "name": "FTB Backups 2（定時備份世界、繁中通知）",
           "size": 1954591
         }
       ],
-      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/9721472-edc27039.zip",
-      "sha256": "edc27039f94b236edca2618763eb92d178819b24e076f78411db170001fab618",
-      "size": 3335785,
-      "revision": 1
+      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/9721472-1e178c6f.zip",
+      "sha256": "1e178c6fe979b649b2144e9f7faa698ef1d9f1086a80bef900cf0a2151b2d044",
+      "size": 3472812,
+      "revision": 2
     },
     {
       "kind": "full",
