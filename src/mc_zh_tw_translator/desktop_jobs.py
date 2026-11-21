@@ -640,9 +640,41 @@ class AiMemory:
             # send its NPC names to AI again, where a second answer kept 小霞 as Misty.
             if original and r.get('kind') in ('class_display','inline_lang','data_text','embedded_text'):
                 self.entries[TranslationMemory.ident(r['source'],r['key'],original)]=entry
-            if ns and original and r.get('kind')=='language':
-                self.entries[TranslationMemory.ident(ns,r['key'],original)]=entry
+            if original and r.get('kind')=='language':
+                # Konkrete .local and shader languages have no assets namespace.
+                # Keep their exact source as the scope, never share by key alone.
+                self.entries[TranslationMemory.ident(ns or r['source'],r['key'],original)]=entry
         if rows:write_json(self.path,dict(format=1,entries=self.entries))
+
+    def recover_language_reports(self, instance):
+        """Recover namespace-less AI answers older versions failed to remember.
+
+        Only this instance's local, applied reports qualify. The source, key and
+        original still have to match at lookup, and normal candidate checks run
+        again. Existing memory always wins over a historical report.
+        """
+        added=False
+        reports=Path(instance).name
+        for path in sorted((self.path.parent/'output'/reports/'報告').glob('*/session.json'),reverse=True):
+            try:
+                session=json.loads(path.read_text(encoding='utf-8'))
+                if not isinstance(session,dict) or not isinstance(session.get('rows'),list):continue
+                if session.get('status')!='installed' or Path(session['instance']).resolve()!=Path(instance).resolve():continue
+                for row in session['rows']:
+                    if not isinstance(row,dict):continue
+                    source=row.get('source','');original=original_of(row);text=row.get('proposed')
+                    if (row.get('kind')!='language' or lang_namespace(source) or not source
+                            or row.get('origin')!='ai_translation' or not row.get('supported')
+                            or not row.get('installed') or row.get('ai_rejected')
+                            or not isinstance(original,str) or not isinstance(text,str)
+                            or not validate_text(original,text) or number_doubt(original,text)):continue
+                    key=TranslationMemory.ident(source,row['key'],original)
+                    if key in self.entries:continue
+                    self.entries[key]=dict(text=text,original=original,model=row.get('ai_model'),
+                                           made_at='',recovered_report=path.parent.name)
+                    added=True
+            except (OSError,ValueError,KeyError,TypeError):continue
+        if added:write_json(self.path,dict(format=1,entries=self.entries))
 
 
 class UserGlossary:
@@ -1731,6 +1763,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if m and r['kind']=='language' and isinstance(r['current'],str):kubejs_tw[(m[1],r['key'])]=r['current']
     counts=collections.Counter()
     memory=TranslationMemory(home);ai_memory=AiMemory(home);user_terms=UserGlossary(home);provenance=Provenance(home,instance);special=collections.Counter()
+    ai_memory.recover_language_reports(instance)
     # The mods' own English, to notice strings a modpack renamed through KubeJS or resource packs.
     name_terms={}  # English name -> (trust rank, Chinese); given to AI so sentences use the same names
     mod_en={};main_copy=set();screen_keys=set();lang_text=set()
@@ -2026,7 +2059,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if existing is None and isinstance(r['current'],str):
             # A zh_tw that still contains simplified characters is only a last-resort candidate.
             options.append(('existing_zh_tw',to_taiwan(r['current']),r['source']+'（原含簡體，已轉繁）'))
-        earlier=ai_memory.lookup(ns,r['key'],original) if isinstance(english,str) else None
+        earlier=ai_memory.lookup(ns or r['source'],r['key'],original) if isinstance(english,str) else None
         if earlier and not earlier.get('keep'):options.append(('ai_memory',earlier['text'],'ai_memory.json'))
         if late:options.append(('existing_zh_tw',existing,r['source']))  # what was written before, when nothing else is found
         renamed=(not r['source'].startswith('mods/') and isinstance(r['en'],str)
@@ -2034,7 +2067,8 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if renamed:
             # The modpack renamed this text (e.g. a KubeJS item rename); sources tied only to the key
             # still describe the mod's original English and would bring the old name back.
-            options=[o for o in options if o[0] in ('translation_memory','user_glossary','existing_zh_tw','glossary')
+            # AI memory was looked up with this exact English, so it remains eligible.
+            options=[o for o in options if o[0] in ('translation_memory','user_glossary','existing_zh_tw','glossary','ai_memory')
                      or (o[0]=='same_source_zh_cn' and o[2]==r['source'])
                      or (o[0]=='reference_pack_or_cfpa' and o[2] in ('reference:tw','reference:para'))]
             special['renamed']+=1

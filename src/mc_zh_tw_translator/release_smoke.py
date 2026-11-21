@@ -8,6 +8,29 @@ from pathlib import Path
 from . import covers, full_pack
 
 
+def check_https(live=False) -> dict:
+    """Exercise the frozen SSL constructor and CA data, even while offline."""
+    import ssl
+    import requests
+    from urllib3.util.ssl_ import create_urllib3_context
+    context=create_urllib3_context()
+    context.load_verify_locations(cafile=requests.certs.where())
+    if context.verify_mode!=ssl.CERT_REQUIRED or not context.check_hostname:
+        raise RuntimeError('HTTPS 憑證或主機名稱驗證未啟用。')
+    result=dict(https_context=True,https_ca_loaded=True)
+    if live:
+        from .updater import REPOSITORY
+        with requests.Session() as session:
+            for url in (f'https://api.github.com/repos/{REPOSITORY}/releases/latest',
+                        f'https://raw.githubusercontent.com/{REPOSITORY}/translations/index.json'):
+                with session.get(url,timeout=(10,25),stream=True) as response:
+                    response.raise_for_status()
+                    if not next(response.iter_content(256),b''):
+                        raise RuntimeError('HTTPS 驗證收到空白回應。')
+        result['https_live']=True
+    return result
+
+
 def check_cover_install(destination: Path) -> dict:
     root=Path(destination).resolve();root.mkdir(parents=True,exist_ok=True)
     artwork=covers.generate('封面測試 Cover Check')

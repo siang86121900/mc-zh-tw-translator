@@ -108,6 +108,7 @@
   - 透過資源系統讀、不分語言的文字檔（`full_translation_audit.RESOURCE_TEXTS`）：Fancy Toasts 1.4.6 的 `splashes.txt`（SplashManager.readSplashes 用 ResourceManager.getResource，`{user.name}` 會換成玩家名稱）、Mutant More 的 `texts/mutantmore_splashes.txt`（SplashManagerMixin 用 ResourceManager.openAsReader 讀）、模組放的 `assets/minecraft/texts/end.txt`（擊敗終界龍後的片尾文字，WinScreen 讀 minecraft:texts/end.txt；Alex's Caves 有自己的版本）。翻譯資源包放同路徑的一份就會蓋過。
   - 冰與火 2.1.13 的 `splashes.txt` 保留英文並以灰字說明：IceAndFireMainMenu 只在 `"Custom main menu"` 開啟時顯示（Elemental Awakening 關閉），而且先從 GitHub 讀，讀不到才用 getResourceAsStream 讀模組檔，資源包蓋不過。
   - Konkrete 1.8.0 的 `config/konkrete/locals/<語言>.local`：Locals.localize 先用遊戲目前的語言，沒有才用 en_us，所以在旁邊新增 `zh_tw.local`（`key=value`，讀取時會去掉等號兩邊的空白）。
+    - `AiMemory` 對沒有 assets namespace 的語系（含 Konkrete `.local`、光影 `shaders/lang`）以完整來源、key、原文保存與查詢，不用空 namespace 或跨來源相同英文配對。`recover_language_reports` 只從同一 instance 的已套用報告補回舊版漏存、已寫入且通過格式與數值檢查的 AI 譯文；既有記憶優先，重新套用仍走一般候選檢查。整合包改名的 `renamed` 篩選保留已匹配本次英文的 `ai_memory`，不沿用模組原本不同英文的名字。
   - owo-lib 的帶格式語系值（`{"text": …, "color": "gray"}`）：每段文字一筆，鍵記成 `[語系鍵, 路徑]`，zh_tw 寫回同樣的元件、只換文字，顏色保留（OwoTranslationMixin 在任何語言檔都讀這種值）。
   - 資料檔裡拿一個大寫開頭的英文單字當語系鍵（ATi Structures 1.4.6 戰利品：`{"translate": "RedBull"}`、`Chlorophyll`、`Indestructible `）：沒有語系檔定義時遊戲顯示鍵本身，和句子當鍵一樣補成語系條目。小寫單字可能是真的鍵，不補。
   - Immersive Paintings 0.6.13 的畫名（`data/immersive_paintings/paintings/*.json` 的 `name`）：選畫畫面用 Component.literal 顯示；PaintingsLoader 先列出 png、再從最上層讀同名 json，所以翻譯資料包的 json 改畫名、圖仍用模組的。`author` 是人名，保留。

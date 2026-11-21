@@ -2205,8 +2205,9 @@ def main():
     if smoke_dest:
         dest=Path(smoke_dest);dest.mkdir(parents=True,exist_ok=True)
         try:
-            from .release_smoke import check_cover_install
-            smoke_checks=check_cover_install(dest/'cover-check')
+            from .release_smoke import check_cover_install, check_https
+            smoke_checks=check_https(live='--smoke-network-check' in sys.argv)
+            smoke_checks.update(check_cover_install(dest/'cover-check'))
         except Exception as exc:
             (dest/'smoke.json').write_text(json.dumps(dict(status='failed',version=updater.VERSION,error=f'{type(exc).__name__}: {exc}')),encoding='utf-8')
             raise SystemExit(1)

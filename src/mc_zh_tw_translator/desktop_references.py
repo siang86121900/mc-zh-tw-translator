@@ -323,6 +323,16 @@ def network_message(exc) -> str:
     """Why a download or lookup failed, in words a player can act on."""
     if isinstance(exc, RateLimited):
         return str(exc)
+    pending=[exc];seen=set()
+    while pending and len(seen)<32:
+        cause=pending.pop()
+        if id(cause) in seen:continue
+        seen.add(id(cause))
+        if isinstance(cause,FileNotFoundError):
+            return '程式連線需要的本機檔案遺失，請使用完整的新版 MCTranslator.exe；原有設定、譯文與備份可保留。\n（技術細節：FileNotFoundError）'
+        if isinstance(cause,BaseException):
+            pending.extend(x for x in (cause.__cause__,cause.__context__,*cause.args) if isinstance(x,(BaseException,tuple,list)))
+        elif isinstance(cause,(tuple,list)):pending.extend(cause)
     if isinstance(exc, (requests.Timeout, TimeoutError)):
         return '連線逾時，網路可能不穩，請稍後再試。'
     if isinstance(exc, requests.exceptions.SSLError):

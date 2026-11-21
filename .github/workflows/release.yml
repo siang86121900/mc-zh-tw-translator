@@ -50,7 +50,7 @@ jobs:
       - name: Build EXE and checksums
         run: python scripts/package_desktop.py
 
-      - name: Verify packaged cover generation and isolated cloud install
+      - name: Verify packaged HTTPS, cover generation and isolated cloud install
         run: python scripts/verify_desktop_package.py
 
       - name: Publish public GitHub Release

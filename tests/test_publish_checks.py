@@ -127,5 +127,7 @@ class PublishChecksTests(unittest.TestCase):
         backup = apply_reviewed(self.instance, self.staged, [record], self.root/'output')
         self.assertIn('file/材質 包.zip', jobs.enabled_packs(options.read_text(encoding='utf-8')))
         self.assertIsNone(jobs.options_record(self.instance, self.staged, False, True, required))
-        jobs.restore_backup(backup, self.instance)
+        # This fixture checks restored bytes, independent of Minecraft running on the host.
+        with patch.object(jobs, 'ensure_game_closed'):
+            jobs.restore_backup(backup, self.instance)
         self.assertEqual(options.read_bytes(), original)

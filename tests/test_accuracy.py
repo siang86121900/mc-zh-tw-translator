@@ -6,6 +6,7 @@ import collections
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 import unittest.mock
 from unittest.mock import patch
@@ -387,6 +388,50 @@ class AiReviewTests(Base):
 
 
 class AiMemoryTests(Base):
+    def standalone_languages(self):
+        local=self.instance/'config/konkrete/locals/en_us.local'
+        local.parent.mkdir(parents=True)
+        local.write_text('general.width=Width\n',encoding='utf-8')
+        shader=self.instance/'shaderpacks/demo.zip'
+        shader.parent.mkdir(parents=True)
+        with zipfile.ZipFile(shader,'w') as z:z.writestr('shaders/lang/en_US.lang','option.SHADOW=Shadow Light Multiplier\n')
+        return [('instance!/config/konkrete/locals/en_us.local','general.width','Width','寬度'),
+                ('shaderpacks/demo.zip!/shaders/lang/en_US.lang','option.SHADOW','Shadow Light Multiplier','陰影光線倍率')]
+
+    def test_standalone_language_answers_survive_original_file_restoration(self):
+        specs=self.standalone_languages()
+        rows=[dict(source=s,key=k,en=en,kind='language',proposed=zh) for s,k,en,zh in specs]
+        jobs.AiMemory(self.home).remember_many(rows,'account-model')
+        planned={(r['source'],r['key']):r for r in self.make_plan()['rows']}
+        for s,k,en,zh in specs:
+            self.assertEqual((planned[s,k]['origin'],planned[s,k]['proposed']),('ai_translation',zh))
+            memory=jobs.AiMemory(self.home)
+            self.assertIsNone(memory.lookup(s,k,en+' changed'))
+            self.assertIsNone(memory.lookup('another/'+s,k,en))
+
+    def test_old_applied_reports_recover_only_safe_scoped_ai_answers(self):
+        specs=self.standalone_languages()
+        rows=[dict(source=s,key=k,en=en,kind='language',proposed=zh,origin='ai_translation',
+                   supported=True,installed=True,ai_model='old') for s,k,en,zh in specs]
+        rows += [dict(rows[0],key='unsafe',en='Costs 2 coins',proposed='花費 3 枚硬幣'),
+                 dict(rows[0],key='unapplied',installed=False),
+                 dict(rows[0],key='reference',origin='existing_zh_tw')]
+        report=self.home/'output'/self.instance.name/'報告/old/session.json'
+        jobs.write_json(report,dict(instance=str(self.instance),status='installed',rows=rows))
+        planned={(r['source'],r['key']):r for r in self.make_plan()['rows']}
+        memory=jobs.AiMemory(self.home)
+        for s,k,en,zh in specs:self.assertEqual(planned[s,k]['proposed'],zh)
+        for key in ('unsafe','unapplied','reference'):
+            self.assertIsNone(memory.lookup(specs[0][0],key,'Costs 2 coins' if key=='unsafe' else 'Width'))
+        # Another instance's report under the same output name cannot supply answers.
+        jobs.write_json(report,dict(instance=str(self.root/'other'),status='installed',rows=[dict(rows[0],key='foreign')]))
+        memory.recover_language_reports(self.instance)
+        self.assertIsNone(memory.lookup(specs[0][0],'foreign','Width'))
+        memory.remember_many([dict(rows[0],proposed='自訂寬度')],'new')
+        jobs.write_json(report,dict(instance=str(self.instance),status='installed',rows=rows))
+        memory.recover_language_reports(self.instance)
+        self.assertEqual(memory.lookup(specs[0][0],specs[0][1],'Width')['text'],'自訂寬度')
+
     def test_same_sentence_in_another_modpack_is_not_paid_for_twice(self):
         FakeClient.translations={'Unknown thing':'未知的東西'}
         first=ai.supplement(self.make_plan(),self.home,'account-model',lambda *_:None,client_factory=FakeClient)
@@ -720,6 +765,17 @@ class SameKeyTests(Base):
         renamed=rows[('instance','a')]
         self.assertEqual((renamed['proposed'],renamed['renamed']),('英雄之刃',True))  # not the name of the mod's English
         self.assertEqual(rows[('mods/real.jar','a')]['proposed'],'鐵製長劍')
+
+    def test_renamed_text_reuses_memory_for_its_exact_english_only(self):
+        instance=self.layered('改名記憶',{'a':'Diamond','b':'Diamond'})
+        lang=instance/'kubejs/assets/real/lang';lang.mkdir(parents=True)
+        (lang/'en_us.json').write_text(json.dumps({'a':'Iridium','b':'Iridium'}),encoding='utf-8')
+        jobs.AiMemory(self.home).remember_many([
+            dict(source='instance!/kubejs/assets/real/lang/en_us.json',key='a',en='Iridium',kind='language',proposed='銥'),
+            dict(source=self.MOD,key='b',en='Diamond',kind='language',proposed='鑽石')],'account-model')
+        rows={r['key']:r for r in self.make_plan(instance)['rows'] if r['source'].startswith('instance!/kubejs')}
+        self.assertEqual((rows['a']['proposed'],rows['a']['origin'],rows['a']['renamed']),('銥','ai_translation',True))
+        self.assertEqual(rows['b']['origin'],'untranslated')
 
     def test_differing_ai_answers_for_one_key_become_one_and_confirmed_rows_stay(self):
         row=lambda source,zh,origin='ai_translation',**more:dict(source=source,key='a',kind='language',en='Odd gadget',current=None,
