@@ -88,6 +88,34 @@
       "revision": 1
     },
     {
+      "name": "Society Sunlit Valley",
+      "projectID": 1093382,
+      "fileID": 9721472,
+      "version": "4.2.0",
+      "modpackDate": "2026-11-20",
+      "gameVersion": "1.20.1",
+      "translator": "MC Translator",
+      "updated": "2026-11-21",
+      "notes": "Society Sunlit Valley 4.2.0 繁中翻譯補丁，需先安裝相同版本原整合包。2026-11-21 重新盤點本整合包：仍有 27 類未確認涵蓋及 7 項讀取問題。本次工作報告列有 3109 筆缺翻、96 筆待套用；僅分享目前已套用且可安全匯出的翻譯，不代表整包已翻完或已經遊戲內驗收。有 5 項檔案或文字紀錄因目前內容與套用紀錄不符而略過，包含 Konkrete 介面、quality_food 語系、Sweeper Maid 模組檔及兩份光影語系；此補丁屬部分分享。FTB Backups 2 保留原設定，中文通知未完成。",
+      "recommendedRam": 0,
+      "sharingStatus": "partial",
+      "minimumAppVersion": "0.42.1",
+      "addedMods": [
+        {
+          "name": "IMBlocker",
+          "size": 232400
+        },
+        {
+          "name": "FTB Backups 2（定時備份世界、繁中通知）",
+          "size": 1954591
+        }
+      ],
+      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/9721472-edc27039.zip",
+      "sha256": "edc27039f94b236edca2618763eb92d178819b24e076f78411db170001fab618",
+      "size": 3335785,
+      "revision": 1
+    },
+    {
       "kind": "full",
       "name": "The Fool 0.3.2",
       "packId": "the fool",
