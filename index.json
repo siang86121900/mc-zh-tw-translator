@@ -96,14 +96,19 @@
       "gameVersion": "1.20.1",
       "translator": "MC Translator",
       "updated": "2026-11-22",
-      "notes": "玩家端先分配 10 GB（10,240 MB）。整合包作者未提供數值，這是 APP 依 351 個模組估算的試用起點，沒有實測最低需求。CurseForge：右鍵整合包 → Profile Options → Custom RAM Allocation。 多人連線請先加入同一個 Radmin VPN 網路，再使用「狗狗貓貓島」捷徑。Society Sunlit Valley 4.2.0 繁中翻譯補丁，需先安裝相同版本的整合包。2026-11-22 修正 Complementary Reimagined 搭配 Colorwheel 的原檔校驗，從第 2 版升級可補裝原先跳過的 721 筆光影設定譯文，無須重新翻譯。APP v0.42.2 仍可能把已安裝的光影、Konkrete 介面或書名誤列為略過，請以對應文字是否已顯示為準。重新盤點本整合包共 27 類未確認涵蓋或未讀完，其中有 9 項讀取問題，遊戲中仍可能遇到英文。Sweeper Maid 可選擇加裝。原有 FTB Backups 2 設定保留，中文通知未能完整套用。",
+      "notes": "玩家端先分配 10 GB（10,240 MB）。整合包作者未提供數值，這是 APP 依 351 個模組估算的試用起點，沒有實測最低需求。CurseForge：右鍵整合包 → Profile Options → Custom RAM Allocation。 多人連線請先加入同一個 Radmin VPN 網路，再使用「狗狗貓貓島」捷徑。Society Sunlit Valley 4.2.0 繁中翻譯補丁，需先安裝相同版本的整合包。2026-11-22 修正 Complementary Reimagined 搭配 Colorwheel 的原檔校驗，從第 2 版升級可補裝原先跳過的 721 筆光影設定譯文，無須重新翻譯。APP v0.42.2 仍可能把已安裝的光影、Konkrete 介面或書名誤列為略過，請以對應文字是否已顯示為準。重新盤點本整合包共 27 類未確認涵蓋或未讀完，其中有 9 項讀取問題，遊戲中仍可能遇到英文。Sweeper Maid 可選擇加裝。原有 FTB Backups 2 設定保留，中文通知未能完整套用。 第 4 版附上可選的 Solo Quests 1.1.2，須由專用伺服器啟用。已重新盤點 Society Sunlit Valley 4.2.0。",
       "recommendedRam": 0,
+      "mods": 351,
       "sharingStatus": "ready",
       "minimumAppVersion": "0.42.1",
       "addedMods": [
         {
           "name": "IMBlocker",
           "size": 232400
+        },
+        {
+          "name": "Solo Quests（專用伺服器可各自解任務、手動同步）",
+          "size": 41328
         },
         {
           "name": "Sweeper Maid（定時清理地上的掉落物）",
@@ -114,15 +119,14 @@
           "size": 1954591
         }
       ],
-      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/9721472-95367659.zip",
-      "sha256": "9536765962731355adafbff51c50c630a9a3224aa797ce5c7b07ef48cb393fda",
-      "size": 3472813,
-      "revision": 3,
+      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/9721472-d6a61cf1.zip",
+      "sha256": "d6a61cf1cbc3cdac9506514419c945dcf1c3438ca2640e95e3540afdd20fd4f8",
+      "size": 3472992,
       "server": {
         "name": "狗狗貓貓島",
         "address": "26.186.50.26"
       },
-      "mods": 351
+      "revision": 4
     },
     {
       "kind": "full",
