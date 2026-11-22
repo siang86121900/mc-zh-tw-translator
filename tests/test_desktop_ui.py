@@ -277,6 +277,24 @@ class DesktopUiTests(unittest.TestCase):
             self.assertEqual(window.catalog_box.count(),1);self.assertEqual([b.text() for b in window.pack_buttons],['安裝翻譯','建立伺服器'])
             window.close()
 
+    def test_curseforge_patch_card_estimates_memory_when_author_value_missing(self):
+        from PySide6.QtWidgets import QPushButton
+        with tempfile.TemporaryDirectory() as d:
+            pack=dict(name='Demo',projectID=7,fileID=8,version='1.0',gameVersion='1.21.1',translator='我',updated='2026-09-29',
+                      notes='',url='https://github.com/x',sha256='a'*64,size=1,modpackDate='',revision=3)
+            mine=[dict(name='Demo',path=Path(d),projectID=7,fileID=8,gameVersion='1.21.1')]
+            with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=mine), \
+                 patch('mc_zh_tw_translator.desktop_jobs.mod_count',return_value=351):
+                window=MainWindow(Path(d));window.catalog_loaded([pack])
+                card=window.catalog_box.itemAt(0).widget()
+                self.assertTrue(any('約 10 GB（程式估計' in label.text() for label in card.findChildren(QLabel)))
+                self.assertEqual([btn.text() for btn in card.findChildren(QPushButton) if not btn.isHidden()],
+                                 ['安裝翻譯','怎麼調整記憶體','建立伺服器'])
+                self.assertIn('作者建議 6,144 MB',window.memory_advice(dict(pack,recommendedRam=6144,mods=351))['line'])
+                self.assertIn('351 個模組',window.memory_advice(dict(pack,mods=351))['line'])
+                self.assertIn('steps',window.memory_advice(pack))
+                window.close()
+
     def test_updated_translation_number_goes_once_the_page_is_seen(self):
         with tempfile.TemporaryDirectory() as d:
             pack=dict(name='Demo',projectID=7,fileID=8,version='1.0',gameVersion='1.21.1',translator='我',updated='2026-09-29',

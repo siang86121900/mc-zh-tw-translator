@@ -39,6 +39,7 @@
 - IMBlocker（使用者 2026-10-16 指定；mc_zh_tw_translator.imblocker）：一鍵翻譯開始前、安裝翻譯補丁與整包分享（安裝、更新）時，整合包沒有就加裝。以模組宣告的 modId 判斷已安裝，改名或 .jar.disabled 停用的不動。依 Minecraft 版本與載入器從 imblocker.FILES 選檔；需要 Fabric API 而沒有時不裝。IMBlocker 或 Minecraft 出新版時要下載核對後更新清單。
 - Sweeper Maid 1.1.2（使用者 2026-10-29 指定；mc_zh_tw_translator.sweeper）：只在上架的整合包（翻譯補丁與整包分享）裝，一鍵翻譯不裝。scripts/publish_translation.py 上架前呼叫 sweeper.ensure（--no-sweeper 跳過）。已有（modId sweeper_maid，含停用）不動；sweeper.cleaner 找到清理模組、清理設定檔名或腳本／資料包的 kill @e[type=item] 任一個就不裝並寫出是哪個檔案（寧可少裝，不能兩個一起清；只清箭之類的不算）。只支援 1.20.1 Forge（NeoForge 1.20.1 同檔）。它的聊天訊息與垃圾桶名稱照字面讀 config/sweeper_maid-common.toml：沒有這個檔時寫入 sweeper.CONFIG_TEXT（同樣設定、Elemental Awakening 的「世界之聲」繁中寫法，$1～$3 不得改動），已有則不改。補丁以 manifest sweeper 標記並列在卡片的加裝模組，接收者同意加裝時由本機程式下載同一檔案並寫設定（不再檢查清理功能），minimum_app_version 0.41.0。
 - 以上模組共同：只從 CurseForge 檔案伺服器下載，大小與 SHA-256 須和清單相同（patches.install_mods）；模組與設定各自是可還原的批次；失敗不擋翻譯或安裝，結果寫出原因；分享補丁不把它們（或 Sweeper Maid 設定檔）列為未分享或對方無法下載，也不列入 required_mods（patches.own_mod）。建立伺服器時由試開的當機紀錄拿掉，不預先移除。測試不得真的下載（tests 以 patch 擋住 ensure）。
+- Solo Quests（使用者 2026-11-22 指定，包含 Society Sunlit Valley；solo_quests.FILES）：之後上架的翻譯補丁及整包分享預設附加，限已核對的 Minecraft／載入器版本及相容且啟用的 FTB Quests、FTB Teams、FTB Library、Architectury API（Fabric 另需 Fabric API）。既有或停用版本保留，缺前置模組或不合版本時列出原因。用 CurseForge 檔案資訊與 SHA-256，補丁走 added_mods 由玩家同意後下載，整包使用雲端整包的 CurseForge 檔案連結。專用伺服器才有各自解任務、手動同步的功能。上架只變更分享資料，保留來源與現有世界的任務進度；公開卡片列出 Solo Quests。一鍵翻譯不加裝。
 
 ## 翻譯來源：先合格，再排序
 - 每個候選先核對模組／namespace、key／欄位、原文與用途，再查語意和格式；不能只因含中文或來源順位高就採用。
@@ -183,7 +184,8 @@
 - 分享者用 CurseForge 加裝的模組只記專案、檔案、大小與未翻譯原檔 SHA-256；對方確認安裝（確認畫面列出這些模組）後從 CurseForge 檔案伺服器（edge.forgecdn.net、mediafilez.forgecdn.net）下載，大小與 SHA-256 相符才放進 mods，以可還原批次記錄；轉址到其他網域、校驗不符或不是壓縮檔不裝。作者只開放 CurseForge 安裝、不是從 CurseForge 安裝、對方已有其他版本、整合包原有模組被換版本時不自動加入並說明。不刪除或替換對方既有模組，不改 CurseForge 紀錄檔（整包分享的新設定檔除外）。加裝失敗不擋翻譯。
 - 接收者只按一次「安裝」並確認，不需重新翻譯、AI 或搬檔；先核對模組版本，再備份、驗證、套用、讀回。缺模組、原檔變動、分享者省略或啟用失敗時明列為部分，不宣稱一致；舊格式缺證據列為尚未核對；分享範圍核對不等於遊戲畫面或整包翻完。結構照字面複製到存檔的文字只影響之後新生成的地方，不改存檔、交易或進度。
 - 裝過較舊版次的玩家：以玩家電腦上仍生效的備份紀錄追回原檔（shared_text.written_from），原檔相同才算同一份；逐句讀回相同就算已翻譯；資源包只在和備份原檔相比只改了補丁會重寫的項目時才重寫（patches.only_entries）；讀回不同的列「先前安裝的舊版翻譯和這一版不同」並請玩家先還原舊版。
-- 卡片說明寫整合包建議記憶體（manifest.json 的 recommendedRam），由玩家自己設定；作者沒有建議值時依模組數估計（patches.memory_estimate），卡片寫明「程式估計，不是作者建議」（使用者 2026-10-02 同意）。整包卡片的模組數上架時記下，舊卡片用 --full --card-only 補上。
+- 翻譯補丁與整包卡片都要提供玩家端記憶體建議和「怎麼調整記憶體」。優先用 manifest.json 的 recommendedRam；作者未提供時，由 `patches.memory_estimate` 依模組數提供試用起點，標明程式估計（使用者 2026-10-02 同意），不把估值寫成作者數字。上架記下模組數，舊卡片用 --card-only（整包另加 --full）補上，已安裝時也可讀本機模組數。
+- 上架後核對公開目錄的整合包版本、補丁版次、伺服器捷徑與記憶體資料。補丁檔可下載不代表安裝成功；修正過套用問題的補丁，以接收端的同版本原檔或先前安裝檔案驗證寫入和讀回，尤其是啟動器換回或重新封裝的來源。
 - 說明分享範圍時講清楚：補丁不含模組檔、整份設定或腳本、記憶體與啟動器設定、遊戲選項；加裝模組只記名稱與校驗碼，對方不加入時略過該模組的翻譯。需先安裝完整同版本整合包。
 - 逐一確認引用來源與當次授權條款並附上；不把所有參考庫宣稱同一授權；公開前確認修改與再散布權限。分享免費，不做付費或贊助者限定。
 

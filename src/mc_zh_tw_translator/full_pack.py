@@ -169,7 +169,8 @@ def remote_matches(url: str, size: int, digest: str, session, cancelled=lambda:F
     return False
 
 
-def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:False, session=None, workers=4) -> dict:
+def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:False, session=None, workers=4,
+          *, solo=None) -> dict:
     """Pack the owner's translated modpack into `out`; returns the manifest.
 
     Refuses a modpack CurseForge knows (it is shared as a translation patch instead).
@@ -202,6 +203,12 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for rel,mod,same in pool.map(check,candidates):
             if same:entries[rel].update(source='curseforge',url=mod['url'],projectID=mod['projectID'],fileID=mod['fileID'],name=mod['name'])
+    if solo:
+        rel = 'mods/'+solo['fileName']
+        if rel in entries:
+            raise ValueError('Solo Quests 的檔名已被占用，無法打包。')
+        entries[rel] = dict(path=rel, size=solo['size'], sha256=solo['sha256'], source='curseforge',
+                            url=solo['url'], projectID=solo['projectID'], fileID=solo['fileID'], name=solo['name'])
     options=generated_options(instance)
     entries['options.txt']=dict(path='options.txt',size=len(options),sha256=hashlib.sha256(options).hexdigest())
     cover=covers.image_for(instance,record,identity['name'])

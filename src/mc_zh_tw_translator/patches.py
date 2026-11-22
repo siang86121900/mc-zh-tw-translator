@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import server_list, shared_text
-from . import covers, imblocker, sweeper, backup_mod
+from . import covers, imblocker, sweeper, backup_mod, solo_quests
 from .deployment import apply_reviewed, contained, file_hash
 from .translator import is_jar_signature_file
 from .updater import REPOSITORY, VERSION, release_url
@@ -402,6 +402,26 @@ def mods_by_hash(instance: Path):
     return found
 
 
+def export_file_versions(batches):
+    """Follow matching hashes back to the original for each file's latest write."""
+    files={}
+    written={}
+    for backup,record in batches:
+        for row in record['files']:
+            file=row['file'];before=row['before'];after=row['after']
+            versions=written.setdefault(file,{})
+            previous=versions.get(before) if before is not None else None
+            if previous is not None:
+                item=dict(previous,after=after)
+            else:
+                item=dict(before=before,backup=backup,after=after)
+                if before is None and after is not None and file.endswith('.jar'):
+                    item['created_sha']=after
+            if after is not None:versions[after]=item
+            files[file]=item
+    return files
+
+
 def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     """Collect this instance's applied translations into one shareable zip.
 
@@ -414,12 +434,7 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     publish_checks.required_packs(instance)
     batches=installed_batches(home,instance)
     if not batches:raise ValueError('這個模組包還沒有套用過翻譯，無法匯出。請先完成「一鍵完整翻譯並套用」。')
-    files={}
-    for backup,record in batches:
-        for row in record['files']:
-            item=files.setdefault(row['file'],dict(before=row['before'],backup=backup))
-            if row['before'] is None and row['file'].endswith('.jar') and 'created_sha' not in item:item['created_sha']=row['after']
-            item['after']=row['after']
+    files=export_file_versions(batches)
     identity=instance_identity(instance)
     originals={file:item.get('before') or item.get('created_sha') for file,item in files.items() if item.get('before') or item.get('created_sha')}
     mods,left_out=added_mods(instance,originals)
@@ -743,6 +758,9 @@ def mod_states(instance: Path, mods):
         if same:state='present'
         elif path.exists():state='other_version'
         elif mod['projectID'] in have and (instance/'mods'/have[mod['projectID']]).exists():state='other_version'
+        elif (mod['projectID']==solo_quests.PROJECT
+              and (selected:=solo_quests.choose(instance))[0] != checked_mod(dict(mod, name=solo_quests.NAME, page=solo_quests.PAGE))):
+            state=selected[1] or 'Solo Quests 的檔案與此整合包相容的版本不同'
         elif not mod['url']:state='manual'
         else:state='install'
         states.append((mod,state))
@@ -800,7 +818,7 @@ def install_mods(instance: Path, mods, home: Path, notify=lambda *_:None, cancel
              'manual':'作者只開放由 CurseForge 安裝，請在 CurseForge 加裝這個模組'}
     for mod,state in states:
         if state=='present':result['present'].append(mod['fileName'])
-        elif state!='install':result['skipped'].append(dict(name=mod['name'],file=mod['fileName'],reason=reasons[state],page=mod['page']))
+        elif state!='install':result['skipped'].append(dict(name=mod['name'],file=mod['fileName'],reason=reasons.get(state,state),page=mod['page']))
     if not wanted:return result
     needed=sum(m['size'] for m in wanted)
     for folder,times in ((instance,1),(home,2)):
@@ -1099,11 +1117,13 @@ def fetch_catalog(session=None):
                 packs.append(full_entry(x));continue
             patch_url(x['url'])
             if not re.fullmatch('[0-9a-f]{64}',x['sha256']) or not 0<int(x['size'])<=MAX_PATCH_SIZE:continue
+            mods=x.get('mods')
+            mods=mods if type(mods) is int and 0<mods<=5000 else 0
             packs.append(dict(name=str(x['name']),projectID=int(x.get('projectID') or 0),fileID=int(x.get('fileID') or 0),
                               version=str(x.get('version') or ''),gameVersion=str(x.get('gameVersion') or ''),
                               translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),
                               modpackDate=str(x.get('modpackDate') or '')[:10],revision=max(1,int(x.get('revision') or 1)),
-                              notes=str(x.get('notes') or '')[:600],recommendedRam=ram_mb(x.get('recommendedRam')),url=x['url'],sha256=x['sha256'],size=int(x['size']),
+                              notes=str(x.get('notes') or '')[:600],recommendedRam=ram_mb(x.get('recommendedRam')),mods=mods,url=x['url'],sha256=x['sha256'],size=int(x['size']),
                               sharingStatus=str(x.get('sharingStatus') or 'unknown'),minimumAppVersion=str(x.get('minimumAppVersion') or ''),
                               addedMods=[dict(name=str(m['name'])[:120],size=int(m['size'])) for m in (x.get('addedMods') or [])[:MAX_ADDED_MODS]
                                          if isinstance(m,dict) and m.get('name') and 0<int(m.get('size') or 0)<=MAX_MOD_SIZE],
@@ -1122,7 +1142,9 @@ def full_entry(x):
                 translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),modpackDate='',
                 revision=max(1,int(x.get('revision') or 1)),notes=str(x.get('notes') or '')[:600],
                 recommendedRam=ram_mb(x.get('recommendedRam')),driveId=str(x['driveId']),sha256=x['sha256'],size=int(x['size']),
-                totalSize=max(int(x.get('totalSize') or 0),0),mods=min(max(int(x.get('mods') or 0),0),5000),url='',addedMods=[],
+                totalSize=max(int(x.get('totalSize') or 0),0),mods=min(max(int(x.get('mods') or 0),0),5000),url='',
+                addedMods=[dict(name=str(m['name'])[:120],size=int(m['size'])) for m in (x.get('addedMods') or [])[:MAX_ADDED_MODS]
+                           if isinstance(m,dict) and m.get('name') and 0<int(m.get('size') or 0)<=MAX_MOD_SIZE],
                 server=dict(zip(('name','address'),server_list.checked(x.get('server')))) if server_list.checked(x.get('server')) else None)
 
 

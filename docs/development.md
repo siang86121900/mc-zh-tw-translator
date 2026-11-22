@@ -82,6 +82,7 @@ python -m mc_zh_tw_translator verify 'tmp/pack/batch/mods' --input 'C:/path/inst
 - 資料包任務只分享逐句修改，以對方目前的原始任務檔重建，任務 ID、獎勵和座標不從補丁取得；程式字串只分享常數位置與文字、不帶 class 位元組。壓縮項目沿用原 ZipInfo，新項目使用固定時間，讓相同原檔與譯文產生相同結果。
 - `required_mods` 核對分享者的模組集合；`sharing_status`、`sender_omitted`、本機略過項、讀回核對與啟用狀態決定 `consistency`（matched／partial／unknown）。matched 僅表示分享範圍的檔案核對，存檔與遊戲畫面實測不在其中。舊補丁沒有完整資料，保留 unknown；部分安裝不能被卡片顯示成完整一致。
 - `source_versions` 是本機通過逐句用途檢查後產生的原檔／結果校驗紀錄，仍符合結果雜湊才沿用；只用於辨識先前安裝的文字修改，不接受遠端寫入本機校驗紀錄。分享者確認的來源不匯入本機翻譯記憶，也不標成本機使用者確認。
+- 匯出時以 `patches.export_file_versions` 的前後 SHA-256 串接同一檔案的套用批次。檔案被啟動器換回或重新封裝導致校驗碼中斷時，保留後續批次實際備份的原檔。重裝時若已翻譯的光影語系、Konkrete 介面或 Patchouli 書名不再出現在掃描列，`shared_text.prepare` 會先比對原檔、結果或本機備份校驗碼，再讀回已顯示的文字。讀回只能證明已安裝，不會因此取得寫入資格。
 - `fetch_catalog()` 讀 `https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/index.json`；404 視為尚無公開翻譯。補丁下載網址必須是本專案的 GitHub Release 附件，並驗 SHA-256 與大小。
 - CurseForge 整合包由 `%APPDATA%/CurseForge/agent/GameInstances/MinecraftGameInstance.json` 偵測（含自訂位置），整合包身分讀 `minecraftinstance.json`；「用 CurseForge 安裝」開啟 `curseforge://install?addonId=<projectID>&fileId=<fileID>`，無反應時請使用者手動搜尋。
 
@@ -95,7 +96,7 @@ python -m mc_zh_tw_translator verify 'tmp/pack/batch/mods' --input 'C:/path/inst
 
 套用補丁後在 `applied_patches.json` 記錄每個 instance 最後套用的補丁雜湊；目錄上同一整合包版本的補丁雜湊不同時顯示「翻譯有更新」。
 
-上架一個已翻譯整合包（需使用者授權）：`python scripts/publish_translation.py <補丁.zip> --translator 名稱 [--notes 說明] [--dry-run]`。它把補丁放到 `translations` 分支的 `packs/<projectID>/`、更新 `index.json`（同整合包同版本會取代）並推送。手動作法：
+上架一個已翻譯整合包（需使用者授權）：`python scripts/publish_translation.py <補丁.zip> --source-instance <同版本整合包資料夾> --translator 名稱 [--notes 說明] [--dry-run]`。來源資料夾供核對整合包版本及 Solo Quests 的前置模組；本次明確不加裝時可使用 `--no-solo-quests`。指令把補丁放到 `translations` 分支的 `packs/<projectID>/`、更新 `index.json`（同整合包同版本會取代）並推送。手動作法：
 
 1. 用程式匯出補丁，建立或更新預先發行版（prerelease）`translations` 並上傳 ZIP；預先發行版不會被 `releases/latest` 當成程式更新。
 2. 在 `translations` 分支的 `index.json` 加入：

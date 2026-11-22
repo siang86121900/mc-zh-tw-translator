@@ -702,11 +702,11 @@ class MainWindow(QMainWindow):
     def memory_advice(self,pack):
         if self.memory_total is None:self.memory_total=jobs.total_memory_mb()
         record=patches.curseforge_record(pack['instances'][0]['path']) if pack.get('instances') else {}
-        if pack.get('kind')=='full' and not pack.get('recommendedRam'):
+        if not pack.get('recommendedRam'):
             # No author figure: an estimate from the number of mods, labelled as the program's own (patches.memory_estimate).
             mods=pack.get('mods') or (jobs.mod_count(pack['instances'][0]['path']) if pack.get('instances') else 0)
-            if not mods:return patches.memory_steps(record)
-            return patches.memory_advice(patches.memory_estimate(mods),self.memory_total,record,estimated_from=mods)
+            if mods:return patches.memory_advice(patches.memory_estimate(mods),self.memory_total,record,estimated_from=mods)
+            return patches.memory_steps(record)
         return patches.memory_advice(pack.get('recommendedRam') or 0,self.memory_total,record)
 
     def show_memory_help(self,pack):
@@ -800,7 +800,7 @@ class MainWindow(QMainWindow):
             added=(f"翻譯者另外加裝了 {len(extra)} 個模組：" +'、'.join(m['name'] for m in extra[:8])+('…' if len(extra)>8 else '')
                    +'。安裝時會從 CurseForge 一起加入。') if extra else ''
             memory=self.memory_advice(pack)
-            for text in (pack['notes'],memory.get('line'),memory.get('now'),added,server_line(pack.get('server')),notes.get(pack['status'],''),newer):
+            for text in (memory.get('line'),memory.get('now'),pack['notes'],added,server_line(pack.get('server')),notes.get(pack['status'],''),newer):
                 if text:b.addWidget(label(text,'sub'))
             if memory.get('warning'):b.addWidget(label(memory['warning'],'warn'))
             row=QHBoxLayout()

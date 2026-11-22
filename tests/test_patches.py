@@ -85,6 +85,44 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(list(pack['entries']),['assets/real/lang/zh_tw.json'])
         self.assertEqual(list(pack['requires']['assets/real/lang/zh_tw.json']),['mods/real.jar'])  # tied to the mod version
 
+    def test_shader_patch_uses_original_from_latest_unbroken_backup_chain(self,_):
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        relative='shaderpacks/demo.zip'
+        sender=self.translator/relative; receiver=self.friend/relative
+        sender.parent.mkdir(); receiver.parent.mkdir()
+
+        def original(path, comment):
+            with zipfile.ZipFile(path,'w') as archive:
+                archive.comment=comment
+                archive.writestr('shaders/lang/en_US.lang','option.SHADOW=Shadow Light\n')
+
+        jobs.AiMemory(self.home).remember_many([
+            dict(source=relative+'!/shaders/lang/en_US.lang',key='option.SHADOW',en='Shadow Light',
+                 kind='language',proposed='陰影亮度')],'fixture')
+
+        original(sender,b'first package')
+        obsolete=patches.file_hash(sender)
+        self.translate()
+        original(sender,b'launcher repackaged it')
+        shutil.copyfile(sender,receiver)
+        restored=patches.file_hash(receiver)
+        self.assertNotEqual(restored,obsolete)
+        self.translate()
+
+        exported=patches.export_patch(self.translator,self.home)
+        z,manifest=patches.read_patch(Path(exported['path']));z.close()
+        unit=next(u for u in manifest['text_units'] if u['source'].startswith(relative+'!/'))
+        self.assertEqual(unit['requires'],{relative:restored})
+        result=patches.apply_patch(self.friend,Path(exported['path']),Path(self.temp.name)/'friend-app')
+        self.assertEqual(result['skipped'],[])
+        with zipfile.ZipFile(receiver) as archive:
+            self.assertIn('option.SHADOW=陰影亮度',archive.read('shaders/lang/zh_tw.lang').decode('utf-8'))
+        again=patches.apply_patch(self.friend,Path(exported['path']),Path(self.temp.name)/'friend-app')
+        self.assertEqual(again['skipped'],[])
+        self.assertFalse(again['backup'])
+        restore_backup(Path(result['backup']),self.friend)
+        self.assertEqual(patches.file_hash(receiver),restored)
+
     def test_friend_applies_patch_and_can_restore(self,_):
         self.translate()
         out=patches.export_patch(self.translator,self.home)
@@ -328,6 +366,8 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(patches.instance_identity(self.friend)['recommendedRam'],12128)
         response=Mock(status_code=200);response.json.return_value={'packs':[dict(base,recommendedRam='99999999'),dict(base,fileID=2,recommendedRam=6144)]}
         self.assertEqual([p['recommendedRam'] for p in patches.fetch_catalog(Mock(get=Mock(return_value=response)))],[0,6144])
+        response.json.return_value={'packs':[dict(base,mods=351),dict(base,fileID=2,mods='invalid')]}
+        self.assertEqual([p['mods'] for p in patches.fetch_catalog(Mock(get=Mock(return_value=response)))],[351,0])
 
     def test_card_server_goes_first_in_the_multiplayer_list_and_is_restored(self,_):
         from mc_zh_tw_translator import server_list

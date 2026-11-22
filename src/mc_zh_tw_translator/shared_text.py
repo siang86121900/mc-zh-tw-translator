@@ -183,7 +183,17 @@ def prepare(instance, home, units, notify, work, cancelled, pack_base=None):
         # no usable row for text that is already Chinese, so the words read back decide, as for the translator's file.
         earlier=(hashes[source]!=u['requires'][source] and versions.get(source,{}).get('before')==u['requires'][source]
                  and (not row or not row.get('supported') or row.get('unverified') or row.get('literal')))
-        if (hashes[source]==u['source_after'] or earlier) and hashes[source]!=u['requires'][source] and (row or u['kind'] in ('class_display','embedded_text')):
+        # Some language files and book titles disappear from the scan once fully
+        # translated. Recognize those known read paths only with a matching hash,
+        # and verify the displayed value below without granting a write route.
+        known_read_path=(u['kind']=='language' and (source.startswith('shaderpacks/') or
+                         source.casefold()=='config/konkrete/locals/en_us.local')) or bool(jobs.book_title(u))
+        if not row and known_read_path and (original_match or hashes[source]==u['source_after']):
+            already_candidates.append((u,dict(u,proposed=u['text'])))
+            if earlier:older.add(id(u))
+            continue
+        can_readback=row or u['kind'] in ('class_display','embedded_text') or (earlier and known_read_path)
+        if (hashes[source]==u['source_after'] or earlier) and hashes[source]!=u['requires'][source] and can_readback:
             # The translator's translated file (the translator's own computer, or the patch installed before),
             # where a rescan may list no row for text already in Chinese. A claimed hash proves nothing by itself:
             # it counts only when the words read back from that place are the translation. On the translator's own

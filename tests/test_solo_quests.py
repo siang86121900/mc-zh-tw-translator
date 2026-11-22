@@ -1,0 +1,50 @@
+import json
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+import publish_translation
+from mc_zh_tw_translator import patches, solo_quests
+
+
+class SoloQuestsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.pack = Path(self.temp.name)
+        (self.pack/'mods').mkdir()
+        (self.pack/'manifest.json').write_text(json.dumps(
+            dict(minecraft=dict(version='1.20.1', modLoaders=[dict(id='forge-47.4.0')]))), encoding='utf-8')
+        for mod_id, version in [('ftbquests', '2001.4.17'), ('ftblibrary', '2001.2.12'),
+                                ('ftbteams', '2001.3.2'), ('architectury', '9.2.14')]:
+            self.jar(mod_id+'.jar', mod_id, version)
+
+    def jar(self, filename, mod_id, version):
+        with zipfile.ZipFile(self.pack/'mods'/filename, 'w') as jar:
+            jar.writestr('META-INF/mods.toml', f'[[mods]]\nmodId="{mod_id}"\nversion="${{file.jarVersion}}"\n')
+            jar.writestr('META-INF/MANIFEST.MF', f'Implementation-Version: {version}\r\n')
+
+    def test_install_requires_compatible_enabled_dependencies(self):
+        mod, reason = solo_quests.choose(self.pack)
+        self.assertFalse(reason)
+        self.assertEqual(mod['fileID'], 8614618)
+        self.assertEqual(patches.mod_states(self.pack, [mod]), [(mod, 'install')])
+        self.jar('ftbquests.jar', 'ftbquests', '2002.0.0')
+        self.assertIn('ftbquests', patches.mod_states(self.pack, [mod])[0][1])
+        self.jar('renamed.jar.disabled', solo_quests.MOD_ID, '1.0.0')
+        self.assertIn('renamed.jar.disabled', solo_quests.choose(self.pack)[1])
+
+    def test_existing_patch_can_add_download_and_preserve_translation_payload(self):
+        source, dest = self.pack/'prior.zip', self.pack/'updated.zip'
+        manifest = dict(added_mods=[], files=[dict(file='translation')], publish_checks=1)
+        with zipfile.ZipFile(source, 'w') as jar:
+            jar.writestr('manifest.json', json.dumps(manifest))
+            jar.writestr('payload/translation', '測試譯文')
+        mod, _ = solo_quests.choose(self.pack)
+        publish_translation.with_solo_quests(source, dest, manifest, mod)
+        with zipfile.ZipFile(dest) as jar:
+            updated = json.loads(jar.read('manifest.json'))
+            self.assertEqual(updated['files'], manifest['files'])
+            self.assertEqual(updated['added_mods'], [mod])
+            self.assertEqual(jar.read('payload/translation').decode(), '測試譯文')

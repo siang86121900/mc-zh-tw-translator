@@ -29,12 +29,14 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
-from mc_zh_tw_translator import full_pack, server_list, sweeper, backup_mod  # noqa: E402
-from mc_zh_tw_translator.patches import export_patch, instance_identity, read_patch  # noqa: E402
+from mc_zh_tw_translator import full_pack, server_list, sweeper, backup_mod, solo_quests  # noqa: E402
+from mc_zh_tw_translator.desktop_jobs import mod_count  # noqa: E402
+from mc_zh_tw_translator.patches import MAX_ADDED_MODS, export_patch, instance_identity, read_patch  # noqa: E402
 from mc_zh_tw_translator.updater import REPOSITORY  # noqa: E402
 
 BRANCH = 'translations'
@@ -154,7 +156,7 @@ def card_server(args):
 
 
 def refresh_patch_card(args):
-    """Change a translation card's details (its server) without exporting or uploading a new patch."""
+    """Refresh the translation card without exporting or uploading a new patch."""
     identity = instance_identity(args.patch.resolve()) if args.patch.is_dir() else {}
     if not identity.get('projectID'):sys.exit('請給 CurseForge 整合包的資料夾，才能找到它的卡片。')
     exists = subprocess.run(['git', 'fetch', 'origin', BRANCH], cwd=ROOT, capture_output=True).returncode == 0
@@ -163,6 +165,8 @@ def refresh_patch_card(args):
     if len(cards) != 1:sys.exit('目錄裡找不到（或不只一張）這個整合包版本的翻譯卡片，沒有修改。')
     changes = card_server(args)
     if args.notes:changes['notes'] = args.notes
+    mods = mod_count(args.patch)
+    if mods and cards[0].get('mods') != mods:changes['mods'] = mods
     if not changes:sys.exit('沒有要修改的卡片資料。')
     entry = dict(cards[0], **changes)
     print(f"{entry['name']} {entry.get('version', '')}：", json.dumps({k: v for k, v in changes.items()}, ensure_ascii=False), flush=True)
@@ -202,6 +206,31 @@ def add_backup_mod(args, instance):
         sys.exit('備份模組設定尚未完成，沒有上架；請先處理上面的原因，或用 --no-backup-mod 明確略過。')
 
 
+def publication_solo(args, instance, *, include_existing=False):
+    if args.no_solo_quests:
+        return None
+    mod, reason = solo_quests.choose(instance, include_existing=include_existing)
+    print(f'上架時附加 {solo_quests.NAME}。' if mod else f'Solo Quests 略過，{reason}。', flush=True)
+    return mod
+
+
+def with_solo_quests(source, destination, manifest, mod):
+    """Add a checked CurseForge download to the existing patch format and preserve translation entries."""
+    added = [m for m in manifest['added_mods'] if m['projectID'] != solo_quests.PROJECT]
+    if len(added) >= MAX_ADDED_MODS:
+        raise ValueError('補丁的加裝模組已達上限，無法再加入 Solo Quests。')
+    with zipfile.ZipFile(source) as original, zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as out:
+        for item in original.infolist():
+            if item.filename != 'manifest.json':
+                out.writestr(item, original.read(item))
+        # Preserve the serialized manifest; read_patch normalizes some fields for runtime use.
+        wire = json.loads(original.read('manifest.json'))
+        wire['added_mods'] = [*added, mod]
+        wire['left_out_mods'] = [item for item in wire.get('left_out_mods', [])
+                                 if item.get('fileName') != mod['fileName']]
+        out.writestr('manifest.json', json.dumps(wire, ensure_ascii=False, indent=2))
+
+
 def publish_full(args):
     instance = args.patch.resolve()
     folder = args.drive_folder
@@ -209,6 +238,7 @@ def publish_full(args):
         sys.exit('請用 --drive-folder 指定 Google 雲端硬碟電腦版裡要放整合包的資料夾。')
     add_sweeper(args, instance)
     add_backup_mod(args, instance)
+    solo = publication_solo(args, instance)
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         out = Path(tmp)/'pack.zip'
         shown = [0.0]
@@ -216,7 +246,7 @@ def publish_full(args):
             if time.monotonic()-shown[0] >= 10 or value >= 100:
                 shown[0] = time.monotonic()
                 print(f'{value:3d}% {title} {detail}', flush=True)
-        manifest = full_pack.build(instance, out, notify=notify)
+        manifest = full_pack.build(instance, out, notify=notify, solo=solo)
         size = out.stat().st_size
         digest = full_pack.file_hash(out)
         linked = sum(e['source'] == 'curseforge' for e in manifest['files'])
@@ -241,6 +271,8 @@ def publish_full(args):
     entry['minimumAppVersion']='0.42.1'
     if manifest.get('backup_mod'):
         entry['addedMods'] = [dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])]
+    if solo:
+        entry.setdefault('addedMods', []).append(dict(name=solo['name'], size=solo['size']))
     # Players download anonymously; prove that works (and that the bytes are the same) before listing it.
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         for attempt in range(20):
@@ -275,6 +307,8 @@ def main():
     parser.add_argument('--no-server', action='store_true', help='拿掉卡片上的伺服器')
     parser.add_argument('--no-sweeper', action='store_true', help='不檢查也不加裝 Sweeper Maid（清理掉落物的模組）')
     parser.add_argument('--no-backup-mod', action='store_true', help='不檢查也不加裝 FTB Backups 2（世界自動備份）')
+    parser.add_argument('--no-solo-quests', action='store_true', help='這次上架不另外加裝 Solo Quests')
+    parser.add_argument('--source-instance', type=Path, help='使用現有補丁 ZIP 上架時，供核對版本及 Solo Quests 前置模組的同版本整合包資料夾')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     if args.full and args.card_only:
@@ -286,6 +320,9 @@ def main():
     if args.card_only:
         refresh_patch_card(args)
         return
+    instance = args.patch.resolve() if args.patch.is_dir() else args.source_instance
+    if not instance and not args.no_solo_quests:
+        sys.exit('使用補丁 ZIP 上架時，請用 --source-instance 指定同版本的整合包資料夾。')
     if args.patch.is_dir():
         if not args.home:sys.exit('給整合包資料夾時，請用 --home 指定 MCTranslatorData 資料夾（含套用紀錄）。')
         add_sweeper(args, args.patch.resolve())
@@ -294,6 +331,11 @@ def main():
         for s in exported['skipped']:print('略過：', s['file'], s['reason'])
         args.patch = Path(exported['path'])
         print('已匯出：', args.patch)
+    with tempfile.TemporaryDirectory(dir=args.work) as tmp:
+        publish_patch(args, instance, Path(tmp))
+
+
+def publish_patch(args, instance, work):
     z, manifest = read_patch(args.patch)
     z.close()
     if manifest.get('publish_checks')!=1:
@@ -304,6 +346,16 @@ def main():
     for left in manifest.get('left_out_mods') or []:print('不分享的模組：', left.get('name'), left.get('reason'))
     if not pack.get('projectID') or not pack.get('fileID'):
         sys.exit('這個補丁不是從 CurseForge 整合包匯出的，無法對應版本；整個整合包分享請改用 --full。')
+    if instance:
+        identity = instance_identity(instance)
+        if any(identity.get(key) != pack[key] for key in ('projectID', 'fileID')):
+            sys.exit('整合包資料夾與補丁的檔案版本不同，沒有上架。')
+        if solo := publication_solo(args, instance, include_existing=True):
+            dest = work/'solo-quests.zip'
+            with_solo_quests(args.patch, dest, manifest, solo)
+            args.patch = dest
+            z, manifest = read_patch(dest)
+            z.close()
     data = args.patch.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     relative = f"packs/{pack['projectID']}/{pack['fileID']}-{digest[:8]}.zip"
@@ -313,6 +365,7 @@ def main():
                  gameVersion=pack.get('gameVersion', ''),
                  translator=args.translator, updated=date.today().isoformat(), notes=args.notes,
                  recommendedRam=args.ram or int(pack.get('recommendedRam') or 0),
+                 mods=(mod_count(instance) if instance else 0) or len(manifest.get('required_mods') or []),
                  sharingStatus=manifest.get('sharing_status','unknown'),minimumAppVersion=manifest.get('minimum_app_version',''),
                  # Sweeper Maid is installed by the receiver's app with the added mods, so the card lists it with them.
                  addedMods=[dict(name=m['name'], size=m['size']) for m in manifest['added_mods']]
