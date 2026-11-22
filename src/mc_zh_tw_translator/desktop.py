@@ -661,7 +661,14 @@ class MainWindow(QMainWindow):
         # Only worth its space once the list no longer fits on one screen.
         self.catalog_search=QLineEdit();self.catalog_search.setPlaceholderText('搜尋整合包名稱或 Minecraft 版本')
         self.catalog_search.setClearButtonEnabled(True);self.catalog_search.textChanged.connect(self.filter_catalog)
-        self.catalog_search.hide();box.addWidget(self.catalog_search)
+        self.catalog_search.hide()
+        self.catalog_order=QComboBox()
+        self.catalog_order.addItems(['最近更新','整合包名稱'])
+        self.catalog_order.setAccessibleName('整合包排序')
+        self.catalog_order.currentIndexChanged.connect(self.sort_catalog_cards)
+        self.catalog_order.hide()
+        controls=QHBoxLayout();controls.addWidget(self.catalog_search,1)
+        controls.addWidget(self.catalog_order,0,Qt.AlignRight);box.addLayout(controls)
         self.catalog_box=QVBoxLayout();self.catalog_box.setSpacing(12);box.addLayout(self.catalog_box)
         box.addStretch()
         self.catalog=None;self.catalog_packs=None;self.pack_buttons=[];self.catalog_cards=[];self.memory_total=None
@@ -694,10 +701,18 @@ class MainWindow(QMainWindow):
     def filter_catalog(self,text=None):
         words=(self.catalog_search.text() if text is None else text).casefold().split()
         shown=0
-        for f,haystack in self.catalog_cards:
+        for f,haystack,_ in self.catalog_cards:
             hit=all(w in haystack for w in words);f.setVisible(hit);shown+=hit
         if self.catalog_cards and not shown:self.patch_status.setText('沒有符合「'+' '.join(words)+'」的整合包。')
         elif self.patch_status.text().startswith('沒有符合'):self.patch_status.setText('')
+
+    def sort_catalog_cards(self):
+        if self.catalog_order.currentIndex()==1:
+            ordered=sorted(self.catalog_cards,key=lambda entry:entry[2]['name'].casefold())
+        else:
+            ordered=sorted(self.catalog_cards,key=lambda entry:entry[2]['updated'] or '',reverse=True)
+        for index,(widget,_,_) in enumerate(ordered):
+            self.catalog_box.insertWidget(index,widget)
 
     def memory_advice(self,pack):
         if self.memory_total is None:self.memory_total=jobs.total_memory_mb()
@@ -721,6 +736,7 @@ class MainWindow(QMainWindow):
             if item.widget():item.widget().deleteLater()
 
     def catalog_message(self,title,text):
+        self.catalog_order.hide()
         self.clear_catalog();f,b=card();b.setContentsMargins(24,28,24,28)
         t=label(title,'section');t.setAlignment(Qt.AlignCenter);b.addWidget(t)
         if text:
@@ -819,7 +835,9 @@ class MainWindow(QMainWindow):
             progress=label('','sub');progress.setWordWrap(True);progress.hide();b.addWidget(progress)
             self.card_progress[self.catalog_key(pack)]=progress;self.card_stop[self.catalog_key(pack)]=stop
             self.catalog_box.addWidget(f)
-            self.catalog_cards.append((f,' '.join((pack['name'],pack['version'] or '',pack['gameVersion'] or '',pack['notes'])).casefold()))
+            self.catalog_cards.append((f,' '.join((pack['name'],pack['version'] or '',pack['gameVersion'] or '',pack['notes'])).casefold(),pack))
+        self.catalog_order.setVisible(len(self.catalog)>1)
+        self.sort_catalog_cards()
         self.catalog_search.setVisible(len(self.catalog)>=self.CATALOG_SEARCH_FROM)
         if self.catalog_search.isVisible():self.filter_catalog()
         elif self.catalog_search.text():self.catalog_search.clear()
@@ -877,9 +895,11 @@ class MainWindow(QMainWindow):
         add=self.ask_install('安裝整合包與翻譯',f"將安裝「{pack['name']}」整合包版本 {pack['version'] or ''}，並裝上繁體中文翻譯。\n\n"
                              '1. CurseForge 會跳出來，請在它的視窗確認安裝（整合包由 CurseForge 從官方下載）。\n'
                              '2. 這裡會等整合包裝好，不用回來按任何按鈕。\n'
-                             '3. 裝好後自動裝上翻譯，並把遊戲語言設成繁體中文。\n\n'
+                             '3. 裝好後自動裝上翻譯，並把遊戲語言設成繁體中文。\n'
+                             '4. 程式會提示關閉 CurseForge，再依這台電腦的記憶體自動設定新整合包。\n\n'
                              '下載整合包可能需要幾分鐘到幾十分鐘，請不要關閉本程式。',pack)
         if add is None:return
+        previous={Path(entry['path']).resolve() for entry in jobs.curseforge_instances()}
         if not QDesktopServices.openUrl(QUrl(patches.curseforge_install_url(pack))):
             QMessageBox.warning(self,'找不到 CurseForge','這台電腦沒有安裝 CurseForge，或它沒有接手安裝。請先安裝 CurseForge 並開啟一次，再回來按這個按鈕。');return
         def operation(w):
@@ -888,8 +908,15 @@ class MainWindow(QMainWindow):
             instance=patches.wait_for_modpack(pack,manifest,w.progress.emit,lambda:w.cancelled)
             result=patches.apply_patch(instance,path,self.home,w.progress.emit,set_language=True,add_mods=add,cancelled=lambda:w.cancelled,
                                        server=pack.get('server'))
-            return dict(result,installed_modpack=True,notes=pack.get('notes',''))
+            memory='已沿用原有整合包設定檔的記憶體配置。'
+            if instance.resolve() not in previous:
+                try:
+                    memory=full_pack.configure_new_profile_memory(instance,pack,self.home,w.progress.emit,lambda:w.cancelled)
+                except (InterruptedError,OSError,RuntimeError,ValueError,TypeError,KeyError) as exc:
+                    memory='翻譯已安裝，記憶體設定未完成。'+jobs.explain_error(exc)
+            return dict(result,installed_modpack=True,memory_line=memory,notes=pack.get('notes',''))
         self.active_card=self.catalog_key(pack)
+        self.curseforge_alerted=False
         self.run_worker('patch_install',operation,self.patch_applied)
 
     def install_full_pack(self,pack):
@@ -1020,6 +1047,7 @@ class MainWindow(QMainWindow):
         if result.get('activation_error'):lines.append(result['activation_error'])
         if result.get('readback_mismatch') or result.get('file_mismatch'):lines.append('部分內容寫入後核對未通過，請保留這次報告以便查明。')
         if result.get('installed_modpack'):lines.insert(0,'整合包已由 CurseForge 裝好：'+Path(result['instance']).name)
+        if result.get('memory_line'):lines.append(result['memory_line'])
         mods=result.get('mods') or {}
         if mods.get('installed'):lines.append(f"已加入翻譯者加裝的 {len(mods['installed'])} 個模組："+'、'.join(mods['installed'][:8])+('…' if len(mods['installed'])>8 else ''))
         if mods.get('skipped'):
@@ -1580,7 +1608,7 @@ class MainWindow(QMainWindow):
                 card.setText(f'{title}：{detail}（{value}%）' if detail else f'{title}（{value}%）');card.show()
                 stop=self.card_stop.get(self.active_card)
                 if stop is not None:stop.setVisible(True);stop.setEnabled(self.patch_cancel.isEnabled())
-            if self.mode=='patch_full' and title=='請關閉 CurseForge' and not self.curseforge_alerted:
+            if self.mode in ('patch_full','patch_install') and title=='請關閉 CurseForge' and not self.curseforge_alerted:
                 # The player is often looking at CurseForge itself; a Windows notice reaches them there.
                 self.curseforge_alerted=True
                 self.notify_finished('請關閉 CurseForge','整合包已下載並核對好，關閉 CurseForge（含右下角的小圖示）後會自動完成安裝。')

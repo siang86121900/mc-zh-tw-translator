@@ -267,11 +267,16 @@ class AddedModTests(unittest.TestCase):
         self.assertIn('Profile Options',told.call_args[0][2])
         # Search appears only once the list is long, and filters by name.
         self.assertTrue(window.catalog_search.isHidden())
-        many=[dict(entry,name=f'Pack {i}',projectID=1000+i,fileID=1) for i in range(window.CATALOG_SEARCH_FROM)]
+        many=[dict(entry,name=f'Pack {i}',projectID=1000+i,fileID=1,updated=f'2026-09-{i+1:02d}')
+              for i in range(window.CATALOG_SEARCH_FROM)]
         with patch('mc_zh_tw_translator.desktop_jobs.curseforge_instances',return_value=[]):window.catalog_loaded(many)
         self.assertFalse(window.catalog_search.isHidden())
+        cards={pack['name']:card for card,_,pack in window.catalog_cards}
+        self.assertIs(window.catalog_box.itemAt(0).widget(),cards[many[-1]['name']])
         window.catalog_search.setText('pack 3')
-        self.assertEqual([f.isHidden() for f,_ in window.catalog_cards].count(False),1)
+        window.catalog_order.setCurrentIndex(1)
+        self.assertIs(window.catalog_box.itemAt(0).widget(),cards['Pack 0'])
+        self.assertEqual([card for card in cards.values() if not card.isHidden()],[cards['Pack 3']])
         window.catalog_search.setText('nothing here')
         self.assertIn('沒有符合',window.patch_status.text())
         window.catalog_search.clear();self.assertEqual(window.patch_status.text(),'')

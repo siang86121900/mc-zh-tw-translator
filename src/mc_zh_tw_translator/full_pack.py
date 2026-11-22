@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
 import uuid
 import zipfile
@@ -31,7 +32,7 @@ from . import desktop_jobs as jobs
 from . import patches
 from . import covers, imblocker, backup_mod
 from . import server_list
-from .deployment import contained, file_hash, when_free
+from .deployment import atomic_copy, contained, file_hash, when_free
 from .updater import VERSION
 
 FORMAT = 'mctranslator-fullpack-1'
@@ -501,7 +502,9 @@ def new_record(manifest, folder: Path) -> dict:
 
 def installation_memory(manifest):
     """Choose a new profile's heap limit from this player's machine, never the owner's RAM setting."""
-    mods=sum(e['path'].startswith('mods/') and e['path'].lower().endswith('.jar') for e in manifest['files'])
+    mods=manifest.get('mods')
+    if mods is None:
+        mods=sum(e['path'].startswith('mods/') and e['path'].lower().endswith('.jar') for e in manifest['files'])
     try:recommended=int(manifest.get('recommendedRam') or 0)
     except (TypeError,ValueError):recommended=0
     if not 512<=recommended<=65536:recommended=0
@@ -526,6 +529,75 @@ def installation_memory(manifest):
         line+='低於整合包建議，仍可嘗試啟動；可能較卡或啟動失敗，請先關閉其他程式。'
     if capacity<512:line+='目前可用記憶體很少，已設定為 512 MB；請先關閉其他程式再試。'
     return dict(allocated=allocated,recommended=recommended,estimated=estimated,total=total,available=available,line=line)
+
+
+def configure_new_profile_memory(folder, pack, home, notify, cancelled, *, running=None,
+                                 pause=time.sleep, clock=time.monotonic, wait_limit=300):
+    """Set RAM after CurseForge creates a profile for the combined install."""
+    running=running or curseforge_running
+    profile=folder/'minecraftinstance.json'
+    started=clock()
+    while running():
+        if cancelled():raise InterruptedError('已停止設定記憶體。')
+        if clock()-started>=wait_limit:
+            return 'CurseForge 仍開著，已保留目前的記憶體設定。'
+        notify(98,'請關閉 CurseForge','關閉視窗與右下角的小圖示後，會自動設定新整合包的記憶體。')
+        pause(3)
+    if cancelled():raise InterruptedError('已停止設定記憶體。')
+    jobs.ensure_game_closed(folder)
+    raw=profile.read_bytes()
+    record=json.loads(raw.decode('utf-8-sig'))
+    if not isinstance(record,dict) or any(str(record.get(k))!=str(pack[k]) for k in ('projectID','fileID')):
+        raise ValueError('新設定檔的整合包版本不符。')
+    memory=installation_memory(dict(recommendedRam=pack.get('recommendedRam') or patches.instance_identity(folder)['recommendedRam'],
+                                    mods=pack.get('mods') or jobs.mod_count(folder)))
+    if not memory['allocated']:return memory['line']
+
+    updates=dict(isMemoryOverride=True,allocatedMemory=memory['allocated'])
+    listing=curseforge_list()
+    changes=[]
+    if listing.is_file():
+        listing_raw=listing.read_bytes()
+        entries=json.loads(listing_raw.decode('utf-8-sig'))
+        if not isinstance(entries,list):raise ValueError('CurseForge 的整合包清單格式看不懂。')
+        matches=[entry for entry in entries if isinstance(entry,dict) and entry.get('installPath')
+                 and Path(entry['installPath']).resolve()==folder.resolve()]
+        if matches:
+            if (len(matches)!=1 or not record.get('guid') or matches[0].get('guid')!=record['guid']
+                    or any(str(matches[0].get(k))!=str(pack[k]) for k in ('projectID','fileID'))):
+                raise ValueError('CurseForge 清單裡的設定檔和這次安裝的不同。')
+            if matches[0].get('isMemoryOverride'):
+                return '這個設定檔已有自訂記憶體，已保留原設定。'
+            matches[0].update(updates)
+            changes.append((listing,listing_raw,entries))
+    if record.get('isMemoryOverride'):return '這個設定檔已有自訂記憶體，已保留原設定。'
+    record.update(updates)
+    changes.insert(0,(profile,raw,record))
+
+    backup=home/'output'/folder.name/'CurseForge紀錄備份'/('memory-'+uuid.uuid4().hex)
+    backup.mkdir(parents=True)
+    with tempfile.TemporaryDirectory(dir=backup) as temp:
+        staged=[]
+        for path,before,value in changes:
+            original=backup/path.name
+            original.write_bytes(before)
+            replacement=Path(temp)/path.name
+            replacement.write_text(json.dumps(value,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
+            staged.append((path,original,replacement,value))
+        written=[]
+        try:
+            for path,original,replacement,value in staged:
+                if cancelled():raise InterruptedError('已停止設定記憶體。')
+                if running() or file_hash(path)!=file_hash(original):
+                    raise ValueError('CurseForge 已開啟或設定檔有變動。')
+                atomic_copy(replacement,path)
+                written.append((path,original,replacement))
+                if json.loads(path.read_bytes())!=value:raise ValueError('記憶體設定讀回不符。')
+        except Exception:
+            for path,original,replacement in reversed(written):
+                if file_hash(path)==file_hash(replacement):atomic_copy(original,path)
+            raise
+    return memory['line']
 
 
 def register(listing: Path, folder: Path, record: dict, backup_dir: Path):

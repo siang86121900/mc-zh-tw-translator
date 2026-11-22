@@ -294,6 +294,29 @@ class FullPackTests(unittest.TestCase):
         self.assertEqual(memory['allocated'],8192);self.assertTrue(memory['estimated'])
         self.assertIn('不是作者建議',memory['line'])
 
+    def test_curseforge_combined_install_sets_ram_on_new_default_profile(self):
+        folder=self.root/'Society Sunlit Valley'
+        folder.mkdir()
+        profile=folder/'minecraftinstance.json'
+        listing=self.root/'MinecraftGameInstance.json'
+        record=dict(projectID=123,fileID=456,guid='new',installPath=str(folder),
+                    isMemoryOverride=False,allocatedMemory=4096)
+        profile.write_text(json.dumps(record),encoding='utf-8')
+        other=dict(guid='old',allocatedMemory=8192)
+        listing.write_text(json.dumps([other,record]),encoding='utf-8')
+        pack=dict(projectID=123,fileID=456,mods=351)
+        ram=Mock(total=32*1024**3,available=20*1024**3)
+        with patch.object(full_pack,'curseforge_list',return_value=listing), \
+             patch.object(full_pack.jobs,'ensure_game_closed'),patch('psutil.virtual_memory',return_value=ram):
+            line=full_pack.configure_new_profile_memory(folder,pack,self.home,Mock(),lambda:False,running=lambda:False)
+            self.assertIn('10 GB',line)
+            self.assertEqual(json.loads(profile.read_bytes())['allocatedMemory'],10240)
+            entries=json.loads(listing.read_bytes())
+            self.assertEqual(entries[0],other)
+            self.assertEqual(entries[1],json.loads(profile.read_bytes()))
+            self.assertIn('已保留原設定',full_pack.configure_new_profile_memory(
+                folder,pack,self.home,Mock(),lambda:False,running=lambda:False))
+
     def test_memory_read_failure_preserves_launcher_default_and_does_not_prevent_install(self):
         with patch('psutil.virtual_memory',side_effect=OSError('read failed')):
             result=self.install()
