@@ -531,9 +531,9 @@ def installation_memory(manifest):
     return dict(allocated=allocated,recommended=recommended,estimated=estimated,total=total,available=available,line=line)
 
 
-def configure_new_profile_memory(folder, pack, home, notify, cancelled, *, running=None,
+def configure_profile_memory(folder, pack, home, notify, cancelled, *, replace_custom=False, running=None,
                                  pause=time.sleep, clock=time.monotonic, wait_limit=300):
-    """Set RAM after CurseForge creates a profile for the combined install."""
+    """Set a version-matched CurseForge profile's RAM after its launcher closes."""
     running=running or curseforge_running
     profile=folder/'minecraftinstance.json'
     started=clock()
@@ -541,14 +541,14 @@ def configure_new_profile_memory(folder, pack, home, notify, cancelled, *, runni
         if cancelled():raise InterruptedError('已停止設定記憶體。')
         if clock()-started>=wait_limit:
             return 'CurseForge 仍開著，已保留目前的記憶體設定。'
-        notify(98,'請關閉 CurseForge','關閉視窗與右下角的小圖示後，會自動設定新整合包的記憶體。')
+        notify(98,'請關閉 CurseForge','關閉視窗與右下角的小圖示後，會自動設定這個整合包的記憶體。')
         pause(3)
     if cancelled():raise InterruptedError('已停止設定記憶體。')
     jobs.ensure_game_closed(folder)
     raw=profile.read_bytes()
     record=json.loads(raw.decode('utf-8-sig'))
     if not isinstance(record,dict) or any(str(record.get(k))!=str(pack[k]) for k in ('projectID','fileID')):
-        raise ValueError('新設定檔的整合包版本不符。')
+        raise ValueError('設定檔的整合包版本不符。')
     memory=installation_memory(dict(recommendedRam=pack.get('recommendedRam') or patches.instance_identity(folder)['recommendedRam'],
                                     mods=pack.get('mods') or jobs.mod_count(folder)))
     if not memory['allocated']:return memory['line']
@@ -566,11 +566,11 @@ def configure_new_profile_memory(folder, pack, home, notify, cancelled, *, runni
             if (len(matches)!=1 or not record.get('guid') or matches[0].get('guid')!=record['guid']
                     or any(str(matches[0].get(k))!=str(pack[k]) for k in ('projectID','fileID'))):
                 raise ValueError('CurseForge 清單裡的設定檔和這次安裝的不同。')
-            if matches[0].get('isMemoryOverride'):
+            if matches[0].get('isMemoryOverride') and not replace_custom:
                 return '這個設定檔已有自訂記憶體，已保留原設定。'
             matches[0].update(updates)
             changes.append((listing,listing_raw,entries))
-    if record.get('isMemoryOverride'):return '這個設定檔已有自訂記憶體，已保留原設定。'
+    if record.get('isMemoryOverride') and not replace_custom:return '這個設定檔已有自訂記憶體，已保留原設定。'
     record.update(updates)
     changes.insert(0,(profile,raw,record))
 

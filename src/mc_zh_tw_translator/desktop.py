@@ -854,21 +854,30 @@ class MainWindow(QMainWindow):
         name,ok=QInputDialog.getItem(self,title,'要安裝到哪個整合包？',[n for n,_ in options],0,False)
         return dict(options).get(name) if ok else None
 
-    def ask_install(self,title,text,pack):
+    def ask_install(self,title,text,pack,memory_choice=None):
         """Ask before installing. Returns None (do nothing), True (also add the translator's mods) or False (there are none)."""
         mods=pack.get('addedMods') or []
         if pack.get('server'):text+='\n\n'+server_line(pack['server'])+'已經有同一個位址時不重複加入，之後可在「備份與還原」移除。'
-        if not mods:return False if QMessageBox.question(self,title,text+'\n\n是否繼續？')==QMessageBox.Yes else None
-        names='、'.join(m['name'] for m in mods[:12])+('…' if len(mods)>12 else '')
-        # The owner chose one confirmation for everything: agreeing to install also adds the translator's mods.
-        text+=(f"\n\n翻譯者另外加裝了 {len(mods)} 個模組（共 {sum(m['size'] for m in mods)/1024/1024:.1f} MB），會一起加入：{names}\n"
-               '本程式從 CurseForge 的官方檔案伺服器下載，確認和翻譯者用的是同一個檔案才放進模組資料夾；之後可在「備份與還原」移除。')
-        return True if QMessageBox.question(self,title,text+'\n\n是否繼續？')==QMessageBox.Yes else None
+        if mods:
+            names='、'.join(m['name'] for m in mods[:12])+('…' if len(mods)>12 else '')
+            # The owner chose one confirmation for everything: agreeing to install also adds the translator's mods.
+            text+=(f"\n\n翻譯者另外加裝了 {len(mods)} 個模組（共 {sum(m['size'] for m in mods)/1024/1024:.1f} MB），會一起加入：{names}\n"
+                   '本程式從 CurseForge 的官方檔案伺服器下載，確認和翻譯者用的是同一個檔案才放進模組資料夾；之後可在「備份與還原」移除。')
+        if memory_choice is None:
+            response=QMessageBox.question(self,title,text+'\n\n是否繼續？')
+        else:
+            text+='\n\n勾選記憶體選項後，會在翻譯裝好時提示關閉 CurseForge，再更新這份整合包的設定。'
+            dialog=QMessageBox(QMessageBox.Question,title,text+'\n\n是否繼續？',QMessageBox.Yes|QMessageBox.No,self)
+            dialog.setDefaultButton(QMessageBox.No)
+            dialog.setCheckBox(memory_choice)
+            response=dialog.exec()
+            dialog.deleteLater()
+        return bool(mods) if response==QMessageBox.Yes else None
 
-    def confirm_patch(self,target,pack,other_version):
+    def confirm_patch(self,target,pack,other_version,memory_choice=None):
         warn='\n\n整合包版本和翻譯時不同：只會翻譯檔案完全相同的模組，其餘略過（不會覆蓋）。' if other_version else ''
         language='，並把遊戲語言設為繁體中文' if self.set_language.isChecked() else ''
-        return self.ask_install('安裝翻譯',f"將把「{pack['name']}」的翻譯安裝到{language}：\n{target}\n\n會先備份要修改的原檔，之後可在「備份與還原」復原。請先關閉這個整合包的遊戲。{warn}\n\n{patches.shared_text.SAVE_NOTE}",pack)
+        return self.ask_install('安裝翻譯',f"將把「{pack['name']}」的翻譯安裝到{language}：\n{target}\n\n會先備份要修改的原檔，之後可在「備份與還原」復原。請先關閉這個整合包的遊戲。{warn}\n\n{patches.shared_text.SAVE_NOTE}",pack,memory_choice)
 
     def apply_catalog_patch(self,pack):
         if pack['projectID'] and not any(x['projectID']==pack['projectID'] for x in jobs.curseforge_instances()):
@@ -878,16 +887,34 @@ class MainWindow(QMainWindow):
         target=self.choose_patch_target(pack['projectID'],pack['fileID'],'安裝翻譯')
         if not target:return
         identity=patches.instance_identity(Path(target))
-        add=self.confirm_patch(target,pack,identity['fileID']!=pack['fileID'])
+        other_version=identity['fileID']!=pack['fileID']
+        memory_choice=None
+        has_custom_memory=False
+        if not other_version and identity['projectID']==pack['projectID']:
+            memory_choice=QCheckBox('同時依建議調整這個整合包的記憶體')
+            has_custom_memory=bool(patches.curseforge_record(target).get('isMemoryOverride'))
+            memory_choice.setChecked(not has_custom_memory)
+        add=self.confirm_patch(target,pack,other_version,memory_choice)
         if add is None:return
+        configure_memory=memory_choice is not None and memory_choice.isChecked()
         language=self.set_language.isChecked()
         def operation(w):
             path=patches.download_patch(pack,self.home,lambda v:w.progress.emit(v,'下載翻譯',pack['name']))
-            return dict(patches.apply_patch(Path(target),path,self.home,w.progress.emit,set_language=language,add_mods=add,cancelled=lambda:w.cancelled,
-                                            server=pack.get('server')),
-                        notes=pack.get('notes',''))
+            result=patches.apply_patch(Path(target),path,self.home,w.progress.emit,set_language=language,add_mods=add,cancelled=lambda:w.cancelled,
+                                       server=pack.get('server'))
+            if configure_memory:
+                result['memory_line']=self.patch_memory_result(Path(target),pack,w,replace_custom=has_custom_memory)
+            return dict(result,notes=pack.get('notes',''))
         self.active_card=self.catalog_key(pack)
+        self.curseforge_alerted=False
         self.run_worker('patch_apply',operation,self.patch_applied)
+
+    def patch_memory_result(self,instance,pack,worker,*,replace_custom=False):
+        try:
+            return full_pack.configure_profile_memory(instance,pack,self.home,worker.progress.emit,
+                                                       lambda:worker.cancelled,replace_custom=replace_custom)
+        except (InterruptedError,OSError,RuntimeError,ValueError,TypeError,KeyError) as exc:
+            return '翻譯已安裝，記憶體設定未完成。'+jobs.explain_error(exc)
 
     def install_pack_and_translation(self,pack):
         """One button for someone who has nothing yet: CurseForge installs the modpack, then the translation goes on."""
@@ -910,10 +937,7 @@ class MainWindow(QMainWindow):
                                        server=pack.get('server'))
             memory='已沿用原有整合包設定檔的記憶體配置。'
             if instance.resolve() not in previous:
-                try:
-                    memory=full_pack.configure_new_profile_memory(instance,pack,self.home,w.progress.emit,lambda:w.cancelled)
-                except (InterruptedError,OSError,RuntimeError,ValueError,TypeError,KeyError) as exc:
-                    memory='翻譯已安裝，記憶體設定未完成。'+jobs.explain_error(exc)
+                memory=self.patch_memory_result(instance,pack,w)
             return dict(result,installed_modpack=True,memory_line=memory,notes=pack.get('notes',''))
         self.active_card=self.catalog_key(pack)
         self.curseforge_alerted=False
@@ -1608,7 +1632,7 @@ class MainWindow(QMainWindow):
                 card.setText(f'{title}：{detail}（{value}%）' if detail else f'{title}（{value}%）');card.show()
                 stop=self.card_stop.get(self.active_card)
                 if stop is not None:stop.setVisible(True);stop.setEnabled(self.patch_cancel.isEnabled())
-            if self.mode in ('patch_full','patch_install') and title=='請關閉 CurseForge' and not self.curseforge_alerted:
+            if self.mode in ('patch_full','patch_install','patch_apply') and title=='請關閉 CurseForge' and not self.curseforge_alerted:
                 # The player is often looking at CurseForge itself; a Windows notice reaches them there.
                 self.curseforge_alerted=True
                 self.notify_finished('請關閉 CurseForge','整合包已下載並核對好，關閉 CurseForge（含右下角的小圖示）後會自動完成安裝。')

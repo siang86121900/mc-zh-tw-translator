@@ -8,7 +8,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from mc_zh_tw_translator import patches
 from mc_zh_tw_translator import desktop_jobs as jobs
@@ -254,6 +254,17 @@ class AddedModTests(unittest.TestCase):
                     window.apply_catalog_patch(window.catalog[0])
                 self.assertEqual(ask.call_args[0][2]['addedMods'][0]['name'],'IMBlocker')
                 self.assertEqual(run.called,expected is not None)
+        with patch.object(jobs,'curseforge_instances',return_value=found), \
+             patch.object(window,'ask_install',return_value=True) as ask, \
+             patch.object(window,'run_worker') as run:
+            window.apply_catalog_patch(window.catalog[0])
+        self.assertTrue(ask.call_args.args[3].isChecked())
+        with patch.object(patches,'download_patch',return_value=self.patch), \
+             patch.object(patches,'apply_patch',return_value={}), \
+             patch('mc_zh_tw_translator.full_pack.configure_profile_memory',return_value='已設定為 10 GB。') as configure:
+            result=run.call_args.args[1](Mock(cancelled=False))
+        self.assertEqual(result['memory_line'],'已設定為 10 GB。')
+        self.assertEqual(configure.call_args.args[0],self.friend)
         with patch.object(QMessageBox,'question',return_value=QMessageBox.No):
             self.assertIsNone(window.ask_install('安裝翻譯','說明',window.catalog[0]))  # closing the dialog is not a yes
         # Memory: the author's figure on the card, the CurseForge steps one button away.

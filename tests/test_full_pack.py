@@ -308,14 +308,19 @@ class FullPackTests(unittest.TestCase):
         ram=Mock(total=32*1024**3,available=20*1024**3)
         with patch.object(full_pack,'curseforge_list',return_value=listing), \
              patch.object(full_pack.jobs,'ensure_game_closed'),patch('psutil.virtual_memory',return_value=ram):
-            line=full_pack.configure_new_profile_memory(folder,pack,self.home,Mock(),lambda:False,running=lambda:False)
+            line=full_pack.configure_profile_memory(folder,pack,self.home,Mock(),lambda:False,running=lambda:False)
             self.assertIn('10 GB',line)
             self.assertEqual(json.loads(profile.read_bytes())['allocatedMemory'],10240)
             entries=json.loads(listing.read_bytes())
             self.assertEqual(entries[0],other)
             self.assertEqual(entries[1],json.loads(profile.read_bytes()))
-            self.assertIn('已保留原設定',full_pack.configure_new_profile_memory(
+            self.assertIn('已保留原設定',full_pack.configure_profile_memory(
                 folder,pack,self.home,Mock(),lambda:False,running=lambda:False))
+            self.assertIn('8 GB',full_pack.configure_profile_memory(
+                folder,dict(pack,recommendedRam=8192),self.home,Mock(),lambda:False,
+                replace_custom=True,running=lambda:False))
+            self.assertEqual(json.loads(profile.read_bytes())['allocatedMemory'],8192)
+            self.assertEqual(json.loads(listing.read_bytes())[1],json.loads(profile.read_bytes()))
 
     def test_memory_read_failure_preserves_launcher_default_and_does_not_prevent_install(self):
         with patch('psutil.virtual_memory',side_effect=OSError('read failed')):
