@@ -575,4 +575,41 @@ class ScanCacheTests(unittest.TestCase):
         self.assertEqual(jobs.SCAN_CACHE_VERSION,recorded['version'],'scan_rules.json 記錄的版本和 SCAN_CACHE_VERSION 不同')
 
 
+class ButtonNameTests(unittest.TestCase):
+    """AGENTS.md: messages never name a button that is not on screen.
+
+    Every 「按「…」」 in the program must be a label this program really draws (button(), addButton(),
+    setText() on the same line, or a catalog card's (label, primary, handler) entry), or a button of
+    another program listed in OTHER_PROGRAMS with where it is. A message shown on a card whose
+    buttons change (the install wait) names no label at all; see patches.wait_for_modpack.
+    """
+    OTHER_PROGRAMS={'重試':'CurseForge 安裝整合包失敗時自己的按鈕','開始':'CurseForge 啟動整合包的按鈕'}
+
+    @classmethod
+    def missing(cls,texts):
+        """「file：「label」」 for each named button no file draws and no other program has."""
+        import ast,io,re,tokenize
+        labels=set()
+        for text in texts.values():
+            lines=text.splitlines()
+            for token in tokenize.generate_tokens(io.StringIO(text).readline):
+                if token.start[0]>len(lines) or not re.search(r'\b(?:button|addButton|setText)\(',lines[token.start[0]-1]):continue
+                if token.type==tokenize.STRING and not re.match(r'(?i)[rbuf]*f',token.string):
+                    labels.add(str(ast.literal_eval(token.string)))
+                elif token.type==getattr(tokenize,'FSTRING_MIDDLE',-1):labels.add(token.string)
+            labels|=set(re.findall(r"\('([^']+)',(?:True|False),self\.",text))
+        return sorted({f'{name}：「{label}」' for name,text in texts.items() for label in re.findall('按「([^」]+)」',text)
+                       if label not in labels and label not in cls.OTHER_PROGRAMS
+                       and not any(x.startswith(label+'（') for x in labels)})
+
+    def test_every_named_button_exists(self):
+        source=Path(jobs.__file__).parent
+        self.assertEqual(self.missing({p.name:p.read_text(encoding='utf-8') for p in source.glob('*.py')}),[],
+                         '訊息提到程式畫面上沒有的按鈕；改成畫面上真的有的名稱，或是別的程式的按鈕就加進 OTHER_PROGRAMS 並寫出是哪裡的按鈕')
+
+    def test_the_check_catches_a_made_up_button(self):
+        ui="ok=button('安裝翻譯',go)\nbox.setText(f'{verb}（{n} 筆）' if n else '重試套用（不重新翻譯）')\n"
+        said="raise ValueError('請按「安裝翻譯」或「重試套用」或 CurseForge 的「重試」；再按「立即修復」')\n"
+        self.assertEqual(self.missing({'ui.py':ui,'job.py':said}),['job.py：「立即修復」'])
+
 if __name__=='__main__':unittest.main()

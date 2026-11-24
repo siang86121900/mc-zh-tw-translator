@@ -1,5 +1,6 @@
 """One button for a player who has nothing yet: CurseForge installs the modpack, then the translation goes on."""
 import os
+import re
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 import json
 import shutil
@@ -383,9 +384,28 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(result['language_set'])
         self.assertTrue((self.friend/jobs.RESOURCE_PACK_FILE).is_file())
 
+    def test_curseforge_install_that_stopped_is_said_plainly(self):
+        # CurseForge showed 「運行失敗」 at 33%: the folder is there but most mods never arrived. This used to
+        # end in 「提示框缺少圖片」, which blamed the translation and named a button the card did not show.
+        cases={'few files':lambda:None,'tooltip mod missing':lambda:(self.friend/'mods/real.jar').unlink()}
+        for name,trim in cases.items():
+            with self.subTest(name):
+                shutil.rmtree(self.friend,ignore_errors=True);shutil.copytree(self.original,self.friend)
+                (self.friend/'mods/other.jar').write_bytes(b'x')  # CurseForge got some mods, not this one
+                if name=='few files':shutil.rmtree(self.friend/'kubejs');(self.friend/'mods/real.jar').unlink()
+                config=self.friend/'config/tooltipoverhaul/custom_frames.json';config.parent.mkdir(parents=True,exist_ok=True)
+                config.write_text('{"texture":"tooltipoverhaul:textures/overlay/amber_frame.png"}',encoding='utf-8')
+                trim();self.clock=Clock()
+                with self.assertRaises(ValueError) as caught:self.wait(settle=60)
+                text=str(caught.exception)
+                self.assertIn('CurseForge 好像沒有把整合包裝完',text);self.assertIn('「重試」',text)
+                self.assertNotIn('提示框',text);self.assertFalse((self.friend/'options.txt').exists())
+                # The card may show 「安裝整合包與翻譯」 or 「安裝翻譯」 by then: only CurseForge's own 「重試」 is named.
+                self.assertEqual(re.findall('按「([^」]+)」',text),['重試']);self.assertIn('卡片上的安裝按鈕',text)
+
     def test_waiting_can_be_stopped_and_gives_up_after_a_limit(self):
         stop=[]
-        with self.assertRaisesRegex(InterruptedError,'按「安裝翻譯」'):
+        with self.assertRaisesRegex(InterruptedError,'卡片上的安裝按鈕'):
             patches.wait_for_modpack(self.pack,self.manifest,find=self.listed,cancelled=lambda:bool(stop) or stop.append(1),
                                      clock=self.clock,pause=self.clock.pause)
         with self.assertRaisesRegex(ValueError,'還沒有裝好'):self.wait(timeout=30)
