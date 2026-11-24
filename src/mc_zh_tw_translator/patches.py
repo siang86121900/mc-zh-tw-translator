@@ -172,8 +172,17 @@ def allowed_entry(name: str) -> bool:
     return lower.endswith(TEXT_SUFFIXES) and bool(TRANSLATED.search(lower))
 
 
-def curseforge_release_version(project_id: int, file_id: int, recorded_version: str) -> str:
-    return CURSEFORGE_VERSION_CORRECTIONS.get((project_id, file_id), recorded_version)
+def curseforge_release_version(project_id: int, file_id: int, recorded_version: str, file_name: str = '') -> str:
+    """The modpack version players see on CurseForge for this file.
+
+    Authors sometimes upload a new file without changing manifest.json (Society Sunlit Valley 4.2.1 still
+    said 4.2.0, and the owner took the card for 4.2.0): when CurseForge's own file name carries a version
+    and the manifest's is not in it, the file name's version is the one CurseForge installs."""
+    if (project_id, file_id) in CURSEFORGE_VERSION_CORRECTIONS:return CURSEFORGE_VERSION_CORRECTIONS[(project_id, file_id)]
+    stem = re.sub(r'(?i)\.zip$', '', str(file_name or ''))
+    found = re.findall(r'(?<![0-9A-Za-z])v?(\d+(?:\.\d+)+[A-Za-z]?)(?![0-9A-Za-z.])', stem)
+    if found and recorded_version and recorded_version not in stem:return found[-1]
+    return recorded_version or (found[-1] if found else '')
 
 
 def instance_identity(instance: Path) -> dict:
@@ -192,8 +201,19 @@ def instance_identity(instance: Path) -> dict:
         identity['gameVersion']=identity['gameVersion'] or (m.get('minecraft') or {}).get('version','')
         identity['recommendedRam']=ram_mb((m.get('minecraft') or {}).get('recommendedRam'))
     except (OSError,ValueError,TypeError,AttributeError):pass
-    identity['version']=curseforge_release_version(identity['projectID'],identity['fileID'],identity['version'])
+    identity['manifestVersion']=identity['version'];identity['curseforgeFile']=curseforge_file_name(instance,identity['fileID'])
+    identity['version']=curseforge_release_version(identity['projectID'],identity['fileID'],identity['version'],identity['curseforgeFile'])
     return identity
+
+
+def curseforge_file_name(instance: Path, file_id: int) -> str:
+    """CurseForge's file name of the installed modpack version (installedModpack), '' when not recorded."""
+    try:
+        x=json.loads((Path(instance)/'minecraftinstance.json').read_text(encoding='utf-8-sig'))
+        installed=(x.get('installedModpack') or {}).get('installedFile') or {}
+        if file_id and int(installed.get('id') or 0)==file_id:return str(installed.get('fileName') or '')[:200]
+    except (OSError,ValueError,TypeError,AttributeError):pass
+    return ''
 
 
 def ram_mb(value) -> int:
@@ -1155,7 +1175,9 @@ def full_entry(x):
                 totalSize=max(int(x.get('totalSize') or 0),0),mods=min(max(int(x.get('mods') or 0),0),5000),url='',
                 addedMods=[dict(name=str(m['name'])[:120],size=int(m['size'])) for m in (x.get('addedMods') or [])[:MAX_ADDED_MODS]
                            if isinstance(m,dict) and m.get('name') and 0<int(m.get('size') or 0)<=MAX_MOD_SIZE],
-                server=dict(zip(('name','address'),server_list.checked(x.get('server')))) if server_list.checked(x.get('server')) else None)
+                server=dict(zip(('name','address'),server_list.checked(x.get('server')))) if server_list.checked(x.get('server')) else None,
+                # A CurseForge modpack shared whole because CurseForge stopped serving these of its mods.
+                curseforgeUnavailable=[str(n)[:120] for n in (x.get('curseforgeUnavailable') or [])[:20] if isinstance(n,str) and n.strip()])
 
 
 def match_full(packs, installed=None):

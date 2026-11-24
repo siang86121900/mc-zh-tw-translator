@@ -794,7 +794,12 @@ class MainWindow(QMainWindow):
         for pack in self.catalog:
             if pack.get('kind')=='full':
                 size=f"{pack['size']/1024**3:.1f} GB"
-                notes['full']=(f'這個整合包不在 CurseForge 上。按「安裝」會從分享者的雲端下載整個整合包（約 {size}，已含繁體中文翻譯），'
+                missing=pack.get('curseforgeUnavailable') or []
+                where=('CurseForge 上的官方版目前裝不起來（'+'、'.join(missing[:3])+('等' if len(missing)>3 else '')+' 已無法從 CurseForge 下載），'
+                       '翻譯者改把整個整合包放在雲端。' if missing else '這個整合包不在 CurseForge 上。')
+                notes['full']=(where+f'按「安裝」會從分享者的雲端下載整個整合包（約 {size}，已含繁體中文翻譯），'
+                               '其餘模組照常從 CurseForge 官方下載，自動在 CurseForge 建立設定檔，裝好就能玩。' if missing else
+                               where+f'按「安裝」會從分享者的雲端下載整個整合包（約 {size}，已含繁體中文翻譯），'
                                '自動在 CurseForge 建立設定檔，裝好就能玩。')
                 notes['full_update']=('分享者更新了這個整合包。按「更新整合包」會直接更新你原本的設定檔，存檔和遊戲設定都保留；'
                                       '更新前會先備份，可在「備份與還原」復原。')

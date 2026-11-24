@@ -338,6 +338,14 @@ class DesktopUiTests(unittest.TestCase):
             texts=' '.join(w.text() for w in window.catalog_box.itemAt(0).widget().findChildren(QLabel))
             self.assertIn('不在 CurseForge 上',texts);self.assertIn('0.8 GB',texts)
             self.assertNotIn('未標示',texts)
+            # A CurseForge modpack shared whole (Society: Ember's Text API no longer served) says why instead.
+            society=patches.full_entry(dict(kind='full',name='Society Sunlit Valley',version='4.2.1',driveId='C'*33,sha256='c'*64,
+                                            size=800*1024**2,curseforgeUnavailable=["Ember's Text API",7,'']))
+            self.assertEqual(society['curseforgeUnavailable'],["Ember's Text API"])
+            window.catalog_loaded([society])
+            texts=' '.join(w.text() for w in window.catalog_box.itemAt(0).widget().findChildren(QLabel))
+            self.assertIn("CurseForge 上的官方版目前裝不起來（Ember's Text API 已無法從 CurseForge 下載）",texts)
+            self.assertNotIn('不在 CurseForge 上',texts)
             window.close()
 
 if __name__=='__main__':unittest.main()

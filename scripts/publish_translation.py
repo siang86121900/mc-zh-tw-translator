@@ -253,6 +253,9 @@ def publish_full(args):
         digest = full_pack.file_hash(out)
         linked = sum(e['source'] == 'curseforge' for e in manifest['files'])
         print(f"檔案 {len(manifest['files']):,} 個（{linked:,} 個模組由 CurseForge 下載），壓縮檔 {size/1024**3:.2f} GB")
+        for mod in manifest.get('curseforgeUnavailable') or []:
+            # The reason a CurseForge modpack is shared whole; say it in the card notes (--notes).
+            print(f"CurseForge 已不提供下載、改放進壓縮檔：{mod['name']}（{mod['path']}）", flush=True)
         name = f"{full_pack.folder_name(manifest['name'])}-{manifest.get('version') or date.today().isoformat()}-繁中-{digest[:8]}.zip"
         target = folder/name
         if not target.exists():
@@ -271,6 +274,8 @@ def publish_full(args):
                  driveId=file_id, sha256=digest, size=size, totalSize=manifest['totalSize'], files=len(manifest['files']),
                  mods=sum(1 for e in manifest['files'] if re.fullmatch(r'mods/[^/]+\.jar', e['path'])), **card_server(args))
     entry['minimumAppVersion']='0.42.1'
+    if manifest.get('curseforgeUnavailable'):
+        entry['curseforgeUnavailable'] = [m['name'] for m in manifest['curseforgeUnavailable']][:20]
     if manifest.get('backup_mod'):
         entry['addedMods'] = [dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])]
     if solo:
@@ -363,6 +368,9 @@ def publish_patch(args, instance, work):
     relative = f"packs/{pack['projectID']}/{pack['fileID']}-{digest[:8]}.zip"
     # version/modpackDate describe the modpack itself; revision counts re-publishes of its translation.
     version = curseforge_release_version(pack['projectID'], pack['fileID'], pack.get('version', ''))
+    # The card installs exactly this CurseForge file, never a newer one; a server for the card runs the same.
+    print(f"玩家按「安裝整合包與翻譯」時，CurseForge 會安裝檔案 {pack['fileID']}（版本 {version or '未標示'}）；"
+          '卡片伺服器也要用同一版。', flush=True)
     entry = dict(name=pack['name'], projectID=pack['projectID'], fileID=pack['fileID'],
                  version=version, modpackDate=pack.get('date', ''),
                  gameVersion=pack.get('gameVersion', ''),

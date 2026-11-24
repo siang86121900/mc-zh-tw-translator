@@ -3490,10 +3490,24 @@ def game_added_packs(instance):
     return found
 
 
+AUTHOR_OPTIONS = 'configureddefaults/options.txt'
+
+
+def author_options(instance) -> str:
+    """The modpack author's first-start options.txt (Configured Defaults copies configureddefaults/options.txt
+    into the game folder only while there is no options.txt yet); '' when the pack has none.
+
+    A new options.txt written before the first start would stop that copy, so it starts from this text:
+    Society Sunlit Valley ships its resource pack list and key settings this way (2026-11-24)."""
+    try:return (Path(instance)/AUTHOR_OPTIONS).read_text(encoding='utf-8')
+    except (OSError,UnicodeError):return ''
+
+
 def options_record(instance, staged, set_language=False, enable_pack=False, required_packs=()):
     """Stage options.txt so the game opens in Traditional Chinese (when asked) and uses the translation
     resource pack, placed last so it is above every other pack. None when nothing needs to change."""
-    src=instance/'options.txt';text=src.read_text(encoding='utf-8') if src.exists() else '';new=text
+    src=instance/'options.txt';text=src.read_text(encoding='utf-8') if src.exists() else ''
+    new=text if src.exists() else author_options(instance)
     if set_language:new=with_option(new,'lang','zh_tw')
     if enable_pack:
         packs=enabled_packs(new)

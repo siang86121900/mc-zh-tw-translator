@@ -143,7 +143,11 @@ def server_record(instance: Path, staged: Path, server, file_hash):
     if not found:return None
     src = Path(instance)/FILE
     raw = src.read_bytes() if src.is_file() else None
-    new = with_server(raw, *found)
+    # Before the first start the author's list (Configured Defaults: configureddefaults/servers.dat) is not
+    # copied yet, and a new servers.dat would stop that copy; start from it so its servers stay.
+    author = Path(instance)/'configureddefaults'/FILE
+    base = raw if raw is not None else author.read_bytes() if author.is_file() else None
+    new = with_server(base, *found)  # an unreadable list (the author's too) raises and is left as it is
     if new is None:return None
     dst = Path(staged)/FILE;dst.write_bytes(new)
     return dict(file=FILE, before=file_hash(src) if raw is not None else None, after=file_hash(dst), reviewed=True, verified=True)

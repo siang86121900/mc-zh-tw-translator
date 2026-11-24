@@ -33,14 +33,14 @@ def url(n,name):return f'https://edge.forgecdn.net/files/{n}/{n}/{name}'
 
 class Server:
     """CurseForge's file server and Google Drive in one; records requests."""
-    def __init__(self,files):self.files=files;self.asked=[];self.html=False;self.cut=None
+    def __init__(self,files):self.files=files;self.asked=[];self.html=False;self.cut=None;self.blocked=set()
     def get(self,address,stream=False,timeout=None,headers=None):
         import requests
         self.asked.append((address,dict(headers or {})));server=self
         data=self.files.get(address.split('&confirm')[0] if 'drive.usercontent' in address else address)
         start=int((headers or {}).get('Range','bytes=0-')[6:-1] or 0)
         class Response:
-            status_code=404 if data is None else 206 if start else 200
+            status_code=403 if address in server.blocked else 404 if data is None else 206 if start else 200
             url=address;history=[]
             headers={'Content-Type':'text/html; charset=utf-8' if server.html else 'application/octet-stream'}
             def __enter__(inner):return inner
@@ -111,6 +111,21 @@ class FullPackTests(unittest.TestCase):
         record=json.loads((self.owner/'minecraftinstance.json').read_text());record['projectID']=5
         (self.owner/'minecraftinstance.json').write_text(json.dumps(record))
         with self.assertRaisesRegex(ValueError,'正式版本'):full_pack.build(self.owner,self.root/'x.zip',session=self.server)
+
+    def test_curseforge_modpack_whose_own_mod_is_no_longer_served_is_shared_whole(self):
+        # Society Sunlit Valley 4.2.1 (2026-11-24): CurseForge answered 403 for Ember's Text API 1.4.1, so
+        # CurseForge itself could not install the modpack and the translation patch could not reach players.
+        record=json.loads((self.owner/'minecraftinstance.json').read_text());record['projectID']=5;record['fileID']=50
+        (self.owner/'minecraftinstance.json').write_text(json.dumps(record))
+        self.server.blocked.add(url(1,'served.jar'))
+        manifest=full_pack.build(self.owner,self.root/'x.zip',session=self.server,workers=1)
+        files={e['path']:e for e in manifest['files']}
+        self.assertEqual(files['mods/served.jar']['source'],'zip')  # the player gets the owner's own copy
+        self.assertEqual(manifest['curseforgeUnavailable'],[dict(path='mods/served.jar',name='served.jar',projectID=1,fileID=10)])
+        self.assertEqual(full_pack.read(self.root/'x.zip')['curseforgeUnavailable'][0]['path'],'mods/served.jar')
+        # A mod CurseForge serves with other bytes (changed.jar) is not a reason: that pack stays a patch.
+        self.server.blocked.clear()
+        with self.assertRaisesRegex(ValueError,'正式版本'):full_pack.build(self.owner,self.root/'y.zip',session=self.server,workers=1)
 
     def test_cover_is_bundled_and_registered_with_the_new_local_path(self):
         from mc_zh_tw_translator import covers

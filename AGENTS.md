@@ -96,6 +96,7 @@
 - YSM（modId yes_steve_model）有原檔完整性限制（publish_checks）：不改 JAR、不送程式文字或內嵌文字給 AI，語系與書本走翻譯資源包；舊報告與部署同樣防堵。上架、整包安裝與更新核對官方校驗碼；未核對版本停止並說明，不自動替換真實整合包。官方核對清單依 YSM 官方 Modrinth 發布資料維護。上架檢查 Tooltip Overhaul 的 custom_frames.json 圖片路徑，圖片缺少或多個資源包來源未確認時停止；補丁安裝、整包安裝與更新補啟用必要本機材質包，保留玩家其他設定與資源包順序、翻譯包最高優先，既有設定走 apply_reviewed 備份還原。補丁不散布圖片，接收端重新檢查本機來源。
 - 模組語系檔與書本頁一律寫進 resourcepacks/MCTranslator-zh_tw.zip（options.txt 資源包清單最後、最高優先），模組檔不修改。包內含模組原有 zh_tw 與本程式譯文，mctranslator.json 記每檔對應的模組檔與 SHA-256；重跑以包內容判斷遊戲目前顯示的文字，相同就不重寫。同命名空間有遊戲讀不了的模組 zh_tw（壞檔、空檔、值是陣列）時，同一份譯文另寫在 assets/mctranslator_fix.<命名空間>/lang/zh_tw.json（desktop_jobs.lang_detours），模組修好後自動拿掉。
 - 整合包有 Default Options 時，套用把翻譯資源包加到 config/defaultoptions-common.toml 的 defaultResourcePacks 最後（desktop_jobs.default_packs_record），可還原、不進分享補丁。
+- 整合包有 Configured Defaults（configureddefaults/options.txt、servers.dat，只在遊戲資料夾還沒有該檔時複製）時，本程式新建 options.txt 或 servers.dat 一律以作者的那份為底再加語言、翻譯包或卡片伺服器（desktop_jobs.author_options、server_list.server_record），整包分享的 options.txt 同樣保留作者預設；已存在的檔案照舊只改需要的項目。
 - 模組用自帶字型畫介面、字型沒有中文時（own_font_without_chinese 標 no_chinese_font）保留英文、不送 AI，先前寫入的中文改回一次，報告列「無需翻譯」並寫出字型檔（使用者 2026-10-02 選擇）。主選單按鈕是圖片時，報告灰字說明不是漏翻（desktop_jobs.image_menus），不改圖片。
 - class 裡的設定說明、提示與玩家句子也在範圍內：追查全部使用位置，確認只用於 Forge／NeoForge 設定 comment 或直接顯示呼叫才納入（照常 AI、檢查、備份、套用）；兼用於設定鍵、比較、公開常數或未支援的動態組句時明列未送 AI 的原因。用途證明可以跟著文字走：交給同模組檔裡無法覆寫的方法（private、static、final）的參數，或存進 private／編譯器產生的欄位，且每一處都只拿去顯示（class_text.JarFlow）；無條件跳躍也算；比對、查表、回傳、公開欄位、可覆寫方法不算。
 - 硬編碼改寫只改已證明用途的字串常數，保留 Modified UTF-8、控制字元、常數索引與其餘位元組；套用前重新驗證用途、原文、class 解析與 ZipFS。只能改原模組，不能假稱加語系檔就生效。
@@ -185,12 +186,14 @@
 - 接收者只按一次「安裝」並確認，不需重新翻譯、AI 或搬檔；先核對模組版本，再備份、驗證、套用、讀回。缺模組、原檔變動、分享者省略或啟用失敗時明列為部分，不宣稱一致；舊格式缺證據列為尚未核對；分享範圍核對不等於遊戲畫面或整包翻完。結構照字面複製到存檔的文字只影響之後新生成的地方，不改存檔、交易或進度。
 - 裝過較舊版次的玩家：以玩家電腦上仍生效的備份紀錄追回原檔（shared_text.written_from），原檔相同才算同一份；逐句讀回相同就算已翻譯；資源包只在和備份原檔相比只改了補丁會重寫的項目時才重寫（patches.only_entries）；讀回不同的列「先前安裝的舊版翻譯和這一版不同」並請玩家先還原舊版。
 - 翻譯補丁與整包卡片都要提供玩家端記憶體建議和「怎麼調整記憶體」。優先用 manifest.json 的 recommendedRam；作者未提供時，由 `patches.memory_estimate` 依模組數提供試用起點，標明程式估計（使用者 2026-10-02 同意），不把估值寫成作者數字。上架記下模組數，舊卡片用 --card-only（整包另加 --full）補上，已安裝時也可讀本機模組數。
+- 卡片綁定上架時整合包的 CurseForge 檔案編號，安裝永遠裝那個檔案、不跟著 CurseForge 更新。版本名稱以 CurseForge 的檔名為準（作者沒改 manifest 版本時，patches.curseforge_release_version 用 installedModpack 檔名的版本），上架時印出玩家會安裝的檔案與版本；卡片伺服器要跑同一個檔案版本。
 - 上架後核對公開目錄的整合包版本、補丁版次、伺服器捷徑與記憶體資料。補丁檔可下載不代表安裝成功；修正過套用問題的補丁，以接收端的同版本原檔或先前安裝檔案驗證寫入和讀回，尤其是啟動器換回或重新封裝的來源。
 - 說明分享範圍時講清楚：補丁不含模組檔、整份設定或腳本、記憶體與啟動器設定、遊戲選項；加裝模組只記名稱與校驗碼，對方不加入時略過該模組的翻譯。需先安裝完整同版本整合包。
 - 逐一確認引用來源與當次授權條款並附上；不把所有參考庫宣稱同一授權；公開前確認修改與再散布權限。分享免費，不做付費或贊助者限定。
 
 ## 整包分享（mc_zh_tw_translator.full_pack；使用者 2026-10-02 同意）
 - 只用於沒有 CurseForge 編號的整合包（projectID 為 0）；有編號的只分享翻譯補丁。使用者已知散布別人的模組可能違反授權，決定照做並公開。
+- 例外（使用者 2026-11-24 同意）：有 CurseForge 編號、但它自己的模組 CurseForge 已不提供下載（403／404／410），CurseForge 因此裝不起來時，可改用整包分享。full_pack.build 只在確實有這種模組時才放行，CurseForge 仍提供的模組照常只記網址，下載不到的放進壓縮檔並列在 manifest 的 curseforgeUnavailable；上架前核對那些模組的授權允許轉發，卡片介紹寫明是哪個模組、為什麼改用整包。
 - 上架由使用者逐次要求，代理用 publish_translation.py --full：打包、放進使用者指定的 Google 雲端硬碟資料夾、確認上傳完成並可匿名下載後才加卡片（記雲端檔案 ID、大小、SHA-256）。雲端舊檔清理需另有刪除授權。
 - 壓縮檔：CurseForge 認得且從檔案伺服器下載後 SHA-256 與分享者相同的模組只記網址、大小、SHA-256；其他模組、設定、腳本、任務、資源包、光影放進壓縮檔；存檔、記錄、備份、快取、地圖紀錄、帳號、伺服器清單、個人選項不放（full_pack.EXCLUDED_*）；options.txt 改放只有語言與資源包清單的新檔；附內容清單（每檔路徑與 SHA-256）。
 - 安裝：玩家按一次並確認；只從 Google 下載網域下載（大小與 SHA-256 相符；被 Google 暫停時白話說明），其餘模組從 CurseForge 檔案伺服器下載；在整合包資料夾新開資料夾（同名改 (2)、(3)）；每個檔案和清單相符才登記；任何一步失敗就刪新資料夾、不動其他整合包。

@@ -415,6 +415,11 @@ class PatchTests(unittest.TestCase):
         fresh=patches.apply_patch(self.friend,Path(out['path']),friend_home,server=server)
         self.assertEqual(server_list.entries((self.friend/'servers.dat').read_bytes()),[('狗狗貓貓島','26.186.50.26')])
         restore_backup(Path(fresh['backup']),self.friend);self.assertFalse((self.friend/'servers.dat').exists())
+        # Configured Defaults copies the author's list only while there is none: start from it (Society).
+        (self.friend/'configureddefaults').mkdir();(self.friend/'configureddefaults/servers.dat').write_bytes(own)
+        first=patches.apply_patch(self.friend,Path(out['path']),friend_home,server=server)
+        self.assertEqual(server_list.entries((self.friend/'servers.dat').read_bytes()),[('狗狗貓貓島','26.186.50.26'),('Sponsored','play.example.com')])
+        restore_backup(Path(first['backup']),self.friend);shutil.rmtree(self.friend/'configureddefaults')
         # An unreadable list is left alone and said so; the translation still goes on.
         (self.friend/'servers.dat').write_bytes(b'not nbt')
         odd=patches.apply_patch(self.friend,Path(out['path']),friend_home,server=server)
@@ -572,6 +577,24 @@ class OneClickTests(unittest.TestCase):
         self.assertEqual({r['proposed'] for r in rows},{'棕櫚原木'})
         self.assertEqual(rows[2]['unified_from'],'棕櫚木原木')
         self.assertEqual([needs_check(r) for r in rows],[False,False,False])
+
+
+class ReleaseVersionTests(unittest.TestCase):
+    def test_curseforge_file_name_wins_over_an_unchanged_manifest_version(self):
+        # Society Sunlit Valley 4.2.1 still said 4.2.0 in manifest.json; the owner then believed the card
+        # and its server were 4.2.0 while players were given CurseForge's 4.2.1 file (2026-11-24).
+        v=patches.curseforge_release_version
+        self.assertEqual(v(1,2,'4.2.0','Society-Sunlit-Valley-4.2.1.zip'),'4.2.1')
+        self.assertEqual(v(1,2,'1.1.1a','Tensura Neo Otherworld-Release-1.1.1a.zip'),'1.1.1a')
+        self.assertEqual(v(1,2,'2.0','Craft to Exile 2 - 2.0 Atlas Update.zip'),'2.0')
+        self.assertEqual(v(1,2,'','Pack-1.6.2.zip'),'1.6.2');self.assertEqual(v(1,2,'0.3.2',''),'0.3.2')
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp)
+            (folder/'manifest.json').write_text(json.dumps({'name':'S','version':'4.2.0','minecraft':{'version':'1.20.1'}}),encoding='utf-8')
+            (folder/'minecraftinstance.json').write_text(json.dumps({'name':'S','projectID':7,'fileID':70,
+                'installedModpack':{'installedFile':{'id':70,'fileName':'S-4.2.1.zip'}}}),encoding='utf-8')
+            identity=patches.instance_identity(folder)
+            self.assertEqual((identity['version'],identity['manifestVersion'],identity['curseforgeFile']),('4.2.1','4.2.0','S-4.2.1.zip'))
 
 
 if __name__=='__main__':unittest.main()

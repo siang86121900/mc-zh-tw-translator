@@ -126,7 +126,9 @@ def generated_options(instance: Path) -> bytes:
     """options.txt for players: Traditional Chinese and the owner's resource pack list, nothing personal."""
     try:text=(instance/'options.txt').read_text(encoding='utf-8')
     except (OSError,UnicodeError):text=''
-    new=jobs.with_option('','lang','zh_tw')
+    # The author's first-start settings (Configured Defaults) are part of the modpack, not the owner's own;
+    # the shipped options.txt replaces them on the player's computer, so it carries them over.
+    new=jobs.with_option(jobs.author_options(instance),'lang','zh_tw')
     packs=jobs.enabled_packs(text)
     if packs:new=jobs.with_option(new,'resourcePacks',json.dumps(packs,ensure_ascii=False,separators=(',',':')))
     from . import publish_checks
@@ -147,14 +149,21 @@ def curseforge_mods(instance: Path, record):
     return found
 
 
-def remote_matches(url: str, size: int, digest: str, session, cancelled=lambda:False) -> bool:
-    """Whether CurseForge's file at `url` is byte for byte the owner's (size and SHA-256); read and discarded."""
+UNAVAILABLE = (403, 404, 410)
+
+
+def remote_matches(url: str, size: int, digest: str, session, cancelled=lambda:False):
+    """Whether CurseForge's file at `url` is byte for byte the owner's (size and SHA-256); read and discarded.
+
+    None when CurseForge no longer serves the file at all (403/404/410): Ember's Text API 1.4.1 in Society
+    Sunlit Valley 4.2.1 answered 403 from 2026-11-24, and CurseForge's own modpack install then stopped.
+    """
     import requests
     for attempt in range(ATTEMPTS):
         try:
             h=hashlib.sha256();received=0
             with session.get(url,stream=True,timeout=(15,60),headers={'User-Agent':f'MCTranslator/{VERSION}'}) as r:
-                if r.status_code==404:return False
+                if r.status_code in UNAVAILABLE:return None
                 if r.status_code>=500:raise requests.ConnectionError(f'HTTP {r.status_code}')
                 r.raise_for_status()
                 if urlparse(r.url).netloc not in patches.CURSEFORGE_FILES:return False
@@ -174,13 +183,16 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
           *, solo=None) -> dict:
     """Pack the owner's translated modpack into `out`; returns the manifest.
 
-    Refuses a modpack CurseForge knows (it is shared as a translation patch instead).
+    A modpack CurseForge knows is shared as a translation patch instead, unless CurseForge can no longer
+    install it because one of its own mods is not served any more (owner, 2026-11-24): then the pack is
+    shared whole, the mods CurseForge still serves linked as usual and the missing ones in the zip, and
+    the manifest lists them under curseforgeUnavailable.
     """
     import requests
     instance=Path(instance).resolve();out=Path(out);session=session or requests.Session()
     if not jobs.is_instance(instance):raise ValueError('找不到整合包資料夾（需要有 mods、config 或 kubejs）。')
     record=patches.curseforge_record(instance);identity=patches.instance_identity(instance)
-    if identity['projectID']:raise ValueError('這個整合包在 CurseForge 上有正式版本，請改用一般的翻譯上架（只分享翻譯）。')
+    official='這個整合包在 CurseForge 上有正式版本，請改用一般的翻譯上架（只分享翻譯）。'
     from . import publish_checks
     publish_checks.check_ysm(instance)
     publish_checks.required_packs(instance)
@@ -195,7 +207,7 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
     # A CurseForge mod is only linked when CurseForge serves exactly the owner's bytes (a translated or
     # replaced jar is not), so a player's download can be checked against the same SHA-256.
     candidates=[(rel,served[rel]) for rel in files if rel in served and entries[rel]['size']==served[rel]['size']]
-    done=[0]
+    done=[0];unavailable=[]
     def check(item):
         rel,mod=item
         same=remote_matches(mod['url'],mod['size'],entries[rel]['sha256'],session,cancelled)
@@ -204,6 +216,8 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for rel,mod,same in pool.map(check,candidates):
             if same:entries[rel].update(source='curseforge',url=mod['url'],projectID=mod['projectID'],fileID=mod['fileID'],name=mod['name'])
+            elif same is None:unavailable.append(dict(path=rel,name=mod['name'],projectID=mod['projectID'],fileID=mod['fileID']))
+    if identity['projectID'] and not unavailable:raise ValueError(official)
     if solo:
         rel = 'mods/'+solo['fileName']
         if rel in entries:
@@ -217,6 +231,7 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
     manifest=dict(format=FORMAT,name=identity['name'],version=identity['version'],gameVersion=identity['gameVersion'] or record.get('gameVersion') or '',
                   recommendedRam=identity['recommendedRam'],loader=loader,created=datetime.now().isoformat(timespec='seconds'),
                   program=VERSION,files=[dict(e,source=e.get('source','zip')) for e in entries.values()])
+    if unavailable:manifest['curseforgeUnavailable']=sorted(unavailable,key=lambda m:m['path'])
     backup_found=backup_mod.present(instance)
     if backup_found and backup_found['enabled'] and backup_mod.listed(instance/'mods'/backup_found['file']):
         manifest['backup_mod']=True

@@ -482,6 +482,28 @@ class WorkflowTests(unittest.TestCase):
         (self.instance/'options.txt').write_text('resourcePacks:[broken\n',encoding='utf-8')
         with self.assertRaises(ValueError):options_record(self.instance,staged,False,True)
 
+    def test_first_options_start_from_the_authors_configured_defaults(self):
+        # Society Sunlit Valley ships its resource packs and keys in configureddefaults/options.txt, which
+        # Configured Defaults copies only while there is no options.txt; a new one used to drop all of it.
+        from mc_zh_tw_translator import full_pack
+        from mc_zh_tw_translator.desktop_jobs import options_record
+        author='key_key.jump:key.keyboard.space\nlang:en_us\nresourcePacks:["file/Jade Theme.zip"]\n'
+        (self.instance/'configureddefaults').mkdir();(self.instance/'configureddefaults/options.txt').write_text(author,encoding='utf-8')
+        staged=Path(self.temp.name)/'staged';staged.mkdir()
+        record=options_record(self.instance,staged,True,True)
+        self.assertIsNone(record['before'])
+        self.assertEqual((staged/'options.txt').read_text(encoding='utf-8'),
+                         'key_key.jump:key.keyboard.space\nlang:zh_tw\nresourcePacks:["file/Jade Theme.zip","mod_resources","file/MCTranslator-zh_tw.zip"]\n')
+        # The whole-pack share carries them too, with the owner's resource pack list.
+        (self.instance/'options.txt').write_text((staged/'options.txt').read_text(encoding='utf-8')+'key_key.chat:key.keyboard.y\n',encoding='utf-8')
+        shared=full_pack.generated_options(self.instance).decode('utf-8')
+        self.assertIn('key_key.jump:key.keyboard.space',shared);self.assertNotIn('key_key.chat',shared)  # the owner's own keys stay home
+        self.assertIn('lang:zh_tw',shared);self.assertIn('"file/Jade Theme.zip","mod_resources","file/MCTranslator-zh_tw.zip"',shared)
+        # A player who already started the game keeps their own options.txt as it is.
+        (self.instance/'options.txt').write_text('lang:en_us\n',encoding='utf-8')
+        options_record(self.instance,staged,True,False)
+        self.assertEqual((staged/'options.txt').read_text(encoding='utf-8'),'lang:zh_tw\n')
+
     @patch('mc_zh_tw_translator.desktop_jobs.ensure_game_closed')
     def test_server_translations_text_goes_to_the_translation_pack(self,_):
         import zipfile
