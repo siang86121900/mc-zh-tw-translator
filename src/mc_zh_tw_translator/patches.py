@@ -54,6 +54,9 @@ ESCAPED_SUFFIXES = ('.json', '.snbt', '.json5')
 CJK_TEXT = re.compile('[㐀-鿿豈-﫿　-〿＀-￯‘-”…·]')
 MAX_LITERAL_EDITS = 20000
 CATALOG_URL = f'https://raw.githubusercontent.com/{REPOSITORY}/translations/index.json'
+# This CurseForge release shipped with an older version in manifest.json.
+# https://www.curseforge.com/minecraft/modpacks/society-sunlit-valley/files/9721472
+CURSEFORGE_VERSION_CORRECTIONS = {(1093382, 9721472): '4.2.1'}
 # Text resources only: a shared patch must never carry code, scripts or binaries.
 TEXT_SUFFIXES = ('.json', '.lang', '.txt', '.md', '.snbt')
 ARCHIVE_SUFFIXES = ('.jar', '.zip')
@@ -169,6 +172,10 @@ def allowed_entry(name: str) -> bool:
     return lower.endswith(TEXT_SUFFIXES) and bool(TRANSLATED.search(lower))
 
 
+def curseforge_release_version(project_id: int, file_id: int, recorded_version: str) -> str:
+    return CURSEFORGE_VERSION_CORRECTIONS.get((project_id, file_id), recorded_version)
+
+
 def instance_identity(instance: Path) -> dict:
     """Which modpack and version a folder holds, from CurseForge's files when present."""
     identity=dict(name=instance.name,projectID=0,fileID=0,gameVersion='',version='',date='',recommendedRam=0)
@@ -185,6 +192,7 @@ def instance_identity(instance: Path) -> dict:
         identity['gameVersion']=identity['gameVersion'] or (m.get('minecraft') or {}).get('version','')
         identity['recommendedRam']=ram_mb((m.get('minecraft') or {}).get('recommendedRam'))
     except (OSError,ValueError,TypeError,AttributeError):pass
+    identity['version']=curseforge_release_version(identity['projectID'],identity['fileID'],identity['version'])
     return identity
 
 
@@ -1119,8 +1127,10 @@ def fetch_catalog(session=None):
             if not re.fullmatch('[0-9a-f]{64}',x['sha256']) or not 0<int(x['size'])<=MAX_PATCH_SIZE:continue
             mods=x.get('mods')
             mods=mods if type(mods) is int and 0<mods<=5000 else 0
-            packs.append(dict(name=str(x['name']),projectID=int(x.get('projectID') or 0),fileID=int(x.get('fileID') or 0),
-                              version=str(x.get('version') or ''),gameVersion=str(x.get('gameVersion') or ''),
+            project_id=int(x.get('projectID') or 0);file_id=int(x.get('fileID') or 0)
+            version=curseforge_release_version(project_id,file_id,str(x.get('version') or ''))
+            packs.append(dict(name=str(x['name']),projectID=project_id,fileID=file_id,
+                              version=version,gameVersion=str(x.get('gameVersion') or ''),
                               translator=str(x.get('translator') or ''),updated=str(x.get('updated') or ''),
                               modpackDate=str(x.get('modpackDate') or '')[:10],revision=max(1,int(x.get('revision') or 1)),
                               notes=str(x.get('notes') or '')[:600],recommendedRam=ram_mb(x.get('recommendedRam')),mods=mods,url=x['url'],sha256=x['sha256'],size=int(x['size']),
@@ -1273,7 +1283,7 @@ def wait_for_modpack(pack, manifest, notify=lambda *_:None, cancelled=lambda:Fal
             notify(min(99,percent),'等待 CurseForge 安裝整合包',detail)
         else:
             seen=None
-            notify(0,'等待 CurseForge 安裝整合包','請在 CurseForge 的視窗確認安裝，這裡會自動接著做')
+            notify(0,'等待 CurseForge 安裝整合包','請查看 CurseForge 的下載與安裝進度，裝好後會自動接著套用翻譯')
         if clock()-start>timeout:
             raise ValueError('等了很久，CurseForge 還沒有裝好這個整合包。請看一下 CurseForge 的安裝進度；裝好後回到這一頁按「安裝翻譯」即可。')
         pause(3)

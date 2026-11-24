@@ -339,6 +339,21 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(patches.fetch_catalog(Mock(get=Mock(return_value=missing))),[])
 
 
+    def test_society_catalog_uses_the_version_for_the_official_file(self,_):
+        base=dict(name='Society Sunlit Valley',projectID=1093382,version='4.2.0',
+                  url='https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/demo.zip',
+                  sha256='a'*64,size=10)
+        response=Mock(status_code=200)
+        response.json.return_value={'packs':[dict(base,fileID=9721472),dict(base,fileID=9703633)]}
+        corrected,original=patches.fetch_catalog(Mock(get=Mock(return_value=response)))
+        self.assertEqual((corrected['version'],original['version']),('4.2.1','4.2.0'))
+        self.assertEqual(patches.curseforge_install_url(corrected),'curseforge://install?addonId=1093382&fileId=9721472')
+
+        (self.friend/'manifest.json').write_text(json.dumps({'version':'4.2.0'}),encoding='utf-8')
+        (self.friend/'minecraftinstance.json').write_text(
+            json.dumps({'projectID':1093382,'fileID':9721472}),encoding='utf-8')
+        self.assertEqual(patches.instance_identity(self.friend)['version'],'4.2.1')
+
     def test_catalog_picks_translation_for_installed_version(self,_):
         base=dict(name='Demo',projectID=7,version='',gameVersion='',translator='',notes='',sha256='a'*64,size=1,
                   url='https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/7/x.zip')

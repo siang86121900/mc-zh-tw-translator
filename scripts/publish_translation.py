@@ -36,7 +36,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
 from mc_zh_tw_translator import full_pack, server_list, sweeper, backup_mod, solo_quests  # noqa: E402
 from mc_zh_tw_translator.desktop_jobs import mod_count  # noqa: E402
-from mc_zh_tw_translator.patches import MAX_ADDED_MODS, export_patch, instance_identity, read_patch  # noqa: E402
+from mc_zh_tw_translator.patches import (  # noqa: E402
+    MAX_ADDED_MODS, curseforge_release_version, export_patch, instance_identity, read_patch,
+)
 from mc_zh_tw_translator.updater import REPOSITORY  # noqa: E402
 
 BRANCH = 'translations'
@@ -360,8 +362,9 @@ def publish_patch(args, instance, work):
     digest = hashlib.sha256(data).hexdigest()
     relative = f"packs/{pack['projectID']}/{pack['fileID']}-{digest[:8]}.zip"
     # version/modpackDate describe the modpack itself; revision counts re-publishes of its translation.
+    version = curseforge_release_version(pack['projectID'], pack['fileID'], pack.get('version', ''))
     entry = dict(name=pack['name'], projectID=pack['projectID'], fileID=pack['fileID'],
-                 version=pack.get('version', ''), modpackDate=pack.get('date', ''),
+                 version=version, modpackDate=pack.get('date', ''),
                  gameVersion=pack.get('gameVersion', ''),
                  translator=args.translator, updated=date.today().isoformat(), notes=args.notes,
                  recommendedRam=args.ram or int(pack.get('recommendedRam') or 0),
@@ -373,7 +376,7 @@ def publish_patch(args, instance, work):
                            + ([dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])] if manifest.get('backup_mod') else []),
                  url=RAW+relative, sha256=digest, size=len(data), **card_server(args))
     update_catalog(entry, lambda p: p.get('projectID') == pack['projectID'] and p.get('fileID') == pack['fileID'],
-                   f"已翻譯整合包：{pack['name']} {pack.get('version', '')}", [(args.patch, relative)], args.dry_run)
+                   f"已翻譯整合包：{pack['name']} {version}", [(args.patch, relative)], args.dry_run)
 
 
 if __name__ == '__main__':

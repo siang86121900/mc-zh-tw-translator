@@ -342,7 +342,7 @@ class InstallTests(unittest.TestCase):
         self.clock.steps=[lambda:None,folder,half,whole,overrides]
         self.assertEqual(self.wait(),self.friend)
         details=[d for _,_,d in self.seen]
-        self.assertIn('請在 CurseForge 的視窗確認安裝',details[0])
+        self.assertIn('請查看 CurseForge 的下載與安裝進度',details[0])
         self.assertIn('已就緒 0／2',''.join(details));self.assertIn('已就緒 1／2',''.join(details))
         self.assertTrue(details[-1].startswith('已就緒 2／2'))
         self.assertGreaterEqual(self.clock.now,15+15)  # and nothing changed for a while afterwards
