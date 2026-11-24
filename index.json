@@ -130,6 +130,43 @@
     },
     {
       "kind": "full",
+      "name": "Society Sunlit Valley",
+      "packId": "society sunlit valley",
+      "version": "4.2.1",
+      "gameVersion": "1.20.1",
+      "loader": "forge-47.4.0",
+      "translator": "MC Translator",
+      "updated": "2026-11-24",
+      "notes": "CurseForge 上的 Society 4.2.1（4.2.0 也一樣）目前裝不起來：Ember's Text API 1.4.1 已無法從 CurseForge 下載。這份是官方 4.2.1 內容加上繁體中文翻譯第 5 版，其餘模組照常從 CurseForge 官方下載，Ember's Text API（GPL-3.0 開放授權）由分享者提供。保留整合包作者預設的材質包與按鍵設定。多人連線請先加入同一個 Radmin VPN 網路，再使用「狗狗貓貓島」捷徑。作者修好官方版後會恢復一般翻譯補丁。",
+      "recommendedRam": 0,
+      "driveId": "11X89V1X193HdnELgFKN7pbd0LxKsfySL",
+      "sha256": "a0799d6200ea9971f68b3aa8953daca5923e15b862444a280f38ae4513fe8736",
+      "size": 75752285,
+      "totalSize": 838881477,
+      "files": 8261,
+      "mods": 352,
+      "server": {
+        "name": "狗狗貓貓島",
+        "address": "26.186.50.26"
+      },
+      "minimumAppVersion": "0.42.1",
+      "curseforgeUnavailable": [
+        "Ember's Text API"
+      ],
+      "addedMods": [
+        {
+          "name": "FTB Backups 2（定時備份世界、繁中通知）",
+          "size": 1954591
+        },
+        {
+          "name": "Solo Quests（專用伺服器可各自解任務、手動同步）",
+          "size": 41328
+        }
+      ],
+      "revision": 1
+    },
+    {
+      "kind": "full",
       "name": "The Fool 0.3.2",
       "packId": "the fool",
       "version": "",
