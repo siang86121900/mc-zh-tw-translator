@@ -306,6 +306,9 @@ def explain_error(exc):
     from .desktop_references import network_message, RateLimited
     text=str(exc)
     if isinstance(exc,(requests.RequestException,RateLimited)):return network_message(exc)
+    # The player pressed 停止. Python files InterruptedError under OSError, which once made every stop read
+    # 「讀寫檔案時發生問題」 (owner, 2026-11-24).
+    if isinstance(exc,InterruptedError):return text if HAN.search(text) else '已停止。'
     if HAN.search(text) and not isinstance(exc,OSError):return text
     name=Path(getattr(exc,'filename',None) or '').name
     where=f'「{name}」' if name else '檔案'

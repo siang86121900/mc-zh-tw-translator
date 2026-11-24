@@ -158,6 +158,9 @@ class PlainErrorTests(unittest.TestCase):
         # Messages this program wrote for players are passed on unchanged.
         self.assertEqual(explain(ValueError('這一批沒有尚未套用的譯文。')),'這一批沒有尚未套用的譯文。')
         self.assertEqual(explain(jobs.GameRunningError('請關閉遊戲')),'請關閉遊戲')
+        # Pressing 停止 is not a disk problem, although Python counts InterruptedError as an OSError.
+        stopped='已停止等待。CurseForge 可以繼續安裝整合包。'
+        self.assertEqual(explain(InterruptedError(stopped)),stopped);self.assertEqual(explain(InterruptedError()),'已停止。')
 
     def test_used_up_query_allowance_says_when_it_returns(self):
         reply=Mock(status_code=403,headers={'X-RateLimit-Remaining':'0','X-RateLimit-Reset':str(int(time.time())+600)})

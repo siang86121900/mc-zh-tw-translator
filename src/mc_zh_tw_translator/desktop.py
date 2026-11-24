@@ -362,8 +362,10 @@ class InstallProgress(QDialog):
         waiting=self.mode=='patch_install' and (title==self.WAITING or not title)
         if self.mode=='patch_install':
             self.heading.setText('第 1 步，共 2 步：等待 CurseForge 安裝整合包' if waiting else '第 2 步，共 2 步：正在裝上翻譯，還沒完成')
-            self.warning.setText('CurseForge 顯示裝好了也還不能玩：本程式接著要裝上翻譯。看到「翻譯已安裝」的視窗才算完成，在那之前請不要開遊戲。'
+            self.warning.setText(detail if waiting and self.stalled(detail) else
+                                 'CurseForge 顯示裝好了也還不能玩：本程式接著要裝上翻譯。看到「翻譯已安裝」的視窗才算完成，在那之前請不要開遊戲。'
                                  if waiting else '整合包已經裝好，正在裝上翻譯。請先不要開遊戲，也不要關閉本程式；完成時會跳出「翻譯已安裝」。')
+            if waiting and self.stalled(detail):detail='仍在等待，CurseForge 繼續安裝後會自動接著做'
         elif self.mode=='patch_full':
             self.heading.setText('正在安裝整合包，還沒完成')
             self.warning.setText('看到「整合包已安裝」或「整合包已更新」的視窗才算完成，在那之前請不要開遊戲，也不要關閉本程式。')
@@ -376,6 +378,11 @@ class InstallProgress(QDialog):
         started=not waiting and self.mode=='patch_install' and not self.translating and bool(title)
         if started:self.translating=True
         return started
+
+    @staticmethod
+    def stalled(detail):
+        """patches.wait_for_modpack's note that CurseForge stopped partway; waiting goes on meanwhile."""
+        return str(detail).startswith('CurseForge 好像停了')
 
     def stopping(self):
         self.stop.setEnabled(False);self.detail.setText('正在停止…')
@@ -673,7 +680,7 @@ class MainWindow(QMainWindow):
         box.addStretch()
         self.catalog=None;self.catalog_packs=None;self.pack_buttons=[];self.catalog_cards=[];self.memory_total=None
         # Progress of a whole-modpack install or update also shows on its own card, where the player clicked.
-        self.card_progress={};self.card_stop={};self.active_card=None;self.curseforge_alerted=False;self.card_failed=False;self.install_window=None
+        self.card_progress={};self.card_stop={};self.active_card=None;self.curseforge_alerted=False;self.stall_alerted=False;self.card_failed=False;self.install_window=None
 
     @staticmethod
     def catalog_key(pack):return f"{pack['projectID'] or pack['name']}:{pack['fileID']}:{pack['sha256'][:12]}"
@@ -943,7 +950,7 @@ class MainWindow(QMainWindow):
                 memory=self.patch_memory_result(instance,pack,w)
             return dict(result,installed_modpack=True,memory_line=memory,notes=pack.get('notes',''))
         self.active_card=self.catalog_key(card or pack)
-        self.curseforge_alerted=False
+        self.curseforge_alerted=False;self.stall_alerted=False
         self.run_worker('patch_install',operation,self.patch_applied)
 
     def install_full_pack(self,pack):
@@ -1633,6 +1640,10 @@ class MainWindow(QMainWindow):
                 # The player is often looking at CurseForge itself; a Windows notice reaches them there.
                 self.curseforge_alerted=True
                 self.notify_finished('請關閉 CurseForge','整合包已下載並核對好，關閉 CurseForge（含右下角的小圖示）後會自動完成安裝。')
+            if self.mode=='patch_install' and InstallProgress.stalled(detail) and not self.stall_alerted:
+                # The player is usually looking at CurseForge's 「運行失敗」; tell them there that this side still waits.
+                self.stall_alerted=True
+                self.notify_finished('CurseForge 好像停了','如果 CurseForge 顯示運行失敗，請按它的「重試」；裝好後這裡會自動接著裝上翻譯。')
             if self.install_window is not None and self.install_window.show_step(title,value,detail):
                 # CurseForge is done and players took that as the end: bring this window up and say it is not.
                 self.install_window.setWindowFlag(Qt.WindowStaysOnTopHint,True);self.install_window.show()
@@ -1753,7 +1764,9 @@ class MainWindow(QMainWindow):
                 self.session.update(status='apply_failed',apply_error=text)
                 jobs.write_json(Path(self.session['report'])/'session.json',self.session)
                 self.update_stats();self.fill_table()
-        QMessageBox.warning(self,'需要處理',text)
+        # Stopping is the player's own choice, not a problem to handle.
+        if text.startswith('已停止'):QMessageBox.information(self,'已停止',text)
+        else:QMessageBox.warning(self,'需要處理',text)
 
     def checked_instance(self):
         """The modpack folder to work on, corrected when the user picked a folder inside it; None when unusable."""

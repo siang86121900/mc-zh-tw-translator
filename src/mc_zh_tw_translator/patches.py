@@ -1254,16 +1254,21 @@ def wait_for_modpack(pack, manifest, notify=lambda *_:None, cancelled=lambda:Fal
     The modpack is ready when every file the translation belongs to is in place and nothing has
     changed for `calm` seconds. When the install stops changing for `settle` seconds before that
     (CurseForge finished but some mods differ), the folder is returned as it is: the translation
-    is then applied to what matches and the rest is reported as skipped. Fewer than half the files,
-    or a tooltip picture still missing while files are missing, is a CurseForge install that stopped
-    ("運行失敗"): that is said plainly instead of blaming the translation or the tooltip pictures.
+    is then applied to what matches and the rest is reported as skipped.
+
+    Fewer than half the files, or a tooltip picture still missing while files are missing, is a
+    CurseForge install that stopped (「運行失敗」). Waiting then goes on with a plain note telling the
+    player to press CurseForge's own 「重試」, so a retried install continues by itself (owner,
+    2026-11-24: ending the wait made players come back and press the card again). Waiting gives up
+    only after `timeout` seconds without any new file, and never blames the translation or the
+    tooltip pictures for CurseForge stopping.
 
     The card this runs from may show 「安裝整合包與翻譯」 or 「安裝翻譯」 by the time the player is
     back, so the messages name the card's install button without its label (AGENTS.md: never name a
     button that is not on screen; tests/test_safeguards.py ButtonNameTests).
     """
     from . import publish_checks
-    find=find or jobs.curseforge_instances;start=clock();changed=start;seen=None
+    find=find or jobs.curseforge_instances;changed=clock();seen=None;stopped=None
     again='裝好後回到這一頁，按這個整合包卡片上的安裝按鈕即可。'
     while True:
         if cancelled():raise InterruptedError('已停止等待。CurseForge 可以繼續安裝整合包；'+again)
@@ -1277,27 +1282,32 @@ def wait_for_modpack(pack, manifest, notify=lambda *_:None, cancelled=lambda:Fal
             quiet=clock()-changed
             percent=int(100*present/max(1,needed))
             detail=f'已就緒 {present:,}／{needed:,} 個要翻譯的檔案'
-            stopped=(f'CurseForge 好像沒有把整合包裝完：要翻譯的檔案只到了 {present:,}／{needed:,} 個，'
-                     f'而且已經 {max(1,int(quiet)//60)} 分鐘沒有新檔案。如果 CurseForge 顯示「運行失敗」或出現「重試」，'
-                     '請在 CurseForge 按「重試」把整合包裝完；還是失敗就在 CurseForge 刪掉這個整合包再重新安裝。'
-                     '翻譯還沒有寫入任何檔案。'+again)
-            if mod_count and quiet>=settle and present*2<needed:raise ValueError(stopped)
-            if (present==needed and quiet>=calm) or (mod_count and quiet>=settle):
+            stalled=(f'CurseForge 好像停了：要翻譯的檔案只到了 {present:,}／{needed:,} 個，'
+                     f'已經 {max(1,int(quiet)//60)} 分鐘沒有新檔案。如果 CurseForge 顯示「運行失敗」或出現「重試」，'
+                     '請在 CurseForge 按「重試」；裝好後這裡會自動接著裝上翻譯，不用再按。')
+            stopped=None
+            if mod_count and quiet>=settle and present*2<needed:
+                stopped=stalled
+            elif (present==needed and quiet>=calm) or (mod_count and quiet>=settle):
                 try:
                     publish_checks.required_packs(instance)
                 except publish_checks.MissingTooltipTexture as exc:
-                    if quiet>=settle or clock()-start>timeout:
-                        if present<needed:raise ValueError(stopped) from exc
+                    if present<needed and quiet>=settle:stopped=stalled
+                    elif quiet>=settle or quiet>timeout:
                         raise ValueError(str(exc)+' 補齊後回到這一頁，按這個整合包卡片上的安裝按鈕。') from exc
-                    detail+='，正在等提示框圖片所需的模組或資源包到齊'
+                    else:detail+='，正在等提示框圖片所需的模組或資源包到齊'
                 else:
                     notify(percent,'等待 CurseForge 安裝整合包',detail)
                     return instance
-            notify(min(99,percent),'等待 CurseForge 安裝整合包',detail)
+            notify(min(99,percent),'等待 CurseForge 安裝整合包',stopped or detail)
         else:
-            seen=None
+            seen=None;stopped=None
             notify(0,'等待 CurseForge 安裝整合包','請查看 CurseForge 的下載與安裝進度，裝好後會自動接著套用翻譯')
-        if clock()-start>timeout:
+        if clock()-changed>timeout:
+            if stopped:
+                raise ValueError(f'CurseForge 沒有把整合包裝完：要翻譯的檔案只到了 {present:,}／{needed:,} 個，'
+                                 f'已經 {int(clock()-changed)//60} 分鐘沒有新檔案。請在 CurseForge 按「重試」；還是失敗就在 CurseForge '
+                                 '刪掉這個整合包再重新安裝。翻譯還沒有寫入任何檔案。'+again)
             raise ValueError('等了很久，CurseForge 還沒有裝好這個整合包。請看一下 CurseForge 的安裝進度；'+again)
         pause(3)
 

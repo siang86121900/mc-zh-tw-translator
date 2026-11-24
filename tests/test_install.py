@@ -384,24 +384,55 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(result['language_set'])
         self.assertTrue((self.friend/jobs.RESOURCE_PACK_FILE).is_file())
 
-    def test_curseforge_install_that_stopped_is_said_plainly(self):
+    def test_curseforge_install_that_stopped_keeps_waiting_and_is_said_plainly(self):
         # CurseForge showed 「運行失敗」 at 33%: the folder is there but most mods never arrived. This used to
-        # end in 「提示框缺少圖片」, which blamed the translation and named a button the card did not show.
-        cases={'few files':lambda:None,'tooltip mod missing':lambda:(self.friend/'mods/real.jar').unlink()}
-        for name,trim in cases.items():
-            with self.subTest(name):
-                shutil.rmtree(self.friend,ignore_errors=True);shutil.copytree(self.original,self.friend)
-                (self.friend/'mods/other.jar').write_bytes(b'x')  # CurseForge got some mods, not this one
-                if name=='few files':shutil.rmtree(self.friend/'kubejs');(self.friend/'mods/real.jar').unlink()
-                config=self.friend/'config/tooltipoverhaul/custom_frames.json';config.parent.mkdir(parents=True,exist_ok=True)
-                config.write_text('{"texture":"tooltipoverhaul:textures/overlay/amber_frame.png"}',encoding='utf-8')
-                trim();self.clock=Clock()
-                with self.assertRaises(ValueError) as caught:self.wait(settle=60)
-                text=str(caught.exception)
-                self.assertIn('CurseForge 好像沒有把整合包裝完',text);self.assertIn('「重試」',text)
+        # end in 「提示框缺少圖片」, which blamed the translation and named a button the card did not show;
+        # then it ended the wait, so a player who pressed CurseForge's 「重試」 had to come back and press again.
+        def stalled_copy(name):
+            shutil.rmtree(self.friend,ignore_errors=True);shutil.copytree(self.original,self.friend)
+            (self.friend/'mods/other.jar').write_bytes(b'x')  # CurseForge got some mods, not this one
+            (self.friend/'mods/real.jar').unlink()
+            if name=='few files':shutil.rmtree(self.friend/'kubejs')
+            config=self.friend/'config/tooltipoverhaul/custom_frames.json';config.parent.mkdir(parents=True,exist_ok=True)
+            config.write_text('{"texture":"tooltipoverhaul:textures/overlay/amber_frame.png"}',encoding='utf-8')
+        def retried():  # the player pressed CurseForge's 「重試」 and it finished
+            shutil.copy2(self.original/'mods/real.jar',self.friend/'mods/real.jar')
+            if not (self.friend/'kubejs').exists():shutil.copytree(self.original/'kubejs',self.friend/'kubejs')
+            with zipfile.ZipFile(self.friend/'mods/tooltipoverhaul.jar','w') as z:
+                z.writestr('assets/tooltipoverhaul/textures/overlay/amber_frame.png',b'image')
+        for name in ('few files','tooltip mod missing'):
+            with self.subTest(name,retried=True):
+                stalled_copy(name);self.clock=Clock();self.seen=[]
+                self.clock.steps=[lambda:None]*40+[retried]
+                self.assertEqual(self.wait(settle=60,timeout=600),self.friend)
+                notes=[d for _,_,d in self.seen if d.startswith('CurseForge 好像停了')]
+                self.assertTrue(notes);self.assertIn('「重試」',notes[0]);self.assertIn('自動接著裝上翻譯',notes[0])
+                self.assertFalse(any('提示框' in d for _,_,d in self.seen))
+            with self.subTest(name,retried=False):
+                stalled_copy(name);self.clock=Clock()
+                with self.assertRaises(ValueError) as caught:self.wait(settle=60,timeout=600)
+                text=str(caught.exception);self.assertGreater(self.clock.now,600)
+                self.assertIn('CurseForge 沒有把整合包裝完',text);self.assertIn('「重試」',text)
                 self.assertNotIn('提示框',text);self.assertFalse((self.friend/'options.txt').exists())
                 # The card may show 「安裝整合包與翻譯」 or 「安裝翻譯」 by then: only CurseForge's own 「重試」 is named.
                 self.assertEqual(re.findall('按「([^」]+)」',text),['重試']);self.assertIn('卡片上的安裝按鈕',text)
+
+    def test_install_window_shows_curseforge_stalled_and_pressing_stop_is_not_a_disk_error(self):
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from mc_zh_tw_translator.desktop import InstallProgress, MainWindow
+        app=QApplication.instance() or QApplication([])
+        note='CurseForge 好像停了：要翻譯的檔案只到了 105／351 個，已經 3 分鐘沒有新檔案。請在 CurseForge 按「重試」。'
+        box=InstallProgress(None,'patch_install','Demo Pack',lambda:None)
+        box.show_step(InstallProgress.WAITING,30,note)
+        self.assertEqual(box.warning.text(),note);self.assertIn('仍在等待',box.detail.text());box.close()
+        window=MainWindow(self.home);self.addCleanup(window.close)
+        window.mode='patch_install';window.stall_alerted=False
+        with patch.object(window,'notify_finished') as told:
+            window.on_progress(30,InstallProgress.WAITING,note);window.on_progress(30,InstallProgress.WAITING,note)
+        self.assertEqual([c.args[0] for c in told.call_args_list],['CurseForge 好像停了'])  # one Windows notice
+        stopped=jobs.explain_error(InterruptedError('已停止等待。CurseForge 可以繼續安裝整合包。'))
+        with patch.object(QMessageBox,'information') as info,patch.object(QMessageBox,'warning') as warn:window.on_error(stopped)
+        warn.assert_not_called();self.assertEqual(info.call_args[0][1:],('已停止',stopped))
 
     def test_waiting_can_be_stopped_and_gives_up_after_a_limit(self):
         stop=[]
