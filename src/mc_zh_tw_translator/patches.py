@@ -1192,7 +1192,8 @@ def match_catalog(packs, instances, applied=None, installed_full=None):
         # Older catalog entries lack the memory figure; the installed modpack's own manifest has it.
         ram=pack.get('recommendedRam') or next((r for r in (instance_identity(Path(x['path']))['recommendedRam'] for x in targets) if r),0)
         rows.append(dict(pack,status=status,instances=targets,versions=len(versions),latest=pack is versions[0],consistency=consistency,
-                         newest_version=versions[0]['version'],recommendedRam=ram))
+                         newest_version=versions[0]['version'],recommendedRam=ram,
+                         newer_pack=versions[0] if pack is not versions[0] else None))
     rows.sort(key=lambda r:({'update':0,'exact':1,'applied':2,'other_version':3}.get(r['status'],4),r['name'].casefold()))
     return rows+sorted(match_full(full,installed_full),key=lambda r:r['name'].casefold())
 
@@ -1245,19 +1246,33 @@ def wait_for_modpack(pack, manifest, notify=lambda *_:None, cancelled=lambda:Fal
     (CurseForge finished but some mods differ), the folder is returned as it is: the translation
     is then applied to what matches and the rest is reported as skipped.
     """
+    from . import publish_checks
     find=find or jobs.curseforge_instances;start=clock();changed=start;seen=None
     while True:
         if cancelled():raise InterruptedError('已停止等待。CurseForge 可以繼續安裝整合包；裝好後回到這一頁按「安裝翻譯」即可。')
         found=[x for x in find() if x['projectID']==pack['projectID'] and x['fileID']==pack['fileID']]
         if found:
             instance=Path(found[0]['path']);present,needed=modpack_files_ready(instance,manifest)
-            try:state=(present,sum(1 for _ in (instance/'mods').iterdir()))
-            except OSError:state=(present,0)
+            try:mod_count=sum(1 for _ in (instance/'mods').iterdir())
+            except OSError:mod_count=0
+            state=(instance,present,mod_count)
             if state!=seen:seen=state;changed=clock()
             quiet=clock()-changed
-            notify(int(100*present/max(1,needed)),'等待 CurseForge 安裝整合包',f'已就緒 {present:,}／{needed:,} 個要翻譯的檔案')
-            if (present==needed and quiet>=calm) or (state[1] and quiet>=settle):return instance
+            percent=int(100*present/max(1,needed))
+            detail=f'已就緒 {present:,}／{needed:,} 個要翻譯的檔案'
+            if (present==needed and quiet>=calm) or (mod_count and quiet>=settle):
+                try:
+                    publish_checks.required_packs(instance)
+                except publish_checks.MissingTooltipTexture as exc:
+                    if quiet>=settle or clock()-start>timeout:
+                        raise ValueError(str(exc)+' 補齊後回到這一頁按「安裝翻譯」。') from exc
+                    detail+='，正在等提示框圖片所需的模組或資源包到齊'
+                else:
+                    notify(percent,'等待 CurseForge 安裝整合包',detail)
+                    return instance
+            notify(min(99,percent),'等待 CurseForge 安裝整合包',detail)
         else:
+            seen=None
             notify(0,'等待 CurseForge 安裝整合包','請在 CurseForge 的視窗確認安裝，這裡會自動接著做')
         if clock()-start>timeout:
             raise ValueError('等了很久，CurseForge 還沒有裝好這個整合包。請看一下 CurseForge 的安裝進度；裝好後回到這一頁按「安裝翻譯」即可。')

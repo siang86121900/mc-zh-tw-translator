@@ -775,11 +775,11 @@ class MainWindow(QMainWindow):
                 'other_version':('整合包版本不同','todo'),'not_installed':('未安裝整合包','todo'),
                 'full':('可安裝','progress'),'full_update':('有新版本','progress'),'full_installed':('已安裝','done')}
         notes={'update':'你安裝後這份翻譯又更新了。',
-               'other_version':'你的整合包版本和這份翻譯不同，只會翻譯相同的模組；建議先在 CurseForge 更新整合包。',
+               'other_version':'你電腦上的整合包版本不同。可以安裝這份翻譯對應的版本，或只將翻譯套用到舊版中檔案相同的部分。',
                'not_installed':'你的電腦還沒有這個整合包。按下面的按鈕，CurseForge 會下載整合包，裝好後這裡自動裝上翻譯並把語言設成繁體中文。'}
         actions={'update':[('更新翻譯',True,self.apply_catalog_patch)],'exact':[('安裝翻譯',True,self.apply_catalog_patch)],
                  'applied':[('重新安裝',False,self.apply_catalog_patch)],
-                 'other_version':[('仍要安裝',False,self.apply_catalog_patch),('用 CurseForge 更新整合包',False,self.install_with_curseforge)],
+                 'other_version':[('安裝整合包與翻譯',True,self.install_pack_and_translation),('套用到現有版本',False,self.apply_catalog_patch)],
                  'not_installed':[('安裝整合包與翻譯',True,self.install_pack_and_translation)],
                  'full':[('安裝',True,self.install_full_pack)],
                  'full_update':[('更新整合包',True,self.update_full_pack),('另外安裝一份',False,self.install_full_pack)],
@@ -810,8 +810,7 @@ class MainWindow(QMainWindow):
                     else '這份補丁未提供完整的一致性核對資料，安裝成功不代表取得分享者的所有翻譯。' if pack.get('sharingStatus','unknown')=='unknown'
                     else '分享者有部分內容未包含在補丁裡，安裝後仍可能看到英文。' if pack.get('sharingStatus')=='partial' else '')
                 if sharing_note:b.addWidget(label(sharing_note,'warn' if pack.get('consistency')!='matched' else 'sub'))
-            newer=(f"整合包已有新版本 {pack['newest_version']} 的翻譯，在 CurseForge 更新整合包後即可安裝。"
-                   if pack['status'] in ('exact','applied','update') and not pack['latest'] else '')
+            newer=(f"整合包已有新版本 {pack['newest_version']} 的翻譯。" if pack.get('newer_pack') else '')
             extra=pack.get('addedMods') or []
             added=(f"翻譯者另外加裝了 {len(extra)} 個模組：" +'、'.join(m['name'] for m in extra[:8])+('…' if len(extra)>8 else '')
                    +'。安裝時會從 CurseForge 一起加入。') if extra else ''
@@ -823,6 +822,10 @@ class MainWindow(QMainWindow):
             for text,primary,fn in actions[pack['status']]:
                 btn=button(text,lambda checked=False,p=pack,fn=fn:fn(p),primary);btn.setEnabled(not self.busy)
                 self.pack_buttons.append(btn);row.addWidget(btn)
+            if pack.get('newer_pack'):
+                btn=button('安裝新版整合包與翻譯',lambda checked=False,p=pack:
+                           self.install_pack_and_translation(p['newer_pack'],card=p))
+                btn.setEnabled(not self.busy);self.pack_buttons.append(btn);row.addWidget(btn)
             if memory:row.addWidget(button('怎麼調整記憶體',lambda checked=False,p=pack:self.show_memory_help(p)))
             if pack.get('instances') and pack['status']!='not_installed':
                 btn=button('建立伺服器',lambda checked=False,p=pack:self.build_server(p));btn.setEnabled(not self.busy)
@@ -916,8 +919,8 @@ class MainWindow(QMainWindow):
         except (InterruptedError,OSError,RuntimeError,ValueError,TypeError,KeyError) as exc:
             return '翻譯已安裝，記憶體設定未完成。'+jobs.explain_error(exc)
 
-    def install_pack_and_translation(self,pack):
-        """One button for someone who has nothing yet: CurseForge installs the modpack, then the translation goes on."""
+    def install_pack_and_translation(self,pack,*,card=None):
+        """Have CurseForge install the selected version, then apply its translation."""
         if self.busy or not pack['projectID']:return
         add=self.ask_install('安裝整合包與翻譯',f"將安裝「{pack['name']}」整合包版本 {pack['version'] or ''}，並裝上繁體中文翻譯。\n\n"
                              '1. CurseForge 會跳出來，請在它的視窗確認安裝（整合包由 CurseForge 從官方下載）。\n'
@@ -939,7 +942,7 @@ class MainWindow(QMainWindow):
             if instance.resolve() not in previous:
                 memory=self.patch_memory_result(instance,pack,w)
             return dict(result,installed_modpack=True,memory_line=memory,notes=pack.get('notes',''))
-        self.active_card=self.catalog_key(pack)
+        self.active_card=self.catalog_key(card or pack)
         self.curseforge_alerted=False
         self.run_worker('patch_install',operation,self.patch_applied)
 
@@ -1205,12 +1208,6 @@ class MainWindow(QMainWindow):
         box.setIcon(QMessageBox.Information if result['ok'] else QMessageBox.Warning)
         opener=box.addButton('開啟伺服器資料夾',QMessageBox.ActionRole);box.addButton('關閉',QMessageBox.RejectRole);box.exec()
         if box.clickedButton() is opener:QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
-
-    def install_with_curseforge(self,pack):
-        if not pack['projectID']:return
-        QDesktopServices.openUrl(QUrl(patches.curseforge_install_url(pack)))
-        QMessageBox.information(self,'用 CurseForge 安裝',f"已請 CurseForge 安裝「{pack['name']}」整合包版本 {pack['version'] or ''}。\n\n如果沒有反應，請在 CurseForge 搜尋這個整合包並安裝同一個版本。"
-                                '\n裝好後回到這裡，按「重新整理」再「安裝翻譯」。')
 
     def make_terms(self):
         box=self.page('譯名與用詞','固定專有名詞的譯法，並統一不同模組間翻得不一樣的詞。')

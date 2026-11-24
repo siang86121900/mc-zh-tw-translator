@@ -1361,6 +1361,7 @@ def curseforge_instances():
     for instances the user created by hand.
     """
     from .full_pack import curseforge_list, configured_curseforge_root
+    from .patches import curseforge_record
     listing=curseforge_list()
     try:
         data=json.loads(listing.read_text(encoding='utf-8-sig'))
@@ -1376,7 +1377,16 @@ def curseforge_instances():
     for x in data if isinstance(data,list) else []:
         try:
             path=Path(x['installPath']);roots.add(path.parent)
-            if is_instance(path):add(x,path)
+            if is_instance(path):
+                profile=curseforge_record(path)
+                # The global list can still show the previous version after an in-place update.
+                try:
+                    project, file_id = int(profile.get('projectID') or 0), int(profile.get('fileID') or 0)
+                except (TypeError, ValueError):
+                    project, file_id = 0, 0
+                if project>0 and project==int(x.get('projectID') or 0) and file_id>0:
+                    x={**x,'fileID':file_id}
+                add(x,path)
         except (KeyError,TypeError,ValueError,OSError):
             continue
     # CurseForge writes that list some time after a modpack finishes installing (seen: not within

@@ -363,6 +363,26 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(([Path(f).name for f in result['applied']],[s['file'] for s in result['skipped']]),(['zh_tw.json'],['mods/real.jar']))
         self.assertEqual((self.friend/'mods/real.jar').read_bytes(),b'PK-partial')
 
+    def test_waits_for_tooltip_art_even_when_translation_files_are_ready(self):
+        shutil.copytree(self.original,self.friend)
+        config=self.friend/'config/tooltipoverhaul/custom_frames.json'
+        config.parent.mkdir(parents=True)
+        config.write_text('{"texture":"tooltipoverhaul:textures/overlay/amber_frame.png"}',encoding='utf-8')
+        with self.assertRaisesRegex(ValueError,'amber_frame.*Tooltip Overhaul'):
+            self.wait(settle=24)
+        self.assertFalse((self.friend/'options.txt').exists())
+        self.clock=Clock()
+        def download_art():
+            with zipfile.ZipFile(self.friend/'mods/tooltipoverhaul.jar','w') as z:
+                z.writestr('assets/tooltipoverhaul/textures/overlay/amber_frame.png',b'image')
+        self.clock.steps=[lambda:None]*6+[download_art]
+        self.assertEqual(self.wait(settle=60),self.friend)
+        self.assertIn('正在等提示框圖片',''.join(detail for _,_,detail in self.seen))
+        with patch.object(jobs,'ensure_game_closed'):
+            result=patches.apply_patch(self.friend,self.patch,self.home,set_language=True)
+        self.assertTrue(result['language_set'])
+        self.assertTrue((self.friend/jobs.RESOURCE_PACK_FILE).is_file())
+
     def test_waiting_can_be_stopped_and_gives_up_after_a_limit(self):
         stop=[]
         with self.assertRaisesRegex(InterruptedError,'按「安裝翻譯」'):
@@ -389,8 +409,31 @@ class InstallTests(unittest.TestCase):
         with patch.dict('os.environ',{'APPDATA':str(appdata),'LOCALAPPDATA':str(user/'local')}),patch('pathlib.Path.home',return_value=user),patch('mc_zh_tw_translator.full_pack.system_curseforge_data_roots',return_value=[]):
             found=jobs.curseforge_instances()
             self.assertEqual(sorted((x['name'],x['projectID'],x['fileID']) for x in found),[('Demo Pack',123,456),('Old',1,2)])
+            (listed/'minecraftinstance.json').write_text(json.dumps(dict(projectID=1,fileID=3)),encoding='utf-8')
+            self.assertEqual(next(x for x in jobs.curseforge_instances() if x['path']==listed)['fileID'],3)
             (store/'MinecraftGameInstance.json').unlink()  # someone whose CurseForge never wrote the list
-            self.assertEqual([x['name'] for x in jobs.curseforge_instances()],['Demo Pack'])
+            self.assertEqual({x['name'] for x in jobs.curseforge_instances()},{'Demo Pack','Old'})
+
+    def test_old_install_card_starts_requested_new_version(self):
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from PySide6.QtGui import QDesktopServices
+        from mc_zh_tw_translator.desktop import MainWindow
+        app=QApplication.instance() or QApplication([])
+        entry=dict(self.pack,gameVersion='1.21.1',translator='我',updated='2026-09-30',modpackDate='2026-09-18',revision=1,
+                   url='https://raw.githubusercontent.com/x',sha256='a'*64,size=1)
+        old=dict(entry,fileID=455,version='0.9')
+        found=[dict(name='Demo Pack',path=self.friend,projectID=123,fileID=455,gameVersion='1.21.1')]
+        window=MainWindow(self.home)
+        self.addCleanup(window.close)
+        for catalog,button_text in [([old,entry],'安裝新版整合包與翻譯'),([entry],'安裝整合包與翻譯')]:
+            with self.subTest(button=button_text), patch.object(jobs,'curseforge_instances',return_value=found), \
+                 patch.object(QMessageBox,'question',return_value=QMessageBox.Yes), \
+                 patch.object(QDesktopServices,'openUrl',return_value=True) as opened,patch.object(window,'run_worker') as run:
+                window.catalog_loaded(catalog)
+                next(b for b in window.pack_buttons if b.text()==button_text).click()
+                self.assertEqual(opened.call_args[0][0].toString(),patches.curseforge_install_url(entry))
+                self.assertEqual(run.call_args[0][0],'patch_install')
+                self.assertEqual(window.active_card,window.catalog_key(window.catalog[0]))
 
     def test_modpack_removed_after_the_list_was_read_goes_to_curseforge(self):
         from PySide6.QtWidgets import QApplication, QMessageBox

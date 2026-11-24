@@ -6,6 +6,11 @@ import zipfile
 from pathlib import Path
 
 YSM_NOTE = 'YSM 需要保留官方原檔，修改模組內部可能造成 err: 51；語系翻譯改用外部資源包'
+
+
+class MissingTooltipTexture(ValueError):
+    """A configured texture has no available provider in the local profile."""
+
 # Official Modrinth project 86xjpqqS, 2.6.5 files; metadata checked 2026-11-07.
 # No executable download is performed by this check.
 YSM_SHA512 = {
@@ -107,7 +112,9 @@ def required_packs(instance, overlay=None, removed=()):
     needed = set()
     for name, packs in sorted(providers.items()):
         if not packs:
-            raise ValueError('提示框缺少圖片，沒有繼續：'+name+'。請先補齊整合包原本使用的材質包。')
+            raise MissingTooltipTexture(
+                '提示框缺少圖片：'+name+'。請確認 CurseForge 已裝完指定版本的整合包，'
+                '並檢查 Tooltip Overhaul 模組和原版整合包的資源包是否齊全。')
         if '' in packs:
             continue
         if len(packs) != 1:
