@@ -53,6 +53,22 @@ class SoloQuestsTests(unittest.TestCase):
             self.assertEqual(updated['added_mods'], [mod])
             self.assertEqual(jar.read('payload/translation').decode(), '測試譯文')
 
+    def test_republished_full_pack_card_still_names_the_checked_jar(self):
+        # Society 4.2.1 republished whole (2026-11-25): Solo Quests was already in the pack, so it was not added
+        # again, and the card would have dropped it although the upload carries it.
+        from types import SimpleNamespace
+        from unittest import mock
+        self.jar('ftb-solo-quests.jar', solo_quests.MOD_ID, '1.1.2')
+        jar = self.pack/'mods'/'ftb-solo-quests.jar'
+        args = SimpleNamespace(no_solo_quests=False)
+        self.assertIsNone(publish_translation.card_solo(args, self.pack))  # a jar that is not the checked file
+        (file_id, _size, _sha), = [v for k, v in solo_quests.FILES.items() if k == ('forge', '1.20.1')]
+        checked = {('forge', '1.20.1'): (file_id, jar.stat().st_size, solo_quests.file_hash(jar))}
+        with mock.patch.dict(solo_quests.FILES, checked):
+            self.assertIsNone(solo_quests.choose(self.pack)[0])  # not added a second time
+            self.assertEqual(publish_translation.card_solo(args, self.pack)['name'], solo_quests.NAME)
+            self.assertIsNone(publish_translation.card_solo(SimpleNamespace(no_solo_quests=True), self.pack))
+
     def test_full_pack_translation_pack_gets_the_added_mods_chinese(self):
         # Society 4.2.1 was shared whole with Solo Quests added after it was translated: its sync buttons stayed
         # English (Sync this quest progress / Sync all quests with team, 2026-11-25).

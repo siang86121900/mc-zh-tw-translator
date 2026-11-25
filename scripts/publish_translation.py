@@ -141,9 +141,14 @@ def refresh_full_card(args):
         sys.exit(f'目錄裡找不到（或不只一張）「{instance.name}」的整包卡片，沒有修改。')
     entry = dict(cards[0], mods=sum(1 for _ in (instance/'mods').glob('*.jar')))
     entry.update(card_server(args))
+    solo = card_solo(args, instance)
+    if solo and not any(m.get('name') == solo['name'] for m in entry.get('addedMods') or []):
+        entry['addedMods'] = [*(entry.get('addedMods') or []), dict(name=solo['name'], size=solo['size'])]
     if args.notes:entry['notes']=args.notes
     if args.ram:entry['recommendedRam'] = args.ram
-    print(f"{entry['name']}：{entry['mods']} 個模組", flush=True)
+    if args.version:entry['version'] = args.version
+    if pairs := same_as(args, instance):entry['sameAs'] = pairs
+    print(f"{entry['name']} {entry.get('version', '')}：{entry['mods']} 個模組", flush=True)
     update_catalog(entry, lambda p: p is cards[0] or p == cards[0], f"整合包卡片資料：{entry['name']}", dry_run=args.dry_run, revise=False)
 
 
@@ -216,6 +221,61 @@ def publication_solo(args, instance, *, include_existing=False):
     return mod
 
 
+def earlier_same_as(pid):
+    """The sameAs of the whole-pack card a republish replaces, checked again against the new upload."""
+    try:
+        git('fetch', 'origin', BRANCH, cwd=ROOT)
+        index = json.loads(git('show', f'origin/{BRANCH}:index.json', cwd=ROOT))
+    except subprocess.CalledProcessError:
+        return ''
+    cards = [p for p in index['packs'] if p.get('kind') == 'full' and (p.get('packId') or full_pack.pack_id(p['name'])) == pid]
+    pairs = [x for c in cards for x in c.get('sameAs') or []]
+    return f"{pairs[0]['projectID']}:{pairs[0]['fileID']}" if len(pairs) == 1 else ''
+
+
+def same_as(args, instance, earlier=''):
+    """--same-as PROJECT:FILE: the CurseForge file whose players this whole-pack card may update in place
+    (patches.match_full). Only listed after every mod of that file's published translation patch is found here
+    with the same SHA-256, so the card never takes over another version."""
+    wanted = args.same_as or earlier
+    if not wanted:
+        return None
+    try:
+        project, file_id = (int(x) for x in wanted.split(':'))
+    except ValueError:
+        sys.exit('--same-as 請寫成 整合包編號:檔案編號，例如 1093382:9721472。')
+    git('fetch', 'origin', BRANCH, cwd=ROOT)
+    index = json.loads(git('show', f'origin/{BRANCH}:index.json', cwd=ROOT))
+    cards = [p for p in index['packs'] if p.get('kind') != 'full' and p.get('projectID') == project and p.get('fileID') == file_id]
+    if len(cards) != 1 or not str(cards[0].get('url', '')).startswith(RAW):
+        sys.exit('目錄裡找不到這個 CurseForge 檔案的翻譯補丁卡片，無法核對模組，沒有修改。')
+    data = subprocess.run(['git', 'show', f"origin/{BRANCH}:{cards[0]['url'][len(RAW):]}"], cwd=ROOT,
+                          capture_output=True, check=True).stdout
+    with tempfile.TemporaryDirectory() as tmp:
+        patch = Path(tmp)/'patch.zip'
+        patch.write_bytes(data)
+        z, manifest = read_patch(patch)
+        z.close()
+    mods = manifest.get('required_mods') or []
+    different = [m['file'] for m in mods
+                 if full_pack.file_hash(full_pack.contained(instance, m['file'])) not in (m.get('before'), m.get('after'))]
+    if not mods or different:
+        if not args.same_as:  # kept from the earlier card: the new upload is another version, so drop it
+            print(f'這次上架的模組和 CurseForge 檔案 {file_id} 不同，卡片不再讓那個版本的玩家直接更新。', flush=True)
+            return None
+        sys.exit(f"有 {len(different):,} 個模組和 CurseForge 檔案 {file_id} 不同（例如 {'、'.join(different[:3])}），沒有修改。")
+    print(f'已核對 {len(mods):,} 個模組和 CurseForge 檔案 {file_id} 相同；那個版本的玩家可以直接用這張卡片更新。', flush=True)
+    return [dict(projectID=project, fileID=file_id)]
+
+
+def card_solo(args, instance):
+    """A republished full pack that already carries the checked Solo Quests jar still names it on the card
+    (公開卡片列出 Solo Quests): it is in the upload, only not added again this time."""
+    if args.no_solo_quests:
+        return None
+    return solo_quests.choose(instance, include_existing=True)[0]
+
+
 SOLO_LANG = solo_quests.LANG  # the same text goes into full packs (full_pack.build)
 SOLO_ZH_TW = solo_quests.ZH_TW
 
@@ -283,18 +343,20 @@ def publish_full(args):
         print('等待 Google 雲端硬碟上傳…', flush=True)
         time.sleep(30)
     print('雲端檔案 ID：', file_id, flush=True)
-    entry = dict(kind='full', name=manifest['name'], packId=full_pack.pack_id(manifest['name']), version=manifest.get('version') or '', gameVersion=manifest.get('gameVersion') or '',
+    entry = dict(kind='full', name=manifest['name'], packId=full_pack.pack_id(manifest['name']), version=args.version or manifest.get('version') or '',gameVersion=manifest.get('gameVersion') or '',
                  loader=manifest['loader'].get('name', ''), translator=args.translator, updated=date.today().isoformat(),
                  notes=args.notes, recommendedRam=args.ram or int(manifest.get('recommendedRam') or 0),
                  driveId=file_id, sha256=digest, size=size, totalSize=manifest['totalSize'], files=len(manifest['files']),
                  mods=sum(1 for e in manifest['files'] if re.fullmatch(r'mods/[^/]+\.jar', e['path'])), **card_server(args))
     entry['minimumAppVersion']='0.42.1'
+    if pairs := same_as(args, instance, earlier_same_as(entry['packId'])):
+        entry['sameAs'] = pairs
     if manifest.get('curseforgeUnavailable'):
         entry['curseforgeUnavailable'] = [m['name'] for m in manifest['curseforgeUnavailable']][:20]
     if manifest.get('backup_mod'):
         entry['addedMods'] = [dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])]
-    if solo:
-        entry.setdefault('addedMods', []).append(dict(name=solo['name'], size=solo['size']))
+    if shown := solo or card_solo(args, instance):
+        entry.setdefault('addedMods', []).append(dict(name=shown['name'], size=shown['size']))
     # Players download anonymously; prove that works (and that the bytes are the same) before listing it.
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         for attempt in range(20):
@@ -323,6 +385,10 @@ def main():
     parser.add_argument('--drive-folder', type=Path, help='--full：Google 雲端硬碟電腦版裡的資料夾')
     parser.add_argument('--work', type=Path, help='--full：打包用的暫存資料夾（預設系統暫存）')
     parser.add_argument('--upload-wait', type=int, default=6*3600, help='--full：等待上傳完成的秒數')
+    parser.add_argument('--version', default='', help='--full：卡片顯示的整合包版本（從整包卡片裝的整合包沒有 CurseForge 紀錄，'
+                        'manifest.json 的版本可能和 CurseForge 檔名不同時，用 CurseForge 檔名的版本）')
+    parser.add_argument('--same-as', default='', help='--full：模組和這個 CurseForge 檔案（整合包編號:檔案編號）完全相同時，'
+                        '讓用 CurseForge 官方版裝的玩家直接用這張卡片就地更新；上架時會逐一核對模組')
     parser.add_argument('--card-only', action='store_true', help='只改卡片資料，不重新打包上傳（--full：補模組數；補丁卡片：伺服器、介紹）')
     parser.add_argument('--server-name', default='', help='安裝時加到玩家「多人遊戲」清單的伺服器名稱')
     parser.add_argument('--server-address', default='', help='伺服器位址，例如 26.186.50.26')

@@ -41,7 +41,8 @@ PAYLOAD = 'files/'
 # Personal or machine-made content: never shared. Top-level names, compared case-insensitively.
 EXCLUDED_DIRS = {'saves', 'logs', 'crash-reports', 'backups', 'simplebackups', 'screenshots', 'xaero', 'journeymap',
                  'voxelmap', 'lightspeed-cache', 'cache', '.cache', 'modernfix', 'local', 'downloads', 'customskinloader',
-                 '.curseclient', '.fabric', '.git', 'replay_recordings', 'replay_videos', 'webcache', 'distant_horizons_server_data'}
+                 '.curseclient', '.fabric', '.git', 'replay_recordings', 'replay_videos', 'webcache', 'distant_horizons_server_data',
+                 '.bobby'}  # Bobby keeps the map of every server the player visited
 EXCLUDED_FILES = {'options.txt', 'optionsof.txt', 'optionsshaders.txt', 'minecraftinstance.json', 'servers.dat', 'servers.dat_old',
                   'usercache.json', 'usernamecache.json', 'imgui.ini', 'trashslotsavestate.json', 'patchouli_data.json',
                   'enigmatic_persistence.dat', 'rhino.local.properties', 'launcher_profiles.json', 'realms_persistence.json',
@@ -817,6 +818,35 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         raise
 
 
+def added_jar_names() -> set[str]:
+    """File names of the mods this app adds itself (IMBlocker, Sweeper Maid, FTB Backups 2, Solo Quests): a copy
+    may hold another checked build, or FTB Backups 2 with its Chinese notices written locally."""
+    from . import solo_quests, sweeper
+    names={x for row in (*backup_mod.FILES,*imblocker.FILES,*sweeper.FILES) for x in row if isinstance(x,str) and x.endswith('.jar')}
+    names|={f'ftb-solo-quests-{mc}-{loader}-1.1.2.jar' for loader,mc in solo_quests.FILES}
+    return {n.casefold() for n in names}
+
+
+def same_mods(folder: Path, manifest):
+    """Refuse to take over a folder whose mods are not the shared ones: it is another version of the modpack,
+    and updating it in place would mix two versions. Mods only this folder has are left alone."""
+    extra=added_jar_names();different=[]
+    for e in manifest['files']:
+        path=e['path']
+        if not re.fullmatch(r'mods/[^/]+\.jar',path) or path[5:].casefold() in extra:continue
+        if file_hash(contained(folder,path))!=e['sha256']:different.append(path[5:])
+    if different:
+        raise ValueError(f'你的「{folder.name}」有 {len(different):,} 個模組和這張卡片的整合包不同（例如 '+'、'.join(different[:3])
+                         +'），可能是別的版本，沒有更新任何檔案。要用這張卡片的版本，請改按「另外安裝一份」。')
+
+
+def profile_guid(folder: Path) -> str:
+    """The CurseForge profile number of a taken-over folder, so still_installed finds it in CurseForge's list."""
+    guid=str(patches.curseforge_record(folder).get('guid') or '')
+    try:return str(uuid.UUID(guid))
+    except ValueError:return str(uuid.uuid4())
+
+
 def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cancelled=lambda:False, session=None, pause=time.sleep, server=None) -> dict:
     """Bring an installed profile to a newer upload in place; saves, game options and screenshots stay.
 
@@ -835,6 +865,7 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
     record=installed(home).get(str(folder).casefold()) or {}
     try:old=json.loads(content_file(home,record.get('guid','')).read_text(encoding='utf-8'))
     except (OSError,ValueError):old={}  # installed by an older version: nothing is removed, changed files are replaced
+    if not record:same_mods(folder,manifest)  # a CurseForge copy a card takes over (patches.match_full)
     jobs.ensure_game_closed(folder)
     staged=home/'tmp'/('fullupdate-'+uuid.uuid4().hex[:8]);staged.mkdir(parents=True)
     records=[];replaced=[];kept=[];sources=[]
@@ -891,7 +922,7 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
             notify(85,'備份與更新','先保存要換掉的檔案，再寫入新版本')
             jobs.ensure_game_closed(folder)
             backup=str(apply_reviewed(folder,staged,records,home/'output',jobs.waiting_note(notify,85,'備份與更新')))
-        remember(home,folder,manifest,file_hash(Path(package)),record.get('guid') or str(uuid.uuid4()))
+        remember(home,folder,manifest,file_hash(Path(package)),record.get('guid') or profile_guid(folder))
         cover=covers.finish(folder,home,notify,cancelled,pause=pause)
         for source in sources:Path(source).unlink(missing_ok=True)
         ime=imblocker.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)

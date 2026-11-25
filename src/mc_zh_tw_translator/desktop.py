@@ -803,6 +803,10 @@ class MainWindow(QMainWindow):
                                '自動在 CurseForge 建立設定檔，裝好就能玩。')
                 notes['full_update']=('分享者更新了這個整合包。按「更新整合包」會直接更新你原本的設定檔，存檔和遊戲設定都保留；'
                                       '更新前會先備份，可在「備份與還原」復原。')
+                if pack.get('adopt') and all(x.get('adopt') for x in pack.get('instances') or []):
+                    # A copy CurseForge installed from the official file this card was checked against (patches.match_full).
+                    notes['full_update']=('你電腦上的這個整合包是從 CurseForge 官方版安裝的，和這張卡片是同一個版本。按「更新整合包」會在原本的資料夾換上這張卡片的最新翻譯，'
+                                          '不用重新安裝，存檔和遊戲設定都保留；會先核對每個模組都相同才動手，更新前也會先備份，可在「備份與還原」復原。之後這個整合包的翻譯都由這張卡片更新。')
             f,b=card();top=QHBoxLayout();name=label(pack['name'],'section');name.setWordWrap(True);top.addWidget(name,1)
             if pack.get('new'):
                 tag=label('','pill');set_pill(tag,'新','progress');top.addWidget(tag,0,Qt.AlignVCenter)
@@ -994,10 +998,12 @@ class MainWindow(QMainWindow):
             name,ok=QInputDialog.getItem(self,'更新整合包','要更新哪一個？',[Path(t).name for t in targets],0,False)
             if not ok:return
             target=next(t for t in targets if Path(t).name==name)
+        adopt=any(x.get('adopt') and str(x['path'])==str(target) for x in pack.get('instances') or [])
         text=(f"將把「{Path(target).name}」更新成分享者的最新版本（已含繁體中文翻譯）：\n{target}\n\n"
               f"1. 從分享者的 Google 雲端下載新版本（約 {pack['size']/1024**3:.1f} GB）。\n"
-              '2. 只換掉有變動的檔案，新版本拿掉的模組會移除；存檔、遊戲設定和截圖都不會動。\n'
-              '3. 換掉和移除的檔案會先備份，之後可在「備份與還原」復原。\n\n'
+              +('2. 先核對你的每個模組都和這張卡片相同（有不同就不更新任何檔案），再換掉有變動的檔案；不會移除檔案，存檔、遊戲設定和截圖都不會動。\n'
+                if adopt else '2. 只換掉有變動的檔案，新版本拿掉的模組會移除；存檔、遊戲設定和截圖都不會動。\n')
+              +'3. 換掉和移除的檔案會先備份，之後可在「備份與還原」復原。\n\n'
               '請先關閉這個整合包的遊戲；若需要補上封面，最後一步會請你關閉 CurseForge。\n\n是否繼續？')
         if pack.get('server'):text+='\n\n'+server_line(pack['server'])+'同一個位址不重複加入，原有清單保留。'
         if QMessageBox.question(self,'更新整合包',text)!=QMessageBox.Yes:return

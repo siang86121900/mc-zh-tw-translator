@@ -1177,20 +1177,45 @@ def full_entry(x):
                            if isinstance(m,dict) and m.get('name') and 0<int(m.get('size') or 0)<=MAX_MOD_SIZE],
                 server=dict(zip(('name','address'),server_list.checked(x.get('server')))) if server_list.checked(x.get('server')) else None,
                 # A CurseForge modpack shared whole because CurseForge stopped serving these of its mods.
-                curseforgeUnavailable=[str(n)[:120] for n in (x.get('curseforgeUnavailable') or [])[:20] if isinstance(n,str) and n.strip()])
+                curseforgeUnavailable=[str(n)[:120] for n in (x.get('curseforgeUnavailable') or [])[:20] if isinstance(n,str) and n.strip()],
+                # CurseForge files whose copies this card may update in place (match_full); checked when published.
+                sameAs=[dict(projectID=p,fileID=f) for p,f in sorted(same_as(dict(sameAs=(x.get('sameAs') or [])[:5] if isinstance(x.get('sameAs'),list) else [])))])
 
 
-def match_full(packs, installed=None):
-    """Rows for whole modpacks: 'full' (not installed), 'full_installed', or 'full_update' (an older upload is installed)."""
+def same_as(pack):
+    """The CurseForge (projectID, fileID) pairs a whole-pack card was checked to carry the same mods as."""
+    pairs=set()
+    for item in pack.get('sameAs') or []:
+        try:pairs.add((int(item['projectID']),int(item['fileID'])))
+        except (KeyError,TypeError,ValueError):continue
+    return {x for x in pairs if x[0]>0 and x[1]>0}
+
+
+def full_paths(installed):
+    """Folders whole-pack cards already look after (full_packs.json records)."""
+    return {str(Path(str(r.get('path'))).resolve()).casefold() for r in (installed or {}).values() if isinstance(r,dict) and r.get('path')}
+
+
+def match_full(packs, installed=None, instances=()):
+    """Rows for whole modpacks: 'full' (not installed), 'full_installed', or 'full_update' (an older upload is installed).
+
+    A card checked to carry the same mods as a CurseForge file (sameAs) also offers 'full_update' to a copy
+    CurseForge installed from that file: its translation patch can no longer be installed, and the player keeps
+    the same folder and worlds instead of installing the modpack again (owner, 2026-11-25). Those copies are
+    marked adopt; full_pack.update compares every mod before writing anything.
+    """
     from .full_pack import pack_id
-    rows=[]
+    rows=[];known=full_paths(installed)
     for pack in packs:
         # The same modpack across versions (its name usually carries the version): updated in place, not installed again.
         mine=[r for r in (installed or {}).values() if isinstance(r,dict) and (r.get('packId') or pack_id(r.get('name','')))==pack['packId']
               and Path(str(r.get('path'))).is_dir()]
-        status='full_installed' if any(r.get('sha256')==pack['sha256'] for r in mine) else 'full_update' if mine else 'full'
-        rows.append(dict(pack,status=status,instances=[dict(path=Path(r['path'])) for r in mine],versions=1,latest=True,
-                         newest_version=pack['version']))
+        pairs=same_as(pack)
+        official=[x for x in instances if (x.get('projectID'),x.get('fileID')) in pairs
+                  and str(Path(x['path']).resolve()).casefold() not in known]
+        status='full_installed' if any(r.get('sha256')==pack['sha256'] for r in mine) else 'full_update' if mine or official else 'full'
+        rows.append(dict(pack,status=status,instances=[dict(path=Path(r['path'])) for r in mine]+[dict(path=Path(x['path']),adopt=True) for x in official],
+                         versions=1,latest=True,newest_version=pack['version'],adopt=bool(official)))
     return rows
 
 
@@ -1202,13 +1227,16 @@ def match_catalog(packs, instances, applied=None, installed_full=None):
     """
     groups={}
     full=[p for p in packs if p.get('kind')=='full'];packs=[p for p in packs if p.get('kind')!='full']
+    taken=full_paths(installed_full)
     for pack in packs:groups.setdefault(pack['projectID'] or pack['name'].casefold(),[]).append(pack)
     rows=[]
     for versions in groups.values():
         # Newest modpack version first: CurseForge numbers each upload higher than the last, while the
         # date only says when its translation was last published (an old version can be re-published).
         versions.sort(key=lambda p:(p['fileID'],p['updated']),reverse=True)
-        mine=[x for x in instances if versions[0]['projectID'] and x['projectID']==versions[0]['projectID']]
+        # A copy a whole-pack card took over is updated from that card, not by this patch.
+        mine=[x for x in instances if versions[0]['projectID'] and x['projectID']==versions[0]['projectID']
+              and str(Path(x['path']).resolve()).casefold() not in taken]
         exact=[(p,x) for p in versions for x in mine if x['fileID']==p['fileID']]
         pack,status=(exact[0][0],'exact') if exact else (versions[0],'other_version' if mine else 'not_installed')
         consistency='unknown'
@@ -1227,7 +1255,7 @@ def match_catalog(packs, instances, applied=None, installed_full=None):
                          newest_version=versions[0]['version'],recommendedRam=ram,
                          newer_pack=versions[0] if pack is not versions[0] else None))
     rows.sort(key=lambda r:({'update':0,'exact':1,'applied':2,'other_version':3}.get(r['status'],4),r['name'].casefold()))
-    return rows+sorted(match_full(full,installed_full),key=lambda r:r['name'].casefold())
+    return rows+sorted(match_full(full,installed_full,instances),key=lambda r:r['name'].casefold())
 
 
 def modpack_files_ready(instance: Path, manifest):

@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -71,7 +72,8 @@ class FullPackTests(unittest.TestCase):
         (self.owner/'mods/.connector').mkdir();(self.owner/'mods/.connector/gen.jar').write_bytes(b'generated')
         (self.owner/'config').mkdir();(self.owner/'config/a.toml').write_text('# 設定\nx=1\n',encoding='utf-8')
         (self.owner/'resourcepacks').mkdir();(self.owner/'resourcepacks/MCTranslator-zh_tw.zip').write_bytes(jar('translation'))
-        for personal in ('saves/World/level.dat','logs/latest.log','xaero/minimap/a.txt','XaeroWaypoints_BACKUP1/b.txt','crash-reports/c.txt'):
+        for personal in ('saves/World/level.dat','logs/latest.log','xaero/minimap/a.txt','XaeroWaypoints_BACKUP1/b.txt','crash-reports/c.txt',
+                         '.bobby/26.186.50.26/1/minecraft/overworld/r.0.0.mca'):
             (self.owner/personal).parent.mkdir(parents=True,exist_ok=True);(self.owner/personal).write_text('mine')
         for personal in ('servers.dat','usercache.json','optionsof.txt'):(self.owner/personal).write_text('mine')
         (self.owner/'options.txt').write_text('key_key.jump:key.keyboard.space\nlang:en_us\nresourcePacks:["vanilla","file/MCTranslator-zh_tw.zip"]\n',encoding='utf-8')
@@ -99,7 +101,8 @@ class FullPackTests(unittest.TestCase):
         self.assertEqual(files['mods/changed.jar']['source'],'zip')
         self.assertEqual(files['mods/handmade.jar']['source'],'zip')
         for gone in ('saves/World/level.dat','logs/latest.log','xaero/minimap/a.txt','XaeroWaypoints_BACKUP1/b.txt','crash-reports/c.txt',
-                     'servers.dat','usercache.json','optionsof.txt','minecraftinstance.json','mods/.connector/gen.jar'):
+                     'servers.dat','usercache.json','optionsof.txt','minecraftinstance.json','mods/.connector/gen.jar',
+                     '.bobby/26.186.50.26/1/minecraft/overworld/r.0.0.mca'):  # Bobby's map of a server (Society 2026-11-25)
             self.assertNotIn(gone,files)
         with zipfile.ZipFile(self.package) as z:
             options=z.read('files/options.txt').decode()
@@ -554,6 +557,59 @@ class FullPackTests(unittest.TestCase):
         for rel,data in before.items():
             if rel!='options.txt':self.assertEqual((folder/rel).read_bytes(),data,rel)
         self.assertFalse((folder/'kubejs/new.js').exists())
+
+    def curseforge_copy(self, name='Official Copy'):
+        """What a player who installed the official CurseForge file (and its translation patch) has."""
+        folder=self.instances/name
+        shutil.copytree(self.owner,folder,ignore=shutil.ignore_patterns('saves','logs'))
+        (folder/'config/a.toml').write_text('# old\nx=0\n',encoding='utf-8')
+        (folder/'resourcepacks/MCTranslator-zh_tw.zip').write_bytes(jar('older translation'))
+        (folder/'saves/World').mkdir(parents=True);(folder/'saves/World/level.dat').write_bytes(b'my world')
+        (folder/'mods/patch-added.jar').write_bytes(jar('IMBlocker from the patch'))
+        guid='12345678-1234-1234-1234-123456789abc'
+        (folder/'minecraftinstance.json').write_text(json.dumps(dict(name=name,projectID=77,fileID=88,guid=guid,gameVersion='1.20.1',
+                                                                     baseModLoader=LOADER,installedAddons=[])),encoding='utf-8')
+        return folder,guid
+
+    def test_curseforge_copy_with_the_same_mods_is_taken_over_in_place(self):
+        # Society 4.2.1 (2026-11-25): players of the official file's patch card were told to install the
+        # whole-pack card again in a new folder; the card now updates their own folder.
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        folder,guid=self.curseforge_copy()
+        card=patches.full_entry(dict(kind='full',name='My Pack',driveId='B'*33,sha256=full_pack.file_hash(self.package),size=10,
+                                     sameAs=[dict(projectID=77,fileID=88),dict(projectID='x')]))
+        self.assertEqual(card['sameAs'],[dict(projectID=77,fileID=88)])
+        patch_card=dict(name='My Pack',projectID=77,fileID=88,version='2.7',modpackDate='',updated='2026-11-22',sha256='d'*64,recommendedRam=1)
+        mine=[dict(name=folder.name,path=folder,projectID=77,fileID=88,gameVersion='1.20.1')]
+        rows={r.get('kind','patch'):r for r in patches.match_catalog([patch_card,card],mine,{},{})}
+        self.assertEqual(rows['full']['status'],'full_update');self.assertTrue(rows['full']['adopt'])
+        self.assertEqual(rows['full']['instances'],[dict(path=folder,adopt=True)])
+        self.assertEqual(rows['patch']['status'],'exact')
+        # Another CurseForge file of the same modpack is not offered.
+        other=[dict(mine[0],fileID=89)]
+        self.assertEqual(patches.match_catalog([card],other,{},{})[0]['status'],'full')
+        result=full_pack.update(self.package,self.home,folder,session=self.server,pause=lambda _:None)
+        self.assertEqual((folder/'config/a.toml').read_text(encoding='utf-8'),'# 設定\nx=1\n')
+        self.assertEqual((folder/'resourcepacks/MCTranslator-zh_tw.zip').read_bytes(),jar('translation'))
+        self.assertEqual((folder/'saves/World/level.dat').read_bytes(),b'my world')
+        self.assertTrue((folder/'mods/patch-added.jar').exists())  # only this copy has it: left alone
+        self.assertEqual(result['removed'],0)
+        record=full_pack.installed(self.home)[str(folder.resolve()).casefold()]
+        self.assertEqual(record['guid'],guid)  # CurseForge's own profile number, so still_installed finds it
+        rows={r.get('kind','patch'):r for r in patches.match_catalog([patch_card,card],mine,{},full_pack.installed(self.home))}
+        self.assertEqual(rows['full']['status'],'full_installed');self.assertFalse(rows['full']['adopt'])
+        self.assertEqual(rows['patch']['status'],'not_installed')  # the patch no longer updates this folder
+        jobs.restore_backup(Path(result['backup']),folder)
+        self.assertEqual((folder/'config/a.toml').read_text(encoding='utf-8'),'# old\nx=0\n')
+
+    def test_curseforge_copy_with_other_mods_is_not_touched(self):
+        folder,_=self.curseforge_copy()
+        (folder/'mods/served.jar').write_bytes(jar('another version of the mod'))
+        before={p.relative_to(folder).as_posix():p.read_bytes() for p in folder.rglob('*') if p.is_file()}
+        with self.assertRaisesRegex(ValueError,'1 個模組和這張卡片的整合包不同.*served.jar'):
+            full_pack.update(self.package,self.home,folder,session=self.server,pause=lambda _:None)
+        self.assertEqual({p.relative_to(folder).as_posix():p.read_bytes() for p in folder.rglob('*') if p.is_file()},before)
+        self.assertEqual(full_pack.installed(self.home),{})
 
     def test_update_refuses_a_missing_folder(self):
         with self.assertRaisesRegex(ValueError,'找不到要更新'):
