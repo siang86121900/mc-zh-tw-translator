@@ -52,83 +52,6 @@
       }
     },
     {
-      "name": "Society Sunlit Valley",
-      "projectID": 1093382,
-      "fileID": 8980840,
-      "version": "4.1.5A",
-      "modpackDate": "2026-09-26",
-      "gameVersion": "1.20.1",
-      "translator": "MC Translator",
-      "updated": "2026-11-21",
-      "notes": "Society Sunlit Valley 4.1.5A 繁中翻譯補丁，需先安裝相同版本原整合包。2026-11-21 盤點本整合包：仍有 27 類未確認涵蓋及 9 項讀取問題；本次工作報告仍有 986 筆缺翻、96 筆待套用，僅分享目前已套用且可匯出的翻譯，不代表整包已翻完或已經遊戲內驗收。原包 FTB Backups 2 由 CurseForge 管理，保留原設定，中文通知未完成。",
-      "recommendedRam": 0,
-      "sharingStatus": "ready",
-      "minimumAppVersion": "0.42.1",
-      "addedMods": [
-        {
-          "name": "Sweeper Maid",
-          "size": 955805
-        },
-        {
-          "name": "IMBlocker",
-          "size": 232400
-        },
-        {
-          "name": "Sweeper Maid（定時清理地上的掉落物）",
-          "size": 955805
-        },
-        {
-          "name": "FTB Backups 2（定時備份世界、繁中通知）",
-          "size": 1954591
-        }
-      ],
-      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/8980840-322217c1.zip",
-      "sha256": "322217c1e15b4d384b1f2436294ff0b1d6fd0c6e9977db9aa6b06255581c57ce",
-      "size": 3413748,
-      "revision": 1
-    },
-    {
-      "name": "Society Sunlit Valley",
-      "projectID": 1093382,
-      "fileID": 9721472,
-      "version": "4.2.0",
-      "modpackDate": "2026-11-20",
-      "gameVersion": "1.20.1",
-      "translator": "MC Translator",
-      "updated": "2026-11-22",
-      "notes": "目前 CurseForge 官方版裝不起來（Ember's Text API 1.4.1 已無法從 CurseForge 下載），還沒有這個整合包的玩家，請改用「Society Sunlit Valley 4.2.1」整包卡片的「安裝」；已經裝好的人照常「更新翻譯」即可。 第 5 版已將 Solo Quests 的單一任務同步、全部同步、隊友尚未完成提示，以及進度移轉和狀態訊息共 8 條補為繁中。玩家端更新翻譯即可。 玩家端先分配 10 GB（10,240 MB）。整合包作者未提供數值，這是 APP 依 351 個模組估算的試用起點，沒有實測最低需求。CurseForge：右鍵整合包 → Profile Options → Custom RAM Allocation。 多人連線請先加入同一個 Radmin VPN 網路，再使用「狗狗貓貓島」捷徑。Society Sunlit Valley 4.2.1 繁中翻譯補丁，需先安裝相同版本的整合包。2026-11-22 修正 Complementary Reimagined 搭配 Colorwheel 的原檔校驗，從第 2 版升級可補裝原先跳過的 721 筆光影設定譯文，無須重新翻譯。APP v0.42.2 仍可能把已安裝的光影、Konkrete 介面或書名誤列為略過，請以對應文字是否已顯示為準。重新盤點本整合包共 27 類未確認涵蓋或未讀完，其中有 9 項讀取問題，遊戲中仍可能遇到英文。Sweeper Maid 可選擇加裝。原有 FTB Backups 2 設定保留，中文通知未能完整套用。 第 4 版附上可選的 Solo Quests 1.1.2，須由專用伺服器啟用。已重新盤點 Society Sunlit Valley 4.2.1。",
-      "recommendedRam": 0,
-      "mods": 352,
-      "sharingStatus": "ready",
-      "minimumAppVersion": "0.42.1",
-      "addedMods": [
-        {
-          "name": "IMBlocker",
-          "size": 232400
-        },
-        {
-          "name": "Solo Quests（專用伺服器可各自解任務、手動同步）",
-          "size": 41328
-        },
-        {
-          "name": "Sweeper Maid（定時清理地上的掉落物）",
-          "size": 955805
-        },
-        {
-          "name": "FTB Backups 2（定時備份世界、繁中通知）",
-          "size": 1954591
-        }
-      ],
-      "url": "https://raw.githubusercontent.com/siang86121900/mc-zh-tw-translator/translations/packs/1093382/9721472-7a0d6726.zip",
-      "sha256": "7a0d6726e52b127ec792b6b6a5802c90a545a54f082e2813483758e3b78e8451",
-      "size": 3473713,
-      "server": {
-        "name": "狗狗貓貓島",
-        "address": "26.186.50.26"
-      },
-      "revision": 5
-    },
-    {
       "kind": "full",
       "name": "Society Sunlit Valley",
       "packId": "society sunlit valley",
@@ -137,7 +60,7 @@
       "loader": "forge-47.4.0",
       "translator": "MC Translator",
       "updated": "2026-11-25",
-      "notes": "CurseForge 上的 Society 4.2.1（4.2.0 也一樣）目前裝不起來：Ember's Text API 1.4.1 已無法從 CurseForge 下載。這份是官方 4.2.1 內容加上繁體中文翻譯第 5 版，其餘模組照常從 CurseForge 官方下載，Ember's Text API（GPL-3.0 開放授權）由分享者提供。保留整合包作者預設的材質包與按鍵設定。多人連線請先加入同一個 Radmin VPN 網路，再使用「狗狗貓貓島」捷徑。作者修好官方版後會恢復一般翻譯補丁。",
+      "notes": "CurseForge 上的 Society 4.2.1（4.2.0 也一樣）目前裝不起來：Ember's Text API 1.4.1 已無法從 CurseForge 下載，所以改成整包分享：官方 4.2.1 內容加上繁體中文翻譯，其餘模組照常從 CurseForge 官方下載，Ember's Text API（GPL-3.0 開放授權）由分享者提供。保留整合包作者預設的材質包與按鍵設定。之前用 CurseForge 官方版加翻譯補丁裝好的人，把 APP 更新到 v0.45.0 以上後，這張卡片就能直接更新你原本的整合包，不用重新安裝，存檔都保留；會先核對每個模組都相同才動手。2026-11-25 重新盤點仍有 27 類文字未確認涵蓋或未讀完，遊戲中仍可能遇到英文。多人連線請先加入同一個 Radmin VPN 網路，再使用「狗狗貓貓島」捷徑。",
       "recommendedRam": 0,
       "driveId": "1c95VwfsKmF8jMCN58__GBohQVHAnE6n8",
       "sha256": "cce71a750a5f370320994e854a17a242cb683e23821d0bc9cd3095167ad82157",
