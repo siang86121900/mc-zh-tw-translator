@@ -132,7 +132,7 @@
       "kind": "full",
       "name": "Society Sunlit Valley",
       "packId": "society sunlit valley",
-      "version": "4.2.0",
+      "version": "4.2.1",
       "gameVersion": "1.20.1",
       "loader": "forge-47.4.0",
       "translator": "MC Translator",
@@ -157,6 +157,10 @@
         {
           "name": "FTB Backups 2（定時備份世界、繁中通知）",
           "size": 1954591
+        },
+        {
+          "name": "Solo Quests（專用伺服器可各自解任務、手動同步）",
+          "size": 41328
         }
       ],
       "revision": 2
