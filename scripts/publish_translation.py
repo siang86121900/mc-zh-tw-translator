@@ -34,7 +34,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
-from mc_zh_tw_translator import full_pack, server_list, sweeper, backup_mod, solo_quests  # noqa: E402
+from mc_zh_tw_translator import full_pack, server_list, sweeper, backup_mod, solo_quests, vonix  # noqa: E402
 from mc_zh_tw_translator.desktop_jobs import RESOURCE_PACK_FILE, mod_count  # noqa: E402
 from mc_zh_tw_translator.patches import (  # noqa: E402
     MAX_ADDED_MODS, curseforge_release_version, export_patch, instance_identity, read_patch,
@@ -194,6 +194,29 @@ def add_sweeper(args, instance):
     print(sweeper.ensure(instance, args.home, lambda _p, t, d='': print(t, d, flush=True))['line'], flush=True)
 
 
+# Card wording: chests keep their position; terminals and drawers show who gained what and when.
+VONIX_CARD = 'Vonix Guardian（取放紀錄：箱子記位置，終端與抽屜記玩家背包增減，管理員用 /vg lookup 查）'
+
+
+def add_vonix(args, instance):
+    """Published packs get the container/terminal logger with zh_tw replies (使用者 2026-11-26)."""
+    if args.no_vonix:
+        print('依 --no-vonix，沒有檢查或加裝 Vonix Guardian。')
+        return
+    if not args.home:
+        sys.exit('加裝紀錄模組需要 --home 保存可還原批次；不加裝請用 --no-vonix。')
+    if args.dry_run:
+        found = vonix.present(instance)
+        mod, why = (None, '') if found else vonix.choose(instance)
+        print('試跑：', '已有 Vonix Guardian（核對繁中）' if found else
+              (vonix.other_logger(instance) or why or '會加裝 Vonix Guardian 與繁中'))
+        return
+    result = vonix.ensure(instance, args.home, lambda _p, t, d='': print(t, d, flush=True))
+    print(result['line'], flush=True)
+    if result['state'] in ('failed', 'cancelled'):
+        sys.exit('紀錄模組設定尚未完成，沒有上架；請先處理上面的原因，或用 --no-vonix 明確略過。')
+
+
 def add_backup_mod(args, instance):
     """Only newly published packs get automatic world backups (使用者 2026-11-06)."""
     if args.no_backup_mod:
@@ -315,6 +338,7 @@ def publish_full(args):
         sys.exit('請用 --drive-folder 指定 Google 雲端硬碟電腦版裡要放整合包的資料夾。')
     add_sweeper(args, instance)
     add_backup_mod(args, instance)
+    add_vonix(args, instance)
     solo = publication_solo(args, instance)
     with tempfile.TemporaryDirectory(dir=args.work) as tmp:
         out = Path(tmp)/'pack.zip'
@@ -349,12 +373,16 @@ def publish_full(args):
                  driveId=file_id, sha256=digest, size=size, totalSize=manifest['totalSize'], files=len(manifest['files']),
                  mods=sum(1 for e in manifest['files'] if re.fullmatch(r'mods/[^/]+\.jar', e['path'])), **card_server(args))
     entry['minimumAppVersion']='0.42.1'
+    if manifest.get('vonix'):
+        entry['minimumAppVersion'] = vonix.MINIMUM_APP_VERSION
     if pairs := same_as(args, instance, earlier_same_as(entry['packId'])):
         entry['sameAs'] = pairs
     if manifest.get('curseforgeUnavailable'):
         entry['curseforgeUnavailable'] = [m['name'] for m in manifest['curseforgeUnavailable']][:20]
     if manifest.get('backup_mod'):
         entry['addedMods'] = [dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])]
+    if manifest.get('vonix'):
+        entry.setdefault('addedMods', []).append(dict(name=VONIX_CARD, size=vonix.FILES[0][5]))
     if shown := solo or card_solo(args, instance):
         entry.setdefault('addedMods', []).append(dict(name=shown['name'], size=shown['size']))
     # Players download anonymously; prove that works (and that the bytes are the same) before listing it.
@@ -395,6 +423,7 @@ def main():
     parser.add_argument('--no-server', action='store_true', help='拿掉卡片上的伺服器')
     parser.add_argument('--no-sweeper', action='store_true', help='不檢查也不加裝 Sweeper Maid（清理掉落物的模組）')
     parser.add_argument('--no-backup-mod', action='store_true', help='不檢查也不加裝 FTB Backups 2（世界自動備份）')
+    parser.add_argument('--no-vonix', action='store_true', help='不檢查也不加裝 Vonix Guardian（查誰拿了箱子、終端、抽屜裡的東西）')
     parser.add_argument('--no-solo-quests', action='store_true', help='這次上架不另外加裝 Solo Quests')
     parser.add_argument('--source-instance', type=Path, help='使用現有補丁 ZIP 上架時，供核對版本及 Solo Quests 前置模組的同版本整合包資料夾')
     parser.add_argument('--dry-run', action='store_true')
@@ -415,6 +444,7 @@ def main():
         if not args.home:sys.exit('給整合包資料夾時，請用 --home 指定 MCTranslatorData 資料夾（含套用紀錄）。')
         add_sweeper(args, args.patch.resolve())
         add_backup_mod(args, args.patch.resolve())
+        add_vonix(args, args.patch.resolve())
         exported = export_patch(args.patch, args.home)
         for s in exported['skipped']:print('略過：', s['file'], s['reason'])
         args.patch = Path(exported['path'])
@@ -462,7 +492,8 @@ def publish_patch(args, instance, work):
                  # Sweeper Maid is installed by the receiver's app with the added mods, so the card lists it with them.
                  addedMods=[dict(name=m['name'], size=m['size']) for m in manifest['added_mods']]
                            + ([dict(name='Sweeper Maid（定時清理地上的掉落物）', size=sweeper.FILES[0][5])] if manifest.get('sweeper') else [])
-                           + ([dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])] if manifest.get('backup_mod') else []),
+                           + ([dict(name='FTB Backups 2（定時備份世界、繁中通知）', size=backup_mod.FILES[0][5])] if manifest.get('backup_mod') else [])
+                           + ([dict(name=VONIX_CARD, size=vonix.FILES[0][5])] if manifest.get('vonix') else []),
                  url=RAW+relative, sha256=digest, size=len(data), **card_server(args))
     update_catalog(entry, lambda p: p.get('projectID') == pack['projectID'] and p.get('fileID') == pack['fileID'],
                    f"已翻譯整合包：{pack['name']} {version}", [(args.patch, relative)], args.dry_run)

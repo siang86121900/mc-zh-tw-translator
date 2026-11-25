@@ -150,6 +150,20 @@ Electron storage.json 的 minecraft-settings 在本機為 JSON 字串，其中 m
 以上為本機程式讀取流程查證與隔離安裝測試，不等於已在回報問題的玩家電腦上實測 CurseForge 匯入或遊戲啟動。
 
 2026-10-10 v0.36.3 補充：使用者提供另一位玩家的實際位置為 C:/Users/USER/curseforge/minecraft/Instances，且確認 v0.36.2 仍在前置檢查受阻。上一版只接受全域清單或獨立版 storage.json，遺漏了已存在於預設 Instances 的個別設定檔。新增 profile_curseforge_root：讀取直接子資料夾的 minecraftinstance.json，驗證 UUID、installPath 的絕對路徑與實際資料夾相符、gameVersion、baseModLoader、installedAddons 及整合包內容。通過才以該預設目錄作為安裝位置；登記前重新驗證，既有設定檔不修改。CurseForge 自動匯入的程式依據同上。此修復仍由 APP 建立個別設定檔，並非呼叫 CurseForge 私有的 createModpack API；官方 ZIP 匯入支援玩家操作，但尚未驗證外部 APP 自動呼叫。
+## Vonix Guardian：上架取放紀錄與繁中訊息
+
+使用者 2026-11-26 指定所有上架整合包都加（含 Society Sunlit Valley 與其伺服器），並同意 put／took 譯為「增加／減少」、時間保留 UTC。實作在 `mc_zh_tw_translator.vonix`，譯文在 `vonix_text.TEXT`。
+
+核對檔案：[CurseForge 9629497](https://www.curseforge.com/minecraft/mc-mods/vonix-guardian/files/9629497)，`vonixguardian-forge-1.20.1-2.3.2.jar`，20,641,840 bytes，SHA-256 `9aac07021df7e596d26a5ec9c5734acee9f27f4b18ce0c86ec35763151d3bd34`，MIT。2026-11-26 從 `mediafilez.forgecdn.net/files/9629/497/` 實際下載。原始碼 github.com/Vonix-Network/VonixGuardian（release: 2.3.2 commit）。
+
+實測（2026-11-26，Society 單人世界與只裝本模組的測試伺服器）：箱子取物記為 CONTAINER_WITHDRAW 並帶箱子座標；RS 終端、RS 無線終端與 Functional Storage 抽屜取物記為 INVENTORY_DEPOSIT（玩家背包增加，含數量、時間、玩家位置，不含來源）；打開終端另有 CLICK 紀錄帶終端座標；漏斗逐個記錄。單人世界的 `/vg` 權限依伺服器管理員名單，主人不能查詢；專用伺服器主控台查詢、還原預覽、套用、取消、清除預覽的繁中輸出已核對。
+
+語言：模組自帶 `lang/zh_tw.properties` 只涵蓋查詢錯誤與狀態標題，由 config.json 的 `language` 選擇。2.3.2 的 ConfigLoader 對缺欄位的設定檔驗證失敗、整個模組不啟動，所以新安裝寫入完整預設值（`vonix.DEFAULT_CONFIG`，取自 2.3.2 首次啟動產生的檔案）並設 `zh_tw`；已有設定只改 `language`。
+
+寫死文字：只改 `LookupText`、`InspectorLookup`、`LookupFormatter`、`MutationOutcomeFormatter`、`RollbackResult`、`RollbackBatches`、`PurgeReport`、`PurgeScope`、`CommandSpec`、`CommandHelp`、`OperatorText` 與 `GuardianCommands` 各子類別裡只用於聊天顯示的字串（依原始碼逐一核對，`PurgeScope.label` 只被 `PurgeReport` 讀取；Rollback／Restore／Applied preview／Undo 標籤只傳給 `MutationOutcomeFormatter` 組句）。`vonix.safe_edits` 另以程式擋下同時當作類別、欄位、方法名稱或描述子的 Utf8 常數；`` 組句參數順序不變。put／took 由箱子與玩家背包共用同一常數，無法分開翻譯。未改：記錄檔、SQL、設定鍵、權限節點、指令名稱、`#` 開頭的來源標籤、列舉名稱（結果狀態 SUCCESS 等因同時是程式名稱）、`/vg status` 的 `GuardianStatus` 診斷頁。
+
+補丁與整包只帶 `vonix` 標記（minimum_app_version 0.46.0），接收者由自己的 APP 下載、核對、改寫並寫設定；整包分享排除模組檔、`config/vonixguardian/`、`vonixguardian.db` 與 `logs/vonixguardian/`。任何模組（含內嵌 JAR）的 Mixin 提及上述 class、或由 CurseForge 管理會還原原檔時，不改寫。
+
 ## FTB Backups 2：上架自動備份與繁中通知
 
 使用者 2026-11-06 同意只對之後上架的整合包自動加裝，已有其他備份功能不重複安裝；新設定每 30 分鐘、最新 5 份、無玩家遊玩略過、ZIP、在聊天室通知所有玩家、至少保留 10 GB、空間不足不額外刪舊備份。既有設定與停用狀態保留。實作在 `mc_zh_tw_translator.backup_mod`。

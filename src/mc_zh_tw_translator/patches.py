@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import server_list, shared_text
-from . import covers, imblocker, sweeper, backup_mod, solo_quests
+from . import covers, imblocker, sweeper, backup_mod, solo_quests, vonix
 from .deployment import apply_reviewed, contained, file_hash
 from .translator import is_jar_signature_file
 from .updater import REPOSITORY, VERSION, release_url
@@ -329,7 +329,7 @@ def checked_mod(mod):
 
 def own_mod(path: Path) -> bool:
     """A mod this program installs from its own list (IMBlocker, Sweeper Maid); the receiver gets it the same way."""
-    return imblocker.listed(path) or sweeper.listed(path) or backup_mod.listed(path)
+    return imblocker.listed(path) or sweeper.listed(path) or backup_mod.listed(path) or vonix.listed(path)
 
 
 def added_mods(instance: Path, originals=None):
@@ -480,6 +480,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
     if found and found['enabled'] and sweeper.listed(instance/'mods'/found['file']):manifest['sweeper']=True
     found=backup_mod.present(instance)
     if found and found['enabled'] and backup_mod.listed(instance/'mods'/found['file']):manifest['backup_mod']=True
+    found=vonix.present(instance)
+    if found and found['enabled'] and vonix.listed(instance/'mods'/found['file']):manifest['vonix']=True
     groups,unit_omissions=shared_text.collect(instance,home,files)
     restricted={s['file'] for s in unit_omissions if '用途未確認' in s['reason']}
     units=[];recipe_targets=set()
@@ -501,7 +503,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
                 if item['after'] is None:continue  # removed by a whole-modpack update; nothing to share
                 if file==sweeper.CONFIG and item['before'] is None:continue  # the receiver's sweeper.ensure writes the same file
                 if file==backup_mod.CONFIG and item['before'] is None:continue
-                if archive and path.is_file() and backup_mod.listed(path):continue  # local display edits are rebuilt, never shared as class files
+                if file==vonix.CONFIG:continue  # the receiver's vonix.ensure writes its own language setting
+                if archive and path.is_file() and (backup_mod.listed(path) or vonix.listed(path)):continue  # local display edits are rebuilt, never shared as class files
                 if archive and item['before'] is None and path.is_file() and own_mod(path):continue  # installed by the receiver's own app
                 if file_hash(path)!=item['after']:skipped.append((file,'套用後又被修改或已還原'));continue
                 if file in restricted:
@@ -591,6 +594,8 @@ def export_patch(instance: Path, home: Path, notify=lambda *_:None) -> dict:
             if manifest.get('backup_mod'):
                 manifest['minimum_app_version']=backup_mod.MINIMUM_APP_VERSION
             manifest['minimum_app_version']='0.42.1'
+            if manifest.get('vonix'):
+                manifest['minimum_app_version']=vonix.MINIMUM_APP_VERSION  # earlier apps ignore 'vonix' though the card lists it
             w.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
             w.writestr('授權與來源.txt',ATTRIBUTION)
             # Per-string sources (AI, converted, reference), so the receiver's report keeps the same labels.
@@ -907,6 +912,8 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
                if add_mods and manifest.get('sweeper') else None)
         backup_result=(backup_mod.ensure(instance,home,lambda _p,t,d='':notify(15,t,d),cancelled,session)
                        if add_mods and manifest.get('backup_mod') else None)
+        logger_result=(vonix.ensure(instance,home,lambda _p,t,d='':notify(15,t,d),cancelled,session)
+                       if add_mods and manifest.get('vonix') else None)
         versions=shared_text.local_versions(instance,home)
         plan=plan_patch(instance,z,manifest,versions)
         staged.mkdir(parents=True)
@@ -982,7 +989,7 @@ def apply_patch(instance: Path, patch: Path, home: Path, notify=lambda *_:None, 
         result=dict(instance=str(instance),patch=str(patch),modpack=manifest.get('modpack',{}),backup=backup,applied=applied,
                     already=[p[0]['file'] for p in plan if p[1]=='already'],
                     skipped=[dict(file=p[0]['file'],reason=p[3]) for p in plan if p[1]=='skip'],
-                    language_set=bool(set_language),mods=mods,imblocker=ime,sweeper=sweep,backup_mod=backup_result,
+                    language_set=bool(set_language),mods=mods,imblocker=ime,sweeper=sweep,backup_mod=backup_result,vonix=logger_result,
                     mods_offered=[m['name'] for m in manifest['added_mods']] if mods is None else [])
         result['skipped']+=prepared['skipped']
         result['text_already']=prepared['already']

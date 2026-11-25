@@ -43,7 +43,7 @@
 - 上架新增的每個加裝模組都要有繁體中文（使用者 2026-11-22 指定），適用翻譯補丁及整包分享，含原有加裝模組更換版本。核對玩家實際會看到的介面、按鈕、滑鼠提示、通知與指令回覆，採用該版本已有的繁中或補齊缺漏。用同版本接收端安裝後驗證實際顯示，專用伺服器功能以玩家連線後的畫面為準。繁中尚未完成或無法驗證時，先不把該模組列入這次的加裝清單，並說明原因。模組品牌名稱可保留。
 
 - 倉儲取放紀錄（使用者 2026-11-24 指定）：後續上架整合包依原包的倉儲系統選用相容模組，涵蓋玩家直接操作箱子、抽屜及透過有線、無線或無限終端存取。用同版本專用伺服器與玩家端實測各入口能查玩家、存入或取出、物品、數量及時間，並區分自動搬運。無法驗證的入口列明，容器查詢不等於終端支援；依上架加裝規則核對相依、官方檔案與繁中。
-- Ledger（使用者 2026-11-24 指定）：後續公開上架的翻譯補丁與整包分享都預設附加已驗證且完成繁中的 `/ledger` 紀錄模組，並在公開卡片說明。相容的 Fabric／Quilt 版本可用 Ledger，Society 等 Forge 1.20.1 以 Indexor 為候選；按 Minecraft 版本、載入器及相依選檔，不重複加裝既有或停用的紀錄模組。已驗證玩家端可裝的才隨玩家包安裝；專用伺服器限定的，隨上架提供伺服器加裝方式並寫明玩家端不用裝。驗證指令回覆、箱子與該包的抽屜取放；終端涵蓋依前條另驗。繁中、相容性或來源未核對時列出原因暫不加裝。
+- Ledger（使用者 2026-11-24 指定）：後續公開上架的翻譯補丁與整包分享都預設附加已驗證且完成繁中的 `/ledger` 紀錄模組，並在公開卡片說明。紀錄模組採 Vonix Guardian（CurseForge 1672865，MIT；使用者 2026-11-26 指定，所有上架整合包都加，含 Society Sunlit Valley 與其伺服器），涵蓋 1.18.2～1.20.1 Forge／Fabric 與 1.21.1 NeoForge／Fabric；箱子記容器位置，終端、無線終端與抽屜記玩家背包增減（誰、時間、物品、數量、玩家位置），卡片寫明要對時間判斷。按 Minecraft 版本、載入器及相依選檔，不重複加裝既有或停用的紀錄模組。已驗證玩家端可裝的才隨玩家包安裝；專用伺服器限定的，隨上架提供伺服器加裝方式並寫明玩家端不用裝。驗證指令回覆、箱子與該包的抽屜取放；終端涵蓋依前條另驗。繁中、相容性或來源未核對時列出原因暫不加裝。
 
 ## 翻譯來源：先合格，再排序
 - 每個候選先核對模組／namespace、key／欄位、原文與用途，再查語意和格式；不能只因含中文或來源順位高就採用。
@@ -229,7 +229,7 @@
 ## 驗證與交付
 - 功能修改同步補回歸測試，測試用隔離資料，mock 不能冒充真實帳號、遊戲內或公開更新實測；沒做的驗證寫出原因。
 - 能用程式判斷的規則寫成測試，不只寫在本文件：違反過的規則補一個會失敗的檢查（例如 ButtonNameTests、ScanCacheTests），並測檢查本身抓得到錯；使用者回報的畫面問題先寫出重現的測試再修。
-- 測試分布：來源排序與 AI（tests/test_accuracy.py）、翻譯資源包（test_desktop.py）、翻譯資料包（test_data_pack.py）、分享與版本比對（test_patches.py）、一鍵安裝與加裝模組（test_install.py）、整包分享（test_full_pack.py）、同時多批 AI（test_codex_bridge.py）、檔案佔用（test_deployment.py）、防呆（test_safeguards.py：中斷還原、空間不足、選錯資料夾、查詢次數、重跑不寫入、數值與字形、補丁越界）、IMBlocker（test_imblocker.py）、Sweeper Maid（test_sweeper.py）、建立伺服器（test_server_pack.py）。
+- 測試分布：來源排序與 AI（tests/test_accuracy.py）、翻譯資源包（test_desktop.py）、翻譯資料包（test_data_pack.py）、分享與版本比對（test_patches.py）、一鍵安裝與加裝模組（test_install.py）、整包分享（test_full_pack.py）、同時多批 AI（test_codex_bridge.py）、檔案佔用（test_deployment.py）、防呆（test_safeguards.py：中斷還原、空間不足、選錯資料夾、查詢次數、重跑不寫入、數值與字形、補丁越界）、IMBlocker（test_imblocker.py）、Sweeper Maid（test_sweeper.py）、取放紀錄 Vonix Guardian（test_vonix.py）、建立伺服器（test_server_pack.py）。
 - 改動翻譯規則或套用流程後，在真實整合包的副本上跑完整流程並核對：套用檔案與清冊一致、重跑沒有新寫入、還原後與原始檔逐位元相同。改動整包分享後用真實整合包打包一次並在模擬清單上安裝一次；改動下載流程後對 CurseForge 實際下載一次小模組。真實 CurseForge 安裝無法自動測試，交付時說明。
 - UI 改動檢查亮／暗主題、小視窗、高 DPI、長文字、下拉選單；打包改動檢查 EXE 啟動、圖示、必要資源與不需 Python 的情境。
 - 本機測試：.venv-desktop 的 Python，PYTHONPATH=src;scripts、QT_QPA_PLATFORM=offscreen，python -m unittest discover -s tests（Windows 市集的 python 捷徑在沙箱會失敗）。EXE 可用 --smoke-test <資料夾> 截圖並自動結束。

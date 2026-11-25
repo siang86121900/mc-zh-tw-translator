@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 
 from . import desktop_jobs as jobs
 from . import patches
-from . import covers, imblocker, backup_mod
+from . import covers, imblocker, backup_mod, vonix
 from . import server_list
 from .deployment import atomic_copy, contained, file_hash, when_free
 from .updater import VERSION
@@ -199,6 +199,12 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
     publish_checks.required_packs(instance)
     loader=check_loader(record.get('baseModLoader'))
     files=modpack_files(instance);served=curseforge_mods(instance,record)
+    # Vonix Guardian: the receiver's app downloads and localizes it (vonix.ensure); its log database
+    # records who took what, so it never leaves this computer.
+    logger=vonix.present(instance)
+    logger_ok=bool(logger and logger['enabled'] and vonix.listed(instance/'mods'/logger['file']))
+    files=[rel for rel in files if not rel.casefold().startswith(('vonixguardian.db','logs/vonixguardian/','config/vonixguardian/'))
+           and not (logger_ok and rel=='mods/'+logger['file'])]
     notify(0,'整理整合包檔案',f'{len(files):,} 個檔案')
     entries={}
     for i,rel in enumerate(files):
@@ -246,6 +252,7 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
     backup_found=backup_mod.present(instance)
     if backup_found and backup_found['enabled'] and backup_mod.listed(instance/'mods'/backup_found['file']):
         manifest['backup_mod']=True
+    if logger_ok:manifest['vonix']=True
     manifest['totalSize']=sum(e['size'] for e in manifest['files'])
     out.parent.mkdir(parents=True,exist_ok=True);part=out.with_name(out.name+'.partial')
     bundled=[e for e in manifest['files'] if e['source']=='zip']
@@ -805,10 +812,12 @@ def install(package: Path, home: Path, notify=lambda *_:None, cancelled=lambda:F
         ime=imblocker.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
         backup_result=(backup_mod.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
                        if manifest.get('backup_mod') else None)
+        logger_result=(vonix.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
+                       if manifest.get('vonix') else None)
         notify(100,'整合包已安裝',folder.name)
         return dict(folder=str(folder),name=folder.name,files=len(manifest['files']),downloaded=len(linked),
                     recommendedRam=manifest.get('recommendedRam') or 0,loader=manifest['loader'].get('name',''),
-                    backup=server_backup,profile_import=listing_backup is None,memory=memory,imblocker=ime,backup_mod=backup_result,
+                    backup=server_backup,profile_import=listing_backup is None,memory=memory,imblocker=ime,backup_mod=backup_result,vonix=logger_result,
                     cover=dict(line='已帶入整合包封面，重新開啟 CurseForge 即可查看。') if record['profileImagePath'] else dict(line='封面圖片無法讀取，已保留預設封面。'),**server_result)
     except BaseException:
         # Only what this install made is removed: the work folder, or the new folder it became.
@@ -822,7 +831,7 @@ def added_jar_names() -> set[str]:
     """File names of the mods this app adds itself (IMBlocker, Sweeper Maid, FTB Backups 2, Solo Quests): a copy
     may hold another checked build, or FTB Backups 2 with its Chinese notices written locally."""
     from . import solo_quests, sweeper
-    names={x for row in (*backup_mod.FILES,*imblocker.FILES,*sweeper.FILES) for x in row if isinstance(x,str) and x.endswith('.jar')}
+    names={x for row in (*backup_mod.FILES,*imblocker.FILES,*sweeper.FILES,*vonix.FILES) for x in row if isinstance(x,str) and x.endswith('.jar')}
     names|={f'ftb-solo-quests-{mc}-{loader}-1.1.2.jar' for loader,mc in solo_quests.FILES}
     return {n.casefold() for n in names}
 
@@ -928,9 +937,11 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
         ime=imblocker.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
         backup_result=(backup_mod.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
                        if manifest.get('backup_mod') else None)
+        logger_result=(vonix.ensure(folder,home,lambda _p,t,d='':notify(97,t,d),cancelled,session,pause)
+                       if manifest.get('vonix') else None)
         notify(100,'整合包已更新',folder.name)
         return dict(folder=str(folder),name=folder.name,written=sum(r['after'] is not None for r in records),
                     removed=sum(r['after'] is None for r in records),replaced=replaced,kept=kept,backup=backup,
-                    recommendedRam=manifest.get('recommendedRam') or 0,cover=cover,imblocker=ime,backup_mod=backup_result,**server_result)
+                    recommendedRam=manifest.get('recommendedRam') or 0,cover=cover,imblocker=ime,backup_mod=backup_result,vonix=logger_result,**server_result)
     finally:
         shutil.rmtree(staged,ignore_errors=True)
