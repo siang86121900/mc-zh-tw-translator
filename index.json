@@ -139,17 +139,23 @@
       "updated": "2026-11-25",
       "notes": "CurseForge 上的 Society 4.2.1（4.2.0 也一樣）目前裝不起來：Ember's Text API 1.4.1 已無法從 CurseForge 下載。這份是官方 4.2.1 內容加上繁體中文翻譯第 5 版，其餘模組照常從 CurseForge 官方下載，Ember's Text API（GPL-3.0 開放授權）由分享者提供。保留整合包作者預設的材質包與按鍵設定。多人連線請先加入同一個 Radmin VPN 網路，再使用「狗狗貓貓島」捷徑。作者修好官方版後會恢復一般翻譯補丁。",
       "recommendedRam": 0,
-      "driveId": "1xZDokN3FcKNCCtHbr8awrMg7jgZFtaj0",
-      "sha256": "34dd1073ebc51999948df14634370a61c0f2e0e9eee62cf732385c871468db65",
-      "size": 86441416,
-      "totalSize": 851108315,
-      "files": 8296,
+      "driveId": "1c95VwfsKmF8jMCN58__GBohQVHAnE6n8",
+      "sha256": "cce71a750a5f370320994e854a17a242cb683e23821d0bc9cd3095167ad82157",
+      "size": 77505160,
+      "totalSize": 841019818,
+      "files": 8288,
       "mods": 352,
       "server": {
         "name": "狗狗貓貓島",
         "address": "26.186.50.26"
       },
       "minimumAppVersion": "0.42.1",
+      "sameAs": [
+        {
+          "projectID": 1093382,
+          "fileID": 9721472
+        }
+      ],
       "curseforgeUnavailable": [
         "Ember's Text API"
       ],
@@ -163,7 +169,7 @@
           "size": 41328
         }
       ],
-      "revision": 2
+      "revision": 3
     },
     {
       "kind": "full",
