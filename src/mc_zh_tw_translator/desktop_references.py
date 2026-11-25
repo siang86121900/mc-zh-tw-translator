@@ -148,8 +148,16 @@ def minecraft_terms(text: str) -> str:
     return MC_TERM.sub(lambda m: MC_TERMS[int(m.lastgroup[1:])][1], text)
 
 
+# Simplified words the converter's Taiwan IT phrases turn into another word, fixed before converting because the
+# result is ambiguous: 重载 (reload) became 過載 (overload), as 过载 does. All 173 重载 in six real modpacks
+# (scripts/audit_conversion.py, 2026-11-25) mean reloading: configs, resource packs, models, a ranged weapon.
+BEFORE_CONVERTING = ((re.compile('重载'), '重新载入'),)
+
+
 def to_taiwan(text: str) -> str:
     """Simplified Chinese to Taiwan wording, written with the character forms Taiwan uses."""
+    for pattern, replacement in BEFORE_CONVERTING:
+        text = pattern.sub(replacement, text)
     return minecraft_terms(fix_slips(S2TWP.convert(text).translate(TAIWAN_FORMS)))
 
 

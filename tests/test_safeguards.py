@@ -338,6 +338,14 @@ class QualityTests(Base):
             self.assertEqual(references.to_taiwan(cn),tw,cn)
         for text in ('剝皮松木原木','最多只能','按鍵綁定','乾草塊'):self.assertFalse(references.has_simplified(text),text)
 
+    def test_reload_is_not_turned_into_overload(self):
+        # Solo Quests: 内存数据不会重载 came out 記憶體資料不會過載 (overload); every 重载 in six real modpacks is a reload.
+        for cn,tw in (('内存数据不会重载','記憶體資料不會重新載入'),('按F3+T重载资源包','按F3+T重新載入資源包'),('已重载','已重新載入'),
+                      ('§e开始重载模型……','§e開始重新載入模型……'),
+                      # overload itself stays overload
+                      ('过载保护','過載保護'),('电路过载','電路過載')):
+            self.assertEqual(references.to_taiwan(cn),tw,cn)
+
     def test_one_to_many_slips_found_in_cobbleverse(self):
         # COBBLEVERSE: the Pokémon names with 后 / 仆 were taken for simplified and converted to 後 / 僕;
         # audit_conversion.py found the same kind of slip with 托, 栗, 荧, 赞 in five modpacks.

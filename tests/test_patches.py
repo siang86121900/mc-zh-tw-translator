@@ -577,6 +577,35 @@ class OneClickTests(unittest.TestCase):
         self.assertEqual({r['proposed'] for r in rows},{'棕櫚原木'})
         self.assertEqual(rows[2]['unified_from'],'棕櫚木原木')
         self.assertEqual([needs_check(r) for r in rows],[False,False,False])
+        # Another mod's thing of the same English and key tail keeps its own name (Small Ships' Cog vs a coin).
+        other=[dict(row('柯克船','reference_pack_or_cfpa','reference:para'),key='item.ships.palm_log'),
+               dict(row('黃銅硬幣','instance_zh_cn'),key='item.coins.palm_log')]
+        self.assertEqual(unify_suggested_terms(dict(rows=other)),0)
+        self.assertEqual([r['proposed'] for r in other],['柯克船','黃銅硬幣'])
+
+    def test_plural_of_a_name_the_modpack_renamed_follows_it(self):
+        from mc_zh_tw_translator.desktop_jobs import plurals_of_renamed
+        jar='mods/n.jar!/assets/numismatics/lang/en_us.json';kjs='instance!/kubejs/assets/numismatics/lang/en_us.json'
+        row=lambda source,key,en,zh,**kw:dict(source=source,key=key,en=en,proposed=zh,origin='same_source_zh_cn',kind='language',
+                                              supported=True,current=None,issue='',**kw)
+        rows=[row(kjs,'item.numismatics.cog','Brass Coin','黃銅硬幣',renamed=True),row(jar,'item.numismatics.cog.plural','Cogs','黃銅齒輪'),
+              row(jar,'item.numismatics.spur.plural','Spurs','銅齒輪'),row(kjs,'item.numismatics.bevel','Zinc Coin','鋅幣',renamed=True),
+              dict(row(jar,'item.numismatics.bevel.plural','Bevels','鋅齒輪片'),origin='manual')]
+        self.assertEqual(plurals_of_renamed(rows),1)
+        # a name the pack did not rename, and what the user wrote, stay
+        self.assertEqual([r['proposed'] for r in rows],['黃銅硬幣','黃銅硬幣','銅齒輪','鋅幣','鋅齒輪片'])
+        self.assertEqual(plurals_of_renamed(rows),0)
+
+    def test_earlier_ai_sentence_with_another_mods_name_is_asked_again(self):
+        from mc_zh_tw_translator.desktop_jobs import borrowed_in_ai_sentences
+        row=dict(source='mods/n.jar!/assets/numismatics/lang/en_us.json',key='numismatics.ponder.vendor_intro.text_1',
+                 en='This vendor is selling 8 apples for a cog and a bevel.',proposed='這台售貨機以一枚柯克船和一枚鋅幣出售 8 顆蘋果。',
+                 origin='ai_translation',ai_reused=True)
+        fine=dict(row,proposed='這台售貨機以一枚黃銅硬幣和一枚鋅幣出售 8 顆蘋果。')
+        by_mod={'numismatics':{'Cog':'黃銅硬幣'},'smallships':{'Cog':'柯克船'}}
+        self.assertEqual(borrowed_in_ai_sentences([row,fine],by_mod,{'Cog':{'黃銅硬幣','柯克船'}}),1)
+        self.assertEqual((row['ai_redo'],row['ai_redo_borrowed']),(['Cog'],{'Cog':'柯克船'}))
+        self.assertNotIn('ai_redo',fine)
 
 
 class ReleaseVersionTests(unittest.TestCase):

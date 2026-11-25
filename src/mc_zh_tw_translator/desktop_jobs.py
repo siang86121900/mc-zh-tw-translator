@@ -32,7 +32,7 @@ SOURCE_NAMES = {'same_source_zh_cn':'同檔簡中', 'instance_zh_cn':'模組包�
                 'reference_pack_or_cfpa':'參考庫', 'glossary':'術語表',
                 'translation_memory':'已確認記憶', 'existing_zh_tw':'既有繁中',
                 'ai_translation':'AI 補譯', 'manual':'使用者修訂', 'untranslated':'缺少來源',
-                'keep_original':'無需翻譯','instance_resourcepack':'已安裝資源包',
+                'keep_original':'無需翻譯','instance_resourcepack':'已安裝資源包','added_mod_zh_tw':'加裝模組的繁中（本程式整理）',
                 'not_installed':'未安裝模組（略過）','user_glossary':'自訂譯名','not_display':'程式內部字串',
                 'cross_version_reference':'跨版本參考','official_vanilla':'官方原版譯名','stale_reference':'參考庫（版本待確認）',
                 'duplicate_copy':'模組內的重複舊版文字（略過）','server_lang':'伺服器用的英文語系檔（遊戲不讀繁中，略過）'}
@@ -761,7 +761,7 @@ def internal_reason(text):
 # such as "None" or "Default" legitimately differ by context and are left alone.
 NAME_KEY = re.compile(r'^(?:item|block|entity|effect|enchantment|biome|fluid|mob_effect)\.')
 # Trust order when two sources name the same thing differently; mirrors the source order in plan().
-ORIGIN_TRUST = ['manual','translation_memory','user_glossary','reference_human','instance_resourcepack','existing_zh_tw',
+ORIGIN_TRUST = ['manual','translation_memory','user_glossary','reference_human','added_mod_zh_tw','instance_resourcepack','existing_zh_tw',
                 'official_vanilla','instance_zh_cn','same_source_zh_cn','reference_converted','stale_reference',
                 'cross_version_reference','glossary','ai_translation']
 
@@ -774,19 +774,28 @@ def trust_rank(row):
     return ORIGIN_TRUST.index(origin) if origin in ORIGIN_TRUST else len(ORIGIN_TRUST)
 
 
-def conflicting_terms(session, limit=500):
-    """Names translated differently across mods, each with a suggested translation.
+def key_mod(key):
+    """The mod a name key belongs to: item.numismatics.cog -> numismatics."""
+    parts=(key or '').split('.',2)
+    return parts[1] if len(parts)==3 else ''
 
-    The suggestion is the variant backed by the most trusted source, then the most common one.
+
+def conflicting_terms(session, limit=500, within_mod=False):
+    """Names translated differently, each with a suggested translation.
+
+    The suggestion is the variant backed by the most trusted source, then the most common one. Listed across
+    mods for the user to decide; within_mod keeps each mod apart, which is all that is ever changed unasked.
     """
     variants=collections.defaultdict(collections.Counter);trust=collections.defaultdict(dict);display={}
     for r in session.get('rows',[]):
         original=english_of(r)
         if not r.get('supported') or not NAME_KEY.match(r.get('key','')) or not isinstance(original,str) or len(original)>40:continue
         if not HAN.search(r.get('proposed') or '') or r.get('origin') in ('untranslated','keep_original'):continue
-        # Same English and same key tail (e.g. palm_log) = the same thing in different mods. A different tail
-        # (wall_torch vs torch, umvuthana vs umvuthana_follower) is a different thing that may be named apart on purpose.
-        key=(original.strip().casefold(),r['key'].split('.',2)[-1]);zh=r['proposed'].strip();display.setdefault(key,original.strip())
+        # Same English and same key tail (e.g. palm_log) may be the same thing in different mods, or not: Small Ships'
+        # Cog is a ship, Create: Numismatics' Cog a coin (Society renamed it Brass Coin). A different tail (wall_torch vs
+        # torch, umvuthana vs umvuthana_follower) is a different thing that may be named apart on purpose.
+        key=(original.strip().casefold(),r['key'].split('.',2)[-1],key_mod(r['key']) if within_mod else '')
+        zh=r['proposed'].strip();display.setdefault(key,original.strip())
         variants[key][zh]+=1
         rank=trust_rank(r)
         trust[key][zh]=min(rank,trust[key].get(zh,rank))
@@ -794,7 +803,7 @@ def conflicting_terms(session, limit=500):
     for key,counter in variants.items():
         if len(counter)<2:continue
         ordered=sorted(counter.items(),key=lambda kv:(trust[key][kv[0]],-kv[1]))
-        rows.append(dict(en=display[key],key_tail=key[1],variants=ordered,suggested=ordered[0][0]))
+        rows.append(dict(en=display[key],key_tail=key[1],mod=key[2] or None,variants=ordered,suggested=ordered[0][0]))
     rows.sort(key=lambda x:-sum(c for _,c in x['variants']))
     return rows[:limit] if limit else rows
 
@@ -985,21 +994,58 @@ def load_name_terms(session):
     """casefolded English -> (English, Chinese) for names decided in this run (see plan)."""
     try:data=json.loads((Path(session['report'])/'name_terms.json').read_text(encoding='utf-8'))
     except (OSError,ValueError,KeyError):return {}
-    return {en.casefold():(en,zh) for en,zh in data.items()}
+    names={en.casefold():(en,zh) for en,zh in data.items()}
+    try:by_mod=json.loads((Path(session['report'])/'name_terms_by_mod.json').read_text(encoding='utf-8'))
+    except (OSError,ValueError,KeyError):by_mod={}
+    names[MOD_NAMES]={mod:{en.casefold():(en,zh) for en,zh in terms.items()} for mod,terms in by_mod.items() if isinstance(terms,dict)}
+    return names
+
+
+MOD_NAMES = ('names named apart by mods',)  # load_name_terms: mod -> its own names, for names_for
+
+
+def borrowed_in_ai_sentences(rows, by_mod, wordings):
+    """Earlier AI sentences that used another mod's name for a name mods name apart (此售貨機以一枚柯克船… for
+    Numismatics' cog, given Small Ships' 柯克船 as a term) stay in use and are asked again once, told the right name
+    (ai_redo, codex_bridge.supplement). Returns how many were marked."""
+    names={MOD_NAMES:{mod:{en.casefold():(en,zh) for en,zh in terms.items()} for mod,terms in by_mod.items()}}
+    marked=0
+    for r in rows:
+        if r.get('origin')!='ai_translation' or not r.get('ai_reused') or not isinstance(r.get('proposed'),str):continue
+        original=(english_of(r) or '').casefold();text=r['proposed'];borrowed={}
+        for low,(en,zh) in names_for(names,r).items():
+            if zh in text or not re.search(r'(?<![a-z])'+re.escape(low)+r'(?![a-z])',original):continue
+            wrong=sorted(z for z in wordings.get(en,()) if z!=zh and z in text)
+            if wrong:borrowed[en]=wrong[0]
+        if borrowed:
+            r.update(ai_redo=sorted(borrowed),ai_redo_borrowed=borrowed);marked+=1
+    return marked
+
+
+def names_for(names, row):
+    """The names to give AI for one row: those all mods agree on, and its own mod's for the rest (the mod of the
+    language file it is in: numismatics.ponder.* sentences are Numismatics', so its Cog is the coin)."""
+    by_mod=names.get(MOD_NAMES,{});shared={k:v for k,v in names.items() if k!=MOD_NAMES}
+    mods=[lang_namespace(row.get('source') or '')]
+    if REGISTRY_KEY.match(row.get('key') or ''):mods.insert(0,key_mod(row['key']))
+    for mod in reversed(mods):shared.update(by_mod.get(mod) or {})
+    return shared
 
 
 def unify_suggested_terms(session):
-    """One-click: give every inconsistently named thing its suggested (most trusted) name.
+    """Before every write: give a thing one name inside its own mod (block.x.palm_log and item.x.palm_log).
 
-    Rows keep the provenance of the variant they adopt and record what they replaced; nothing is
+    Never across mods by the English alone (AGENTS.md): that made Society's Brass Coin a ship (柯克船) and its Gold
+    Coin a hat (皇冠). Rows keep the provenance of the variant they adopt and record what they replaced; nothing is
     written to the user's glossary, so the suggestion never overrides a later explicit choice.
     """
     changed=0
-    for item in conflicting_terms(session,limit=None):
+    for item in conflicting_terms(session,limit=None,within_mod=True):
         en=item['en'].casefold();zh=item['suggested']
         rows=[r for r in session['rows'] if isinstance(english_of(r),str) and english_of(r).strip().casefold()==en
               and r.get('supported') and not r.get('installed') and NAME_KEY.match(r.get('key',''))
-              and r['key'].split('.',2)[-1]==item['key_tail'] and r.get('origin') not in ('untranslated','keep_original')]
+              and r['key'].split('.',2)[-1]==item['key_tail'] and key_mod(r['key'])==item['mod']
+              and r.get('origin') not in ('untranslated','keep_original')]
         model=next((r for r in rows if (r.get('proposed') or '').strip()==zh),None)
         if not model:continue
         for r in rows:
@@ -1085,6 +1131,83 @@ def singular_names(rows):
                  changed=twin['proposed']!=r.get('current'),plural_of=twin['key'])
         for field in ('number_doubt','ai_model'):
             if twin.get(field) is not None:r[field]=twin[field]
+        changed+=1
+    return changed
+
+
+def renamed_keys(rows):
+    """(language namespace, key) of the names the modpack itself renamed (a KubeJS en_us over the mod's)."""
+    return {(lang_namespace(r.get('source','')),r['key']) for r in rows if r.get('renamed')}
+
+
+def settle_borrowed(rows, ai_memory=None):
+    """Names an earlier version took from another mod of the same English (unify_suggested_terms up to v0.43.6).
+
+    A name the modpack renamed goes back to this mod's own (Society's Brass Coin had become Small Ships' ship 柯克船).
+    Any other keeps the name the game shows and is listed as a doubt with this mod's own wording, for AI to read
+    against the English (owner, 2026-11-25): Windswept's own zh_cn would bring back 松樹圍牆 for Pine Fence.
+    Returns how many rows were settled."""
+    renamed=renamed_keys(rows);settled=0
+    for r in rows:
+        back=r.pop('borrowed_back',None)
+        if not back:continue
+        settled+=1;ns=lang_namespace(r.get('source',''))
+        if (ns,r['key']) in renamed:
+            r['issue']=(r['issue']+'；' if r.get('issue') else '')+f'先前依其他模組改成「{back["kept"]}」，整合包改過這個名字，已改回本模組的譯名'
+            continue
+        r.update(proposed=back['kept'],origin=back['origin'],evidence=back['evidence'],changed=False,recovered=True,installed=True,
+                 unified_from=back['own'],issue=back['issue'])
+        if ai_memory is not None and ai_memory.checked(ns,r['key'],english_of(r))==back['kept']:continue  # AI read it and kept it
+        doubt=f'先前依其他模組統一為「{back["kept"]}」，本模組自己的來源寫作「{back["own"]}」'
+        r['name_doubt']=(r.get('name_doubt') or [])+[doubt]
+        r['issue']=(r['issue']+'；' if r['issue'] else '')+doubt+'，請核對'
+    return settled
+
+
+def cross_mod_doubts(rows, ai_memory=None):
+    """A thing another mod of the same English and key tail names apart (Pine Fence: 松樹圍牆 here, 松木柵欄 there) is
+    not renamed by the English alone (AGENTS.md); it is listed as a doubt with the most trusted other wording, for AI to
+    read against the English. Names the modpack renamed are its own. Returns how many rows were marked."""
+    renamed=renamed_keys(rows);groups=collections.defaultdict(list)
+    for r in rows:
+        original=english_of(r)
+        if (r.get('kind')!='language' or not r.get('supported') or not NAME_KEY.match(r.get('key','')) or not isinstance(original,str)
+                or len(original)>40 or not HAN.search(r.get('proposed') or '') or r.get('renamed')
+                or r.get('origin') in USER_ORIGINS+('untranslated','keep_original')
+                or str(r.get('review_method') or '').startswith('user_confirmed')
+                or (lang_namespace(r.get('source','')),r['key']) in renamed):continue
+        groups[(original.strip().casefold(),r['key'].split('.',2)[-1])].append(r)
+    marked=0
+    for (english,_),group in groups.items():
+        if len({key_mod(r['key']) for r in group})<2 or len({r['proposed'].strip() for r in group})<2:continue
+        best=min(group,key=trust_rank)
+        for r in group:
+            if r['proposed'].strip()==best['proposed'].strip() or key_mod(r['key'])==key_mod(best['key']) or r.get('name_doubt'):continue
+            ns=lang_namespace(r.get('source',''))
+            if ai_memory is not None and ai_memory.checked(ns,r['key'],english_of(r))==r['proposed']:continue
+            doubt=f'其他模組的「{english_of(r).strip()}」譯為「{best["proposed"].strip()}」'
+            r['name_doubt']=[doubt];r['issue']=(r['issue']+'；' if r.get('issue') else '')+doubt+'，請核對'
+            marked+=1
+    return marked
+
+
+def plurals_of_renamed(rows):
+    """A '<name key>.plural' the modpack left alone while renaming the name (Society: Cog -> Brass Coin, Cogs kept)
+    takes the renamed name: Chinese has no plural, and the mod's own 黃銅齒輪 would sit beside 黃銅硬幣 in the coin's
+    tooltip (數量：105 黃銅齒輪). The user's own wording stays. Returns how many rows changed."""
+    renamed={(lang_namespace(r.get('source','')),r['key']):r for r in rows
+             if r.get('renamed') and r.get('kind')=='language' and r.get('origin') not in ('untranslated','keep_original')
+             and HAN.search(r.get('proposed') or '')}
+    changed=0
+    for r in rows:
+        key=r.get('key') or ''
+        if r.get('kind')!='language' or not key.endswith('.plural') or r.get('renamed'):continue
+        if r.get('origin') in USER_ORIGINS or str(r.get('review_method') or '').startswith('user_confirmed'):continue
+        twin=renamed.get((lang_namespace(r.get('source','')),key[:-len('.plural')]))
+        if not twin or (r.get('proposed') or '')==twin['proposed'] or not validate_text(original_of(r),twin['proposed']):continue
+        for field in ('recovered','installed','unified_from','ai_model','ai_reused','ai_redo'):r.pop(field,None)
+        r.update(proposed=twin['proposed'],origin=twin['origin'],evidence=twin.get('evidence') or '',
+                 issue=f'複數沿用整合包改過的名稱「{english_of(twin)}」',changed=twin['proposed']!=r.get('current'),plural_of=twin['key'])
         changed+=1
     return changed
 
@@ -2030,6 +2153,9 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         asked=[original]+([r['zh_cn']] if borrowed and r['zh_cn'] else [])
         options=[('translation_memory',next((v for v in (memory.lookup(ns,r['key'],o) for o in asked) if v),None),'translation_memory.json'),
                  ('user_glossary',next((v for v in (user_terms.lookup(o) for o in asked) if v),None),'user_glossary.json')]
+        from . import solo_quests
+        if ns==solo_quests.MOD_ID:  # added to published modpacks: its lines as this program wrote them (AGENTS.md)
+            options.append(('added_mod_zh_tw',solo_quests.wording(r['key'],original),'MC Translator：Solo Quests 1.1.2 繁中'))
         options+=human_tw
         options+=[('instance_resourcepack',v,p) for p,v in instance_rp_tw.get((ns,r['key']),[]) if p!=r['source']]
         own=r.get('own_tw')
@@ -2046,6 +2172,11 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         # place in the order, so a source found later (the modpack's compass translation pack) still comes first.
         ours=provenance.lookup(r) if isinstance(existing,str) and existing==r['current'] else None
         late=bool(ours and ours.get('origin') in LATE_ORIGINS)
+        # A name an earlier version took from another mod with the same English (Numismatics' coin Cog became Small
+        # Ships' 柯克船) is decided again from this mod's own sources, once; a name its own mod agrees on comes back
+        # the same and is not written again (unify_suggested_terms).
+        borrowed_name=bool(ours and ours.get('unified_from'))
+        late=late or borrowed_name
         # A compass mod's zh_tw also names other mods' structures (Explorer's Compass 1.4.0: 小汽艇 for Small Blimp): that is
         # not the mod's own translation of itself, and the modpack's own compass translation pack comes first.
         named=REGISTRY_KEY.match(r['key']) and r['key'].split('.')[1]
@@ -2103,7 +2234,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             own_lines=name!='ai_memory' and not validate_text(original,numbered) and same_format(original,numbered)
             text=numbered if own_lines else repair(original,text)
             if not fits(original,text,own_lines):continue
-            written_tw=(name in ('existing_zh_tw','instance_resourcepack','official_vanilla')
+            written_tw=(name in ('existing_zh_tw','instance_resourcepack','official_vanilla','added_mod_zh_tw')
                         or (name=='reference_pack_or_cfpa' and source in ('reference:tw','reference:para')))
             note='' if name in ('translation_memory','user_glossary') or (
                 name in ('same_source_zh_cn','instance_zh_cn','existing_zh_tw') and (r['source'],r['key']) in index_names) else number_doubt(english,text)
@@ -2115,7 +2246,7 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         reused=origin=='ai_memory'
         if reused:origin='ai_translation';evidence='ChatGPT/Codex: '+str(earlier.get('model') or '')+'（沿用先前的補譯）'
         if ready:
-            issue=('' if origin in ('existing_zh_tw','translation_memory','user_glossary','official_vanilla','instance_resourcepack')
+            issue=('' if origin in ('existing_zh_tw','translation_memory','user_glossary','official_vanilla','instance_resourcepack','added_mod_zh_tw')
                    or (origin=='reference_pack_or_cfpa' and evidence in ('reference:tw','reference:para'))
                    else '參考譯文對應的英文與目前版本不同，需核對' if origin=='stale_reference'
                    else '參考譯文沒有英文可以比對，版本未確認，需核對' if origin=='unverified_reference'
@@ -2154,6 +2285,10 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
             # Reference packs are people-written but not always in Taiwan wording (cloth-config's 設置 replaced
             # the mod's own correct 設定); the same unambiguous replacements apply to them.
             value=taiwan_wording(value);issue=(issue+'；' if issue else '')+'已把大陸用語改為台灣用語，請核對'
+        if borrowed_name and value!=r['current'] and origin not in ('untranslated','keep_original'):
+            # Settled once every row is decided (settle_borrowed): kept and checked, or changed back.
+            extra['borrowed_back']=dict(kept=r['current'],own=value,own_origin=origin,own_evidence=evidence,own_issue=issue,
+                                        origin=ours['origin'],evidence=ours.get('evidence') or '',issue=ours.get('issue') or '')
         reason=keep_original_reason(original,r['key'],ns) if origin=='untranslated' else ''
         if origin=='untranslated' and not reason and earlier and earlier.get('keep'):
             reason=earlier.get('reason') or 'AI 判斷保留原文'  # AI said so in an earlier run; not asked again
@@ -2175,22 +2310,28 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
         if reused:extra.update(reuse_marks(earlier))
         if ((NAME_KEY.match(r['key']) or r['key'].startswith('structure.')) and isinstance(r['en'],str) and 2<len(r['en'].strip())<=40 and HAN.search(value)
                 and origin not in ('untranslated','keep_original','ai_translation')):
-            rank=trust_rank(dict(origin=origin,evidence=evidence));en=r['en'].strip()
-            if en not in name_terms or rank<name_terms[en][0]:name_terms[en]=(rank,value.strip())
+            rank=trust_rank(dict(origin=origin,evidence=evidence));term=(key_mod(r['key']),r['en'].strip())
+            if term not in name_terms or rank<name_terms[term][0]:name_terms[term]=(rank,value.strip())
         # Rows with nothing to change are decided too: another file's row for the same key may follow them.
         decided.append(dict(slim(r),proposed=value,origin=origin,evidence=evidence,issue=issue,
                             supported=supported,reviewed=False,changed=changed,renamed=renamed or None,
                             **{k:v for k,v in extra.items() if v is not None}))
-    special['plural_names']=singular_names(decided)
+    special['borrowed']=settle_borrowed(decided,ai_memory)
+    for r in decided:
+        if r.get('recovered') and r.get('unified_from') and isinstance(r.get('en'),str):  # AI's names as the game shows them
+            term=(key_mod(r['key']),r['en'].strip())
+            if term in name_terms:name_terms[term]=(name_terms[term][0],r['proposed'].strip())
+    special['plural_names']=singular_names(decided)+plurals_of_renamed(decided)
     special['same_key']=unify_same_key(decided)
+    special['cross_mod_names']=cross_mod_doubts(decided,ai_memory)
     special['repeated_names']=repeated_names(decided)
     special['name_doubts']=name_doubts(decided,ai_memory,map_biome_names(vanilla))
     for r in decided:
         # Names given to AI as they now read: the map's biome words in, names still in doubt out.
-        en=(r.get('en') or '').strip() if isinstance(r.get('en'),str) else ''
-        if en in name_terms and REGISTRY_KEY.match(r['key']):
-            if r.get('name_doubt'):name_terms.pop(en)
-            elif r.get('map_word'):name_terms[en]=(name_terms[en][0],r['proposed'].strip())
+        term=(key_mod(r.get('key')),(r.get('en') or '').strip() if isinstance(r.get('en'),str) else '')
+        if term in name_terms and REGISTRY_KEY.match(r['key']):
+            if r.get('name_doubt'):name_terms.pop(term)
+            elif r.get('map_word'):name_terms[term]=(name_terms[term][0],r['proposed'].strip())
     listed=lambda row:bool(row['changed'] or row['issue'] or row['origin']=='keep_original')  # keep rows stay visible under 無需翻譯
     # A file whose text needs no change is listed too when another file's row for the same key is: naming
     # things alike or a correction by the user then reaches every file, and the game shows the result.
@@ -2205,9 +2346,20 @@ def plan(instance: Path, home: Path, notify, cancelled=lambda:False, references=
     result['rate_before']=coverage(result,before=True)['rate']  # what the game showed before this run
     # The map's biome names go to AI too (Swamp → 沼澤), below every name this modpack gives itself.
     result['map_biomes']=map_biome_names(vanilla)  # names AI writes later are checked against the map too (check_ai_names)
-    known={en.casefold() for en in name_terms}
+    known={en.casefold() for _,en in name_terms}
     biome_terms={en.title():zh for en,zh in map_biome_names(vanilla).items() if en not in known and en not in PLAIN_BIOME_WORDS}
-    try:write_json(report/'name_terms.json',{**biome_terms,**{en:zh for en,(_,zh) in name_terms.items()}})
+    # A name every mod that has it agrees on is given to AI for any sentence; one that mods name apart (Cog: a ship
+    # in Small Ships, a coin in Numismatics) only for that mod's own sentences.
+    wordings=collections.defaultdict(set)
+    for (_,en),(_,zh) in name_terms.items():wordings[en].add(zh)
+    shared={en:zh for (_,en),(_,zh) in name_terms.items() if len(wordings[en])==1}
+    by_mod=collections.defaultdict(dict)
+    for (mod,en),(_,zh) in name_terms.items():
+        if len(wordings[en])>1:by_mod[mod][en]=zh
+    borrowed_in_ai_sentences(decided,by_mod,wordings)
+    try:
+        write_json(report/'name_terms.json',{**biome_terms,**shared})
+        write_json(report/'name_terms_by_mod.json',by_mod)
     except OSError:pass
     result.update(source_counts=dict(counts),status='needs_review',api=0,ai_translation=0,
                   recovered_count=special['recovered'],renamed_count=special['renamed'],same_key_count=special['same_key'])
@@ -2493,7 +2645,7 @@ def row_category(r, curseforge=False):
     if r.get('kind') in HELD_KINDS and not r.get('supported'):return 'mod_tw'  # already Chinese in the program
     if o in ('translation_memory','user_glossary','manual'):return 'mine'
     if o=='reference_pack_or_cfpa':return 'tw_ref' if r.get('evidence') in ('reference:tw','reference:para') else 's2t'
-    if o in ('existing_zh_tw','instance_resourcepack'):return 'mod_tw'
+    if o in ('existing_zh_tw','instance_resourcepack','added_mod_zh_tw'):return 'mod_tw'
     if o in ('official_vanilla','glossary'):return 'official'
     if o in ('same_source_zh_cn','instance_zh_cn'):return 's2t'
     if o=='ai_translation':return 'ai'

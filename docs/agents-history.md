@@ -285,6 +285,20 @@
 
 使用者 2026-11-06 後續指定「發布吧」，授權發布 APP v0.42.0；不包含重新上架任何整合包。
 
+## 2026-11-24：倉儲取放紀錄
+
+GriefLogger Forge 1.20.1 的 1.2.4（CurseForge 435029／6755643）在隔離 Society 4.2.0 專用伺服器成功連上資料庫並啟動。核對該版本的作者原始碼與模組檔：`MixinServerPlayer` 只在 `openMenu` 收集原版容器型別的內容，關閉時由交易管理器比較前後數量；Functional Storage 1.2.13 的正面抽屜與控制器操作直接呼叫物品處理器，Refined Storage 1.12.4（含 Addons 0.10.0）及 AE2 15.4.10 的無線終端經 Forge `NetworkHooks.openScreen`，沒有經過它的容器取放快照入口。同次介面等量存入及取出，淨變化為零，不會各留一筆。這是試開與程式路徑核對，尚無玩家連線的逐筆取放實測；不要將這版 GriefLogger 宣稱為抽屜或無線終端的取放紀錄。
+
+使用者澄清 Ledger 也適用於之後公開上架的整合包，翻譯補丁與整包分享都列入；上架依支援的端別提供安裝。這項長期要求未指定立即更新任何既有卡片或正式伺服器。
+
+使用者同日指定後續加裝 Ledger，並查能否繁中。Ledger 官方適用 Fabric／Quilt；Society 的 Forge 1.20.1 候選為 Indexor 1.0.6（CurseForge 專案 1423454、檔案 8818217、modId `ledger`）。從 CurseForge 檔案伺服器取得 13,598,090 bytes，SHA-256 為 `04c7ebb1d3244502e422f8f2a54e4f5159a21580ca8c0623e4b70bbd00a9f211`。只讀 JAR，沒有執行或安裝。查詢與檢查模式部分回覆直接由 `ledger.commands.InspectCommand` 輸出英文，JAR 無語系檔，不能只加 `zh_tw.json` 生效。需逐處核對顯示用途及授權，完成繁中後用隔離專用伺服器實測；尚未加入自動安裝清單。
+
+使用者指定後續整合包也要加入倉儲取放紀錄，能查誰存入或取出物品，包含經由無限終端的操作。Society Sunlit Valley 4.2.0 的本機專用伺服器有 Refined Storage 1.12.4、Refined Storage Addons 與 Functional Storage。候選 Refined Storage Access Log（CurseForge 檔案 9246213）作者列出終端、無線與玩家端同裝，未涵蓋管線、自動合成與直接操作外部抽屜的完整驗證。候選尚未納入加裝清單。
+
+## 2026-11-07 整包分享的封面風格
+
+《The God Ascender 1.6.2》原先使用幾何風景封面。使用者選定改以紫色天梯、金色天門和方塊冒險者呈現的插畫，並指定「之後圖片都幫我改成這樣的」。後續代做封面延續插畫風格與卡片的可讀性，主景依各整合包的主題設計。本機參考圖為 `output/imagegen/the-god-ascender-1.6.2-cover.png`。
+
 ## 2026-11-24：CurseForge 安裝失敗被說成提示框缺圖片
 
 玩家從「安裝整合包與翻譯」安裝 Society Sunlit Valley 4.2.1，CurseForge 下載到一半顯示「發生了一個意外錯誤。運行失敗。」。整合包資料夾已建立但模組沒到齊，本程式等 3 分鐘沒有新檔案就當成裝完，接著檢查 Tooltip Overhaul 圖片，跳出「提示框缺少圖片：amber_frame.png……按『安裝翻譯』」。原因不是翻譯，而且那張卡片上只有「安裝整合包與翻譯」。改為到齊不到一半、或缺檔案又缺圖片時直接說 CurseForge 沒裝完並請玩家在 CurseForge 按「重試」，訊息只說「卡片上的安裝按鈕」。同時加上 ButtonNameTests，掃描程式裡所有「按『…』」，確認每個名稱都是程式真的畫出的按鈕；使用者表示之後多交給 Codex 開發，要求把容易忘的規則變成會擋下錯誤的測試。
@@ -296,3 +310,11 @@
 v0.43.5 後，使用者自己刪掉 Society 重裝，4.2.1 與 4.2.0 都停在 104 個模組。兩版 manifest 的 365 個模組完全相同，CurseForge 檔案伺服器只有 Ember's Text API 1.4.1（專案 1345948、檔案 7503929）回 403，Modrinth 也沒有這個舊版。使用者 11/22 安裝時還下載得到，備份 1123.rar 裡有同大小的 jar，授權 GPL-3.0。使用者同意 CurseForge 自己的模組下載不到時，有編號的整合包也可以整包分享，full_pack.build 改為只在這種情況放行。另：公開目錄歷史顯示 Society 翻譯從第 1 版起都綁 CurseForge 4.2.1（9721472），使用者記得的「4.2.0」是該檔 manifest 裡沒改的版本字樣。
 
 同日整理 Society 整包時發現：Society 用 Configured Defaults 在第一次啟動時把 configureddefaults/options.txt（材質包清單、按鍵）與 servers.dat 複製進遊戲資料夾，但只在檔案不存在時才複製。本程式在全新安裝時會先建 options.txt（語言、翻譯包）與 servers.dat（卡片伺服器），作者預設因此不會套用；改為以作者的檔案為底。另外使用者以為上架的是 4.2.0、伺服器也跑 4.2.0，但卡片一直綁 4.2.1 檔案；版本名稱改以 CurseForge 檔名為準，上架時印出玩家會安裝的檔案與版本。使用者選擇整包用 4.2.1（翻譯完整，模組與 4.2.0 相同，可連 4.2.0 伺服器）。
+
+## 2026-11-25：不同模組英文同名被統一成同一個譯名
+
+使用者在 Society 看到 Create: Numismatics 的硬幣顯示「柯克船」「皇冠」，數量提示寫「黃銅齒輪」。作者用 KubeJS 把 Cog、Crown 改名為 Brass Coin、Gold Coin 並附繁中「黃銅硬幣」「金幣」，本程式原本也選對了；寫入前的 unify_suggested_terms 只看英文與 key 尾段，就把 Small Ships 的船（Cog → 柯克船）與 Simple Hats 的帽子（Crown → 皇冠）套到硬幣上，正是「禁止只憑相同英文、key 尾段跨模組替換」所禁止的。查遍 14 個包的出處紀錄，被這一步改過的約 2,200 筆，許多是錯的（熾鐵靴子 → 熾鐵傀儡靴子、祭壇 → 賦魔祭壇）。AI 也拿到全包共用的名稱表，Numismatics 的說明句寫成「一枚柯克船」。
+
+修正：自動統一只在同一模組內（conflicting_terms within_mod）。在 Society 副本實測後發現，單純改回各模組自己的來源會讓一批名字變差（Windswept 自己的簡中把 Pine Fence 寫成松樹圍牆、Lavender 寫成迷迭香），使用者選擇折衷：整合包改過名的（KubeJS 英文不同）改回本模組譯名，其他先前統一過的保留遊戲目前顯示的名字並列為名稱疑點，附上本模組自己的寫法（settle_borrowed）；新出現的跨模組同名不同譯也只列疑點、不自動改（cross_mod_doubts），都交 AI 對照英文核對。整合包改過名的單數，其 .plural 跟著用（plurals_of_renamed）；AI 名稱表分成全模組一致的與各模組自己的（name_terms_by_mod、names_for），先前 AI 句子用了別的模組名字的標記 ai_redo_borrowed，下次 AI 補翻時帶正確名字重翻一次。「所有價值」是 Society 作者自己的 zh_tw（tooltip.society.stack_value），本程式照用。
+
+同日：上架加裝的 Solo Quests 在雲端整包沒有繁中（Sync this quest progress、Sync all quests with team），因為它在翻譯之後才加入，翻譯補丁另有 8 句繁中但整包沒帶。solo_quests.ZH_TW 改為共用，整包打包時寫進翻譯資源包，一鍵翻譯也優先採用（origin added_mod_zh_tw）；模組自帶簡中轉繁會出現「記憶體資料不會過載」。轉換器把「重载」（重新載入）轉成「過載」，6 個真實整合包 173 處全是重新載入的意思，改為轉換前先換成「重新载入」（desktop_references.BEFORE_CONVERTING），audit_conversion 比對 157 句全是這個變化。

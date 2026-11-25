@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
 from mc_zh_tw_translator import full_pack, server_list, sweeper, backup_mod, solo_quests  # noqa: E402
-from mc_zh_tw_translator.desktop_jobs import mod_count  # noqa: E402
+from mc_zh_tw_translator.desktop_jobs import RESOURCE_PACK_FILE, mod_count  # noqa: E402
 from mc_zh_tw_translator.patches import (  # noqa: E402
     MAX_ADDED_MODS, curseforge_release_version, export_patch, instance_identity, read_patch,
 )
@@ -216,17 +216,32 @@ def publication_solo(args, instance, *, include_existing=False):
     return mod
 
 
+SOLO_LANG = solo_quests.LANG  # the same text goes into full packs (full_pack.build)
+SOLO_ZH_TW = solo_quests.ZH_TW
+
+
 def with_solo_quests(source, destination, manifest, mod):
     """Add a checked CurseForge download to the existing patch format and preserve translation entries."""
     added = [m for m in manifest['added_mods'] if m['projectID'] != solo_quests.PROJECT]
     if len(added) >= MAX_ADDED_MODS:
         raise ValueError('補丁的加裝模組已達上限，無法再加入 Solo Quests。')
     with zipfile.ZipFile(source) as original, zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as out:
+        payload = f'payload/{RESOURCE_PACK_FILE}/{SOLO_LANG}'
         for item in original.infolist():
-            if item.filename != 'manifest.json':
+            if item.filename not in ('manifest.json', payload):
                 out.writestr(item, original.read(item))
         # Preserve the serialized manifest; read_patch normalizes some fields for runtime use.
         wire = json.loads(original.read('manifest.json'))
+        pack = next((row for row in wire['files'] if row['file'] == RESOURCE_PACK_FILE), None)
+        if pack is None:
+            pack = dict(file=RESOURCE_PACK_FILE, archive=True, pack=True, before=None, entries={}, requires={}, sizes={})
+            wire['files'].append(pack)
+        lang = solo_quests.lang_bytes()
+        jar = 'mods/'+mod['fileName']
+        pack['entries'][SOLO_LANG] = hashlib.sha256(lang).hexdigest()
+        pack['requires'][SOLO_LANG] = {jar: mod['sha256']}
+        pack['sizes'][jar] = mod['size']
+        out.writestr(payload, lang)
         wire['added_mods'] = [*added, mod]
         wire['left_out_mods'] = [item for item in wire.get('left_out_mods', [])
                                  if item.get('fileName') != mod['fileName']]

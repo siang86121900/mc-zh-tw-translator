@@ -186,6 +186,46 @@ class AiReviewTests(Base):
         rows={r['key']:r for r in self.make_plan()['rows']}
         self.assertEqual((rows['structure.demo.tower']['proposed'],rows['structure.demo.tower']['origin']),('瞭望塔','instance_zh_cn'))
 
+    def test_a_name_is_never_taken_from_another_mod_with_the_same_english(self):
+        # Society Sunlit Valley 4.2: Small Ships' Cog is a ship (柯克船); Create: Numismatics' Cog is a coin the pack
+        # renamed Brass Coin. Naming things alike made the coin 柯克船 in game (2026-11-25).
+        import zipfile
+        assets=self.instance/'kubejs/assets';(self.instance/'mods').mkdir()
+        with zipfile.ZipFile(self.instance/'mods/coins.jar','w') as z:
+            z.writestr('META-INF/mods.toml','modLoader="javafml"\n[[mods]]\nmodId="coins"\n')
+            z.writestr('assets/coins/lang/en_us.json',json.dumps({'item.coins.cog':'Cog'}))
+        # Small Ships' Cog; the pack renamed the coin Brass Coin in KubeJS; a mod whose own zh_cn names Pine Fence badly.
+        for ns,en,tw,cn in (('ships',{'item.ships.cog':'Cog','item.ships.pine_fence':'Pine Fence'},{'item.ships.cog':'柯克船','item.ships.pine_fence':'松木柵欄'},None),
+                            ('coins',{'item.coins.cog':'Brass Coin'},None,{'item.coins.cog':'黄铜硬币'}),
+                            ('trees',{'item.trees.pine_fence':'Pine Fence'},None,{'item.trees.pine_fence':'松树围墙'})):
+            lang=assets/ns/'lang';lang.mkdir(parents=True)
+            (lang/'en_us.json').write_text(json.dumps(en),encoding='utf-8')
+            if tw:(lang/'zh_tw.json').write_text(json.dumps(tw,ensure_ascii=False),encoding='utf-8')
+            if cn:(lang/'zh_cn.json').write_text(json.dumps(cn,ensure_ascii=False),encoding='utf-8')
+        session=self.make_plan();jobs.prepare_to_apply(session)
+        rows={(r['source'].startswith('mods/'),r['key']):r for r in session['rows']}
+        coin=rows[(False,'item.coins.cog')];fence=rows[(False,'item.trees.pine_fence')]
+        self.assertEqual((coin['proposed'],coin.get('unified_from'),coin.get('name_doubt')),('黃銅硬幣',None,None))
+        self.assertEqual(rows[(True,'item.coins.cog')]['proposed'],'黃銅硬幣')  # the mod's own Cog, renamed by the pack
+        # Not renamed by the English alone: listed for AI with the other mod's wording.
+        self.assertEqual((fence['proposed'],fence['name_doubt']),('松樹圍牆',['其他模組的「Pine Fence」譯為「松木柵欄」']))
+        self.assertEqual([r['key'] for _,r in ai.doubt_rows(session) if r['key'].startswith('item.')],['item.trees.pine_fence'])
+        terms=jobs.load_name_terms(session)
+        self.assertEqual(terms.get('cog'),None)  # AI gets each mod's own Cog
+        self.assertEqual(jobs.names_in(jobs.names_for(terms,coin),'one cog'),{'Cog':'黃銅硬幣'})
+        # What an earlier version took from the other mod: a renamed name goes back once; any other is kept and listed.
+        (assets/'coins/lang/zh_tw.json').write_text(json.dumps({'item.coins.cog':'柯克船'},ensure_ascii=False),encoding='utf-8')
+        (assets/'trees/lang/zh_tw.json').write_text(json.dumps({'item.trees.pine_fence':'松木柵欄'},ensure_ascii=False),encoding='utf-8')
+        jobs.Provenance(self.home,self.instance.resolve()).record([
+            dict(coin,proposed='柯克船',origin='reference_pack_or_cfpa',evidence='reference:para',unified_from='黃銅硬幣'),
+            dict(fence,proposed='松木柵欄',origin='existing_zh_tw',unified_from='松樹圍牆')])
+        rows={(r['source'].startswith('mods/'),r['key']):r for r in self.make_plan()['rows']}
+        coin=rows[(False,'item.coins.cog')];fence=rows[(False,'item.trees.pine_fence')]
+        self.assertEqual((coin['proposed'],coin['changed']),('黃銅硬幣',True))
+        self.assertIn('先前依其他模組改成「柯克船」',coin['issue'])
+        self.assertEqual((fence['proposed'],fence['changed']),('松木柵欄',False))
+        self.assertEqual(fence['name_doubt'],['先前依其他模組統一為「松木柵欄」，本模組自己的來源寫作「松樹圍牆」'])
+
     def test_a_name_whose_zh_tw_and_zh_cn_disagree_is_a_doubt(self):
         # Nature's Spirit: Arid Highlands is 高嶺土 (kaolin) in its zh_tw and 高原旱地 in its zh_cn.
         lang=self.instance/'kubejs/assets/demo/lang'
@@ -733,8 +773,9 @@ class SameKeyTests(Base):
             with zipfile.ZipFile(instance/'resourcepacks/MCTranslator-zh_tw.zip') as z:return json.loads(z.read('assets/real/lang/zh_tw.json'))['item.real.palm_log']
         first=one_click()
         in_kubejs=lambda:json.loads((lang/'zh_tw.json').read_text(encoding='utf-8'))['item.real.palm_log']
-        # the people-written name of another mod is the most trusted; the mod and the file that overrides it both get it
-        self.assertEqual((first['status'],in_mod(),in_kubejs()),('installed','棕櫚木原木','棕櫚木原木'))
+        # Another mod's name of the same English is not this mod's (AGENTS.md; Small Ships' Cog is a ship, Numismatics' a
+        # coin): the modpack's own wording reaches the mod and the file that overrides it.
+        self.assertEqual((first['status'],in_mod(),in_kubejs()),('installed','棕櫚原木','棕櫚原木'))
         files={p:p.read_bytes() for p in instance.rglob('*') if p.is_file()};batches=len(list((self.home/'output').glob('*/原始備份/*')))
         again=one_click()
         self.assertEqual(jobs.applicable_count(again),0)

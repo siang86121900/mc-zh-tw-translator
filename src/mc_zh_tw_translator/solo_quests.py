@@ -20,6 +20,66 @@ FILES = {
     ('fabric', '1.21.1'): (8614634, 47059, 'fb8196a302cfbbaa47cc1d9361b3b790d1772ffbc42e296326d4b04f9293fd2a'),
     ('neoforge', '1.21.1'): (8614631, 47019, '4f1a26a111c0cd40f6db2c309454d016454520fc8eb6a022555178a49ac739c7'),
 }
+# What players see of 1.1.2 (the three builds have the same eight English keys and only zh_cn): the quest screen's
+# sync buttons and the server command replies, in Taiwan wording. Written into the translation resource pack of
+# every published modpack that adds the mod (AGENTS.md: added mods are published in Traditional Chinese).
+LANG = 'assets/ftb_solo_quests/lang/zh_tw.json'
+ZH_TW = {
+    'ftb_solo_quests.gui.team_sync.tooltip.sync_available': '從隊友同步這個任務的進度',
+    'ftb_solo_quests.gui.team_sync.tooltip.no_sync_available': '還沒有隊友完成這個任務',
+    'ftb_solo_quests.gui.team_sync_all.tooltip': '從隊友同步所有任務進度',
+    'ftb_solo_quests.command.migrate.done': '任務進度已移轉，詳情請查看紀錄。重新啟動伺服器後生效。',
+    'ftb_solo_quests.command.status.no_data': '找不到 FTB Quests 的資料夾',
+    'ftb_solo_quests.command.status.pending_count': '待移轉的隊伍存檔數：%s',
+    'ftb_solo_quests.command.status.migrated_count': '已移轉的隊伍存檔數：%s',
+    'ftb_solo_quests.command.status.list_failed': '無法列出資料夾內容：%s',
+}
+
+
+# The English they translate: a later build that changes a line falls back to the usual sources (desktop_jobs.plan).
+EN = {
+    'ftb_solo_quests.gui.team_sync.tooltip.sync_available': 'Sync this quest progress',
+    'ftb_solo_quests.gui.team_sync.tooltip.no_sync_available': 'No teammate has completed this quest',
+    'ftb_solo_quests.gui.team_sync_all.tooltip': 'Sync all quests with team',
+    'ftb_solo_quests.command.migrate.done': 'Migration done, see log (in-memory data is not reloaded; restart to apply)',
+    'ftb_solo_quests.command.status.no_data': 'No ftbquests data directory',
+    'ftb_solo_quests.command.status.pending_count': 'Pending party saves: %s',
+    'ftb_solo_quests.command.status.migrated_count': 'Migrated: %s',
+    'ftb_solo_quests.command.status.list_failed': 'Failed to list directory: %s',
+}
+
+
+def wording(key: str, english) -> str | None:
+    """This program's Chinese for one Solo Quests line, when the English is the one it was written for."""
+    return ZH_TW.get(key) if EN.get(key) == english else None
+
+
+def lang_bytes() -> bytes:
+    return json.dumps(ZH_TW, ensure_ascii=False, indent=2).encode('utf-8')
+
+
+def with_translation(pack: bytes, mod: dict) -> bytes:
+    """The translation resource pack with Solo Quests' zh_tw written, bound to the added jar like the pack's other
+    files (mctranslator.json). It replaces a zh_tw converted from the mod's zh_cn (記憶體資料不會過載), so the shared
+    pack always carries these lines; a pack that has exactly them is returned as it is."""
+    import io
+    source = io.BytesIO(pack)
+    with zipfile.ZipFile(source) as original:
+        if LANG in original.namelist() and original.read(LANG) == lang_bytes():
+            return pack
+        record = json.loads(original.read('mctranslator.json')) if 'mctranslator.json' in original.namelist() else {}
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as copy:
+            for item in original.infolist():
+                if item.filename not in ('mctranslator.json', LANG):
+                    copy.writestr(item, original.read(item))
+            record.setdefault('sources', {})[LANG] = {'mods/' + mod['fileName']: mod['sha256']}
+            copy.writestr(zipfile.ZipInfo(LANG, (2020, 1, 1, 0, 0, 0)), lang_bytes(), zipfile.ZIP_DEFLATED)
+            copy.writestr(zipfile.ZipInfo('mctranslator.json', (2020, 1, 1, 0, 0, 0)),
+                          json.dumps(record, ensure_ascii=False, indent=1).encode('utf-8'), zipfile.ZIP_DEFLATED)
+    return out.getvalue()
+
+
 FORGE_MIN = {'ftbquests': (2001, 4, 0), 'ftblibrary': (2001, 1, 0),
              'ftbteams': (2001, 3, 0), 'architectury': (9, 0, 0)}
 NEW_MIN = dict.fromkeys(('ftbquests', 'ftblibrary', 'ftbteams'), (2101, 1, 0)) | {'architectury': (13, 0, 8)}

@@ -224,6 +224,16 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
             raise ValueError('Solo Quests 的檔名已被占用，無法打包。')
         entries[rel] = dict(path=rel, size=solo['size'], sha256=solo['sha256'], source='curseforge',
                             url=solo['url'], projectID=solo['projectID'], fileID=solo['fileID'], name=solo['name'])
+    # Solo Quests is added after the modpack was translated: its zh_tw goes into the shared translation pack, or
+    # players see its sync buttons in English (Society 4.2.1, 2026-11-25).
+    replaced={}
+    pack_rel=jobs.RESOURCE_PACK_FILE
+    if solo and pack_rel in entries:
+        from . import solo_quests
+        data=solo_quests.with_translation((instance/pack_rel).read_bytes(),solo)
+        if data!=(instance/pack_rel).read_bytes():
+            replaced[pack_rel]=data
+            entries[pack_rel].update(size=len(data),sha256=hashlib.sha256(data).hexdigest())
     options=generated_options(instance)
     entries['options.txt']=dict(path='options.txt',size=len(options),sha256=hashlib.sha256(options).hexdigest())
     cover=covers.image_for(instance,record,identity['name'])
@@ -245,6 +255,7 @@ def build(instance: Path, out: Path, notify=lambda *_:None, cancelled=lambda:Fal
                 kind=zipfile.ZIP_STORED if e['path'].casefold().endswith(STORED) else zipfile.ZIP_DEFLATED
                 if e['path']=='options.txt':z.writestr(PAYLOAD+'options.txt',options,compress_type=kind)
                 elif e['path']==covers.FILE:z.writestr(PAYLOAD+covers.FILE,cover,compress_type=kind)
+                elif e['path'] in replaced:z.writestr(PAYLOAD+e['path'],replaced[e['path']],compress_type=kind)
                 else:z.write(instance/e['path'],PAYLOAD+e['path'],compress_type=kind)
                 if i%100==0:notify(60+int(40*i/max(1,len(bundled))),'寫入壓縮檔',e['path'])
             z.writestr(MANIFEST,json.dumps(manifest,ensure_ascii=False,indent=1))

@@ -679,8 +679,8 @@ def review(session, home, selected_model, notify, cancelled=lambda: False, clien
         payload = [dict(id=str(i), text=original, candidate=row['proposed'], doubt=row.get('issue') or '', key=row['key'],
                         source=row['source']) for i, row, original in batch]
         terms = {}
-        for _, _, original in batch:
-            terms.update(jobs.names_in(names, original)); terms.update(glossary.terms_in(original))
+        for _, row, original in batch:
+            terms.update(jobs.names_in(jobs.names_for(names, row), original)); terms.update(glossary.terms_in(original))
         return payload, terms
 
     def settle(batch, answers):
@@ -744,7 +744,9 @@ def adopt(session, row, original, value, selected_model, jobs, shared=''):
     if row.get('ai_attempted'): row['ai_retried'] = True  # this was the one retry
     row.pop('ai_rejected', None)
     # An earlier answer that left a name in English is asked again; until a new one passes, the earlier stays.
-    redo = row.pop('ai_redo', None); kept = '先前的 AI 譯文名字留有英文，重新翻譯的答案沒有通過檢查，繼續使用先前的譯文。'
+    redo = row.pop('ai_redo', None)
+    kept = ('先前的 AI 譯文用了別的模組的名字，重新翻譯的答案沒有通過檢查，繼續使用先前的譯文。' if row.pop('ai_redo_borrowed', None)
+            else '先前的 AI 譯文名字留有英文，重新翻譯的答案沒有通過檢查，繼續使用先前的譯文。')
     row.update(ai_attempted=True, ai_model=selected_model, ai_provider='codex_chatgpt',
                ai_original_sha256=hashlib.sha256(original.encode()).hexdigest())
     refit = ''
@@ -830,12 +832,16 @@ def supplement(session, home, selected_model, notify, cancelled=lambda: False, c
             rejected = row.get('ai_rejected') or {}
             if rejected.get('text'): item.update(previous=rejected['text'], problem=rejection_problem(original, rejected))
             elif retryable(row): item['problem'] = '上次的譯文沒有通過檢查：' + row.get('issue', '')
+            elif row.get('ai_redo_borrowed'):
+                item.update(previous=row.get('proposed'), problem='上次的譯文用了別的模組的名字（' + '、'.join(
+                    f'{en} 寫成「{zh}」' for en, zh in sorted(row['ai_redo_borrowed'].items()))
+                    + '）：這個模組裡的名字請照 terms 的譯名')
             elif row.get('ai_redo'):
                 item.update(previous=row.get('proposed'), problem='上次的譯文把名字留成英文（' + '、'.join(row['ai_redo'])
                             + '）：人物、訓練家、寶可夢、地點與物品的名字要用台灣官方或通行的中文名；確定是模組名、品牌或代碼才保留原文並在 note 說明')
         terms = {}
         for _, row, original in batch:
-            terms.update(jobs.names_in(names, original))
+            terms.update(jobs.names_in(jobs.names_for(names, row), original))
             if jobs.REGISTRY_KEY.match(row.get('key', '')):
                 mod = row['key'].split('.')[1]
                 terms.update({en.title(): own_biomes.get((mod, en)) or zh for en, zh in map_biomes.items() if jobs.has_word(en, original)})

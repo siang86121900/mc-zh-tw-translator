@@ -45,6 +45,32 @@ class SoloQuestsTests(unittest.TestCase):
         publish_translation.with_solo_quests(source, dest, manifest, mod)
         with zipfile.ZipFile(dest) as jar:
             updated = json.loads(jar.read('manifest.json'))
-            self.assertEqual(updated['files'], manifest['files'])
+            self.assertEqual(updated['files'][:-1], manifest['files'])
+            entry = updated['files'][-1]
+            key = publish_translation.SOLO_LANG
+            self.assertEqual(entry['requires'][key], {'mods/'+mod['fileName']: mod['sha256']})
+            self.assertEqual(json.loads(jar.read('payload/'+entry['file']+'/'+key)), publish_translation.SOLO_ZH_TW)
             self.assertEqual(updated['added_mods'], [mod])
             self.assertEqual(jar.read('payload/translation').decode(), '測試譯文')
+
+    def test_full_pack_translation_pack_gets_the_added_mods_chinese(self):
+        # Society 4.2.1 was shared whole with Solo Quests added after it was translated: its sync buttons stayed
+        # English (Sync this quest progress / Sync all quests with team, 2026-11-25).
+        import io
+        mod, _ = solo_quests.choose(self.pack)
+        source = io.BytesIO()
+        with zipfile.ZipFile(source, 'w') as pack:
+            pack.writestr('pack.mcmeta', '{}')
+            pack.writestr('assets/demo/lang/zh_tw.json', '{"a":"甲"}')
+            pack.writestr('mctranslator.json', json.dumps({'format': 1, 'sources': {'assets/demo/lang/zh_tw.json': {'mods/demo.jar': 'x'}}}))
+        added = solo_quests.with_translation(source.getvalue(), mod)
+        with zipfile.ZipFile(io.BytesIO(added)) as pack:
+            self.assertEqual(json.loads(pack.read(solo_quests.LANG)), solo_quests.ZH_TW)
+            self.assertEqual(pack.read('assets/demo/lang/zh_tw.json'), '{"a":"甲"}'.encode())
+            sources = json.loads(pack.read('mctranslator.json'))['sources']
+            self.assertEqual(sources[solo_quests.LANG], {'mods/'+mod['fileName']: mod['sha256']})
+            self.assertIn('assets/demo/lang/zh_tw.json', sources)
+        self.assertEqual(solo_quests.with_translation(added, mod), added)  # translated in the pack already: left alone
+        # No English left but the mod's brand.
+        for text in solo_quests.ZH_TW.values():
+            self.assertNotRegex(text.replace('FTB Quests', ''), '[A-Za-z]{3,}')
