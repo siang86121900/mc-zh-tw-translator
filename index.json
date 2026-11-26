@@ -59,20 +59,20 @@
       "gameVersion": "1.20.1",
       "loader": "forge-47.4.0",
       "translator": "MC Translator",
-      "updated": "2026-11-25",
-      "notes": "CurseForge 上的 Society 4.2.1（4.2.0 也一樣）目前裝不起來：Ember's Text API 1.4.1 已無法從 CurseForge 下載，所以改成整包分享：官方 4.2.1 內容加上繁體中文翻譯，其餘模組照常從 CurseForge 官方下載，Ember's Text API（GPL-3.0 開放授權）由分享者提供。保留整合包作者預設的材質包與按鍵設定。之前用 CurseForge 官方版加翻譯補丁裝好的人，把 APP 更新到 v0.45.0 以上後，這張卡片就能直接更新你原本的整合包，不用重新安裝，存檔都保留；會先核對每個模組都相同才動手。2026-11-25 重新盤點仍有 27 類文字未確認涵蓋或未讀完，遊戲中仍可能遇到英文。多人連線請先加入同一個 Radmin VPN 網路，再使用「狗狗貓貓島」捷徑。",
+      "updated": "2026-11-26",
+      "notes": "CurseForge 上的 Society 4.2.1（4.2.0 也一樣）目前裝不起來：Ember's Text API 1.4.1 已無法從 CurseForge 下載，所以改成整包分享：官方 4.2.1 內容加上繁體中文翻譯，其餘模組照常從 CurseForge 官方下載，Ember's Text API（GPL-3.0 開放授權）由分享者提供。保留整合包作者預設的材質包與按鍵設定。之前用 CurseForge 官方版加翻譯補丁裝好的人，把 APP 更新到 v0.46.0 以上後，這張卡片就能直接更新你原本的整合包，不用重新安裝，存檔都保留；會先核對每個模組都相同才動手。這一版加裝取放紀錄模組 Vonix Guardian（繁中）：伺服器管理員可用 /vg lookup 查誰在什麼時間拿了什麼；箱子會記到是哪一個，RS 終端、無線終端與抽屜會記到玩家背包增加或減少的物品和數量，要對時間判斷，紀錄時間是世界標準時間（比台灣時間少 8 小時）。玩家端不用另外設定。2026-11-26 重新盤點仍有 27 類文字未確認涵蓋或未讀完，遊戲中仍可能遇到英文。多人連線請先加入同一個 Radmin VPN 網路，再使用「狗狗貓貓島」捷徑。",
       "recommendedRam": 0,
-      "driveId": "1c95VwfsKmF8jMCN58__GBohQVHAnE6n8",
-      "sha256": "cce71a750a5f370320994e854a17a242cb683e23821d0bc9cd3095167ad82157",
-      "size": 77505160,
-      "totalSize": 841019818,
-      "files": 8288,
+      "driveId": "1mLKTRX_oS4wrChq-YWGY2rJsSCRzaL0C",
+      "sha256": "bdc8d3f606fa9a00941b79a66c5842d71b52f2baf99868bf72821a6ce148d93a",
+      "size": 77613421,
+      "totalSize": 841121454,
+      "files": 8331,
       "mods": 352,
       "server": {
         "name": "狗狗貓貓島",
         "address": "26.186.50.26"
       },
-      "minimumAppVersion": "0.42.1",
+      "minimumAppVersion": "0.46.0",
       "sameAs": [
         {
           "projectID": 1093382,
@@ -88,11 +88,15 @@
           "size": 1954591
         },
         {
+          "name": "Vonix Guardian（取放紀錄：箱子記位置，終端與抽屜記玩家背包增減，管理員用 /vg lookup 查）",
+          "size": 20641840
+        },
+        {
           "name": "Solo Quests（專用伺服器可各自解任務、手動同步）",
           "size": 41328
         }
       ],
-      "revision": 3
+      "revision": 4
     },
     {
       "kind": "full",
