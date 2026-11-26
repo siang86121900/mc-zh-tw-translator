@@ -659,5 +659,26 @@ class FullPackTests(unittest.TestCase):
             with self.assertRaises(ValueError):patches.full_entry(bad)
 
 
+
+class SameAsHistoryTests(unittest.TestCase):
+    def test_removed_patch_card_is_read_from_catalog_history(self):
+        import subprocess, publish_translation as pub
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def git(*a):
+                subprocess.run(['git', *a], cwd=root, check=True, capture_output=True)
+            git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+            (root/'patches').mkdir(); (root/'patches/p.zip').write_bytes(b'patch-bytes')
+            card = dict(name='P', projectID=7, fileID=8, url=pub.RAW+'patches/p.zip')
+            (root/'index.json').write_text(json.dumps({'packs': [card]}), encoding='utf-8')
+            git('add', '.'); git('commit', '-qm', 'add')
+            git('rm', '-q', 'patches/p.zip')
+            (root/'index.json').write_text(json.dumps({'packs': []}), encoding='utf-8')
+            git('add', '.'); git('commit', '-qm', 'remove')
+            git('update-ref', f'refs/remotes/origin/{pub.BRANCH}', 'HEAD')
+            with patch.object(pub, 'ROOT', root):
+                self.assertEqual(pub.patch_card_bytes(7, 8), b'patch-bytes')
+                self.assertIsNone(pub.patch_card_bytes(7, 9))
+
 if __name__=='__main__':
     unittest.main()

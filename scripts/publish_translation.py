@@ -256,6 +256,22 @@ def earlier_same_as(pid):
     return f"{pairs[0]['projectID']}:{pairs[0]['fileID']}" if len(pairs) == 1 else ''
 
 
+def patch_card_bytes(project, file_id):
+    """The published patch of that CurseForge file: from the current catalog, or, when its card was later
+    removed (the whole-pack card took over), from the newest catalog commit that still listed it."""
+    commits = git('log', '--format=%H', f'origin/{BRANCH}', '--', 'index.json', cwd=ROOT).split()
+    for commit in commits:
+        try:
+            index = json.loads(git('show', f'{commit}:index.json', cwd=ROOT))
+        except (subprocess.CalledProcessError, ValueError):
+            continue
+        cards = [p for p in index['packs'] if p.get('kind') != 'full' and p.get('projectID') == project and p.get('fileID') == file_id]
+        if len(cards) == 1 and str(cards[0].get('url', '')).startswith(RAW):
+            shown = subprocess.run(['git', 'show', f"{commit}:{cards[0]['url'][len(RAW):]}"], cwd=ROOT, capture_output=True)
+            return shown.stdout if shown.returncode == 0 else None
+    return None
+
+
 def same_as(args, instance, earlier=''):
     """--same-as PROJECT:FILE: the CurseForge file whose players this whole-pack card may update in place
     (patches.match_full). Only listed after every mod of that file's published translation patch is found here
@@ -268,12 +284,10 @@ def same_as(args, instance, earlier=''):
     except ValueError:
         sys.exit('--same-as 請寫成 整合包編號:檔案編號，例如 1093382:9721472。')
     git('fetch', 'origin', BRANCH, cwd=ROOT)
-    index = json.loads(git('show', f'origin/{BRANCH}:index.json', cwd=ROOT))
-    cards = [p for p in index['packs'] if p.get('kind') != 'full' and p.get('projectID') == project and p.get('fileID') == file_id]
-    if len(cards) != 1 or not str(cards[0].get('url', '')).startswith(RAW):
+    found = patch_card_bytes(project, file_id)
+    if not found:
         sys.exit('目錄裡找不到這個 CurseForge 檔案的翻譯補丁卡片，無法核對模組，沒有修改。')
-    data = subprocess.run(['git', 'show', f"origin/{BRANCH}:{cards[0]['url'][len(RAW):]}"], cwd=ROOT,
-                          capture_output=True, check=True).stdout
+    data = found
     with tempfile.TemporaryDirectory() as tmp:
         patch = Path(tmp)/'patch.zip'
         patch.write_bytes(data)
