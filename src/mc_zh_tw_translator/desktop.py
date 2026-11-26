@@ -1020,6 +1020,8 @@ class MainWindow(QMainWindow):
         lines=[f"已更新：{result['name']}",'',
                f"換上 {result['written']:,} 個新版本的檔案"+(f"，移除 {result['removed']:,} 個新版本拿掉的檔案" if result['removed'] else '')+'。',
                '存檔和遊戲設定都保留。']
+        if result.get('pack_enabled'):lines.append('翻譯資源包原本沒有啟用，已啟用並放在最上面，遊戲語言設為繁體中文。')
+        if result.get('activation_error'):lines.append(result['activation_error'])
         if result['replaced']:
             lines.append(f"其中 {len(result['replaced']):,} 個是你改過的檔案，已換成新版本（舊的有備份）："
                          +'、'.join(result['replaced'][:5])+('…' if len(result['replaced'])>5 else ''))

@@ -442,8 +442,10 @@ def configured_curseforge_root(listing: Path):
         if not isinstance(value,str) or not value.strip():return None
         root=Path(value)
         if not root.is_absolute() or root.parent==root or root.resolve()==Path.home().resolve():return None
-        instances=root/'Instances'
-        return instances if instances.is_dir() else None
+        # A CurseForge that has not installed any modpack yet has its game folder but no Instances in it
+        # (a friend's fresh install, 2026-11-26): the launcher's own setting is the evidence, and install
+        # creates Instances there. The game folder itself must exist, so a stale setting is not followed.
+        return root/'Instances' if root.is_dir() else None
     except (OSError,ValueError,TypeError):return None
 
 
@@ -479,9 +481,9 @@ def require_curseforge_list(listing=None) -> Path:
     path=Path(listing) if listing is not None else curseforge_list()
     if not path.is_file():
         if import_curseforge_root(path):return path
-        raise ValueError('找不到 CurseForge 的 Minecraft 整合包清單，無法安全登記新的整合包。'
-                         '這不代表沒有安裝 CurseForge。請先重新開啟 CurseForge，再回來按「安裝」。'
-                         '尚未設定 Minecraft 的玩家才需要進入 Minecraft 頁面完成遊戲資料夾設定。'
+        raise ValueError('找不到 CurseForge 的 Minecraft 整合包清單和遊戲資料夾設定，不知道整合包要放在哪裡，沒有下載也沒有修改任何檔案。'
+                         '剛安裝 CurseForge 的話：請開啟 CurseForge，點左邊的 Minecraft，照畫面完成遊戲資料夾設定（第一次會要你確認資料夾），'
+                         '再回來按「安裝」。'
                          '若之前已能玩其他整合包仍遇到此訊息，請提供 CurseForge 的 Minecraft 設定畫面，以確認清單實際位置。')
     try:data=json.loads(path.read_text(encoding='utf-8-sig'))
     except (ValueError,UnicodeError) as exc:
@@ -861,7 +863,7 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
 
     Compared with the content list it was installed with: a file the new version changed or added is
     written, a file it dropped is removed (only when the player did not change it), and options.txt is
-    never touched. Every write and removal is one restorable batch, so 「備份與還原」 can undo the update.
+    never replaced: only the translation pack (and packs it needs) is switched on in it. Every write and removal is one restorable batch, so 「備份與還原」 can undo the update.
     Existing custom artwork is retained. A missing profile image is filled separately with
     CurseForge closed; the game must be closed for all content changes.
     """
@@ -918,13 +920,24 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
         from . import publish_checks
         publish_checks.check_ysm(folder,list((staged/'mods').glob('*.jar')))
         required=publish_checks.required_packs(folder,staged,[r['file'] for r in records if r['after'] is None])
-        if required:
-            options=folder/'options.txt'
-            text=options.read_text(encoding='utf-8') if options.is_file() else ''
-            updated=publish_checks.merge_options(text,required)
-            if updated!=text:
-                (staged/'options.txt').write_text(updated,encoding='utf-8')
-                records.append(dict(file='options.txt',before=file_hash(options),after=file_hash(staged/'options.txt'),reviewed=True,verified=True))
+        # The translation pack must end up switched on and on top, as the patch path does (patches.apply_patch):
+        # a CurseForge copy a card takes over, or an options.txt CurseForge or the game reset, does not list it,
+        # and replacing the zip alone left those players in English (Society Sunlit Valley, 2026-11-26).
+        # The language is set only when the pack was not on yet; a player who switched back to English keeps it.
+        dropped={r['file'] for r in records if r['after'] is None}
+        uses_pack=jobs.RESOURCE_PACK_FILE not in dropped and ((folder/jobs.RESOURCE_PACK_FILE).is_file()
+                  or any(r['file']==jobs.RESOURCE_PACK_FILE for r in records))
+        options=folder/'options.txt'
+        try:enabled=jobs.enabled_packs(options.read_text(encoding='utf-8')) if options.is_file() else None
+        except (OSError,UnicodeError):enabled=None
+        first=uses_pack and jobs.RESOURCE_PACK_ID not in (enabled or [])
+        activation_error='';pack_enabled=False
+        try:option=jobs.options_record(folder,staged,first,uses_pack,required)
+        except ValueError:
+            option=None
+            activation_error='翻譯資源包未能自動啟用：遊戲設定檔的資源包清單格式看不懂，沒有更動。請開遊戲在「資源包」裡把 MCTranslator-zh_tw 移到右邊並放在最上面。'
+        if option:records.append(option);pack_enabled=first
+        if uses_pack and (option:=jobs.default_packs_record(folder,staged)):records.append(option)
         jobs.require_space(folder,home,[r['file'] for r in records])
         backup=None
         if records:
@@ -942,6 +955,7 @@ def update(package: Path, home: Path, folder: Path, notify=lambda *_:None, cance
         notify(100,'整合包已更新',folder.name)
         return dict(folder=str(folder),name=folder.name,written=sum(r['after'] is not None for r in records),
                     removed=sum(r['after'] is None for r in records),replaced=replaced,kept=kept,backup=backup,
-                    recommendedRam=manifest.get('recommendedRam') or 0,cover=cover,imblocker=ime,backup_mod=backup_result,vonix=logger_result,**server_result)
+                    recommendedRam=manifest.get('recommendedRam') or 0,cover=cover,imblocker=ime,backup_mod=backup_result,vonix=logger_result,
+                    pack_enabled=pack_enabled,activation_error=activation_error,**server_result)
     finally:
         shutil.rmtree(staged,ignore_errors=True)

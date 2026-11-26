@@ -318,3 +318,9 @@ v0.43.5 後，使用者自己刪掉 Society 重裝，4.2.1 與 4.2.0 都停在 1
 修正：自動統一只在同一模組內（conflicting_terms within_mod）。在 Society 副本實測後發現，單純改回各模組自己的來源會讓一批名字變差（Windswept 自己的簡中把 Pine Fence 寫成松樹圍牆、Lavender 寫成迷迭香），使用者選擇折衷：整合包改過名的（KubeJS 英文不同）改回本模組譯名，其他先前統一過的保留遊戲目前顯示的名字並列為名稱疑點，附上本模組自己的寫法（settle_borrowed）；新出現的跨模組同名不同譯也只列疑點、不自動改（cross_mod_doubts），都交 AI 對照英文核對。整合包改過名的單數，其 .plural 跟著用（plurals_of_renamed）；AI 名稱表分成全模組一致的與各模組自己的（name_terms_by_mod、names_for），先前 AI 句子用了別的模組名字的標記 ai_redo_borrowed，下次 AI 補翻時帶正確名字重翻一次。「所有價值」是 Society 作者自己的 zh_tw（tooltip.society.stack_value），本程式照用。
 
 同日：上架加裝的 Solo Quests 在雲端整包沒有繁中（Sync this quest progress、Sync all quests with team），因為它在翻譯之後才加入，翻譯補丁另有 8 句繁中但整包沒帶。solo_quests.ZH_TW 改為共用，整包打包時寫進翻譯資源包，一鍵翻譯也優先採用（origin added_mod_zh_tw）；模組自帶簡中轉繁會出現「記憶體資料不會過載」。轉換器把「重载」（重新載入）轉成「過載」，6 個真實整合包 173 處全是重新載入的意思，改為轉換前先換成「重新载入」（desktop_references.BEFORE_CONVERTING），audit_conversion 比對 157 句全是這個變化。
+
+## 2026-11-26：整包更新沒有啟用翻譯包、剛裝好的 CurseForge 無法安裝雲端整包
+
+使用者回報 Society Sunlit Valley 玩家按整包卡片「更新整合包」後遊戲變回英文，截圖中 MCTranslator-zh_tw.zip 在資源包畫面左邊「可用」。full_pack.update 刻意不動 options.txt，只用 merge_options 補提示框材質包，而 merge_options 只保留原本已啟用的翻譯包；接手官方版（v0.45.0）的資料夾保留作者的資源包清單，從沒列翻譯包，所以只換了 zip。修正：更新改用和補丁相同的 options_record（翻譯包放最後、加 mod_resources 與遊戲自加的包）及 default_packs_record，原本沒啟用時才設 lang:zh_tw，清單讀不懂時不動並在結果說明。
+
+同日朋友剛安裝 CurseForge 就裝雲端整包，出現「找不到 CurseForge 的 Minecraft 整合包清單」。還沒裝過整合包的 CurseForge 沒有總清單，minecraftRoot 下也還沒有 Instances，而 configured_curseforge_root 要求 Instances 已存在。修正為遊戲根目錄存在即可，Instances 由安裝建立；訊息改成直接說明剛安裝的人要先在 CurseForge 的 Minecraft 頁面完成遊戲資料夾設定。

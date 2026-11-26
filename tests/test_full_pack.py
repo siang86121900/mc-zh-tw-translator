@@ -376,6 +376,16 @@ class FullPackTests(unittest.TestCase):
             self.assertIn(folder.resolve(),[x['path'].resolve() for x in desktop_jobs.curseforge_instances()])
         self.assertTrue(self.install()['name'].endswith('(2)'))
 
+    def test_fresh_curseforge_without_instances_folder_installs_there(self):
+        # A friend's CurseForge installed minutes before (2026-11-26): game folder set, no modpack yet, so
+        # neither the global list nor Instances exists; the cloud install refused with 「找不到…清單」.
+        shutil.rmtree(self.instances)
+        self.missing_cache_setup()
+        result=self.install();folder=Path(result['folder'])
+        self.assertEqual(folder.parent.resolve(),self.instances.resolve());self.assertTrue(result['profile_import'])
+        self.assertFalse(self.listing.exists())
+        for e in self.manifest['files']:self.assertEqual(sha((folder/e['path']).read_bytes()),e['sha256'])
+
     def test_storage_object_supported_and_current_config_wins_over_old_list(self):
         self.missing_cache_setup(as_string=False)
         self.listing.write_text(json.dumps([{'installPath':str(self.root/'old/Instances/Pack')}]),encoding='utf-8')
@@ -602,6 +612,32 @@ class FullPackTests(unittest.TestCase):
         jobs.restore_backup(Path(result['backup']),folder)
         self.assertEqual((folder/'config/a.toml').read_text(encoding='utf-8'),'# old\nx=0\n')
 
+    def test_update_switches_on_a_translation_pack_the_options_do_not_list(self):
+        # Society Sunlit Valley (2026-11-26): a taken-over CurseForge copy kept the author's pack list, the
+        # update only replaced the zip, and the game showed MCTranslator-zh_tw.zip under 「可用」 in English.
+        from mc_zh_tw_translator import desktop_jobs as jobs
+        folder,_=self.curseforge_copy()
+        original=b'lang:en_us\nkey_key.jump:key.keyboard.j\nresourcePacks:["vanilla","file/DerpWood.zip"]\n'
+        (folder/'options.txt').write_bytes(original)
+        result=full_pack.update(self.package,self.home,folder,session=self.server,pause=lambda _:None)
+        text=(folder/'options.txt').read_text(encoding='utf-8')
+        packs=jobs.enabled_packs(text)
+        self.assertEqual(packs[-1],jobs.RESOURCE_PACK_ID);self.assertIn('file/DerpWood.zip',packs)
+        self.assertIn('lang:zh_tw',text);self.assertIn('key.keyboard.j',text)
+        self.assertTrue(result['pack_enabled']);self.assertEqual(result['activation_error'],'')
+        again=full_pack.update(self.package,self.home,folder,session=self.server,pause=lambda _:None)
+        self.assertEqual(again['written'],0);self.assertFalse(again['pack_enabled'])
+        jobs.restore_backup(Path(result['backup']),folder)
+        self.assertEqual((folder/'options.txt').read_bytes(),original)
+
+    def test_update_with_an_unreadable_pack_list_leaves_options_alone(self):
+        folder,_=self.curseforge_copy()
+        original=b'lang:en_us\nresourcePacks:["vanilla",\n'
+        (folder/'options.txt').write_bytes(original)
+        result=full_pack.update(self.package,self.home,folder,session=self.server,pause=lambda _:None)
+        self.assertEqual((folder/'options.txt').read_bytes(),original)
+        self.assertIn('資源包',result['activation_error']);self.assertFalse(result['pack_enabled'])
+
     def test_curseforge_copy_with_other_mods_is_not_touched(self):
         folder,_=self.curseforge_copy()
         (folder/'mods/served.jar').write_bytes(jar('another version of the mod'))
@@ -629,7 +665,9 @@ class FullPackTests(unittest.TestCase):
         result=full_pack.update(self.package,self.home,folder,session=self.server)
         text=(folder/'options.txt').read_text(encoding='utf-8')
         self.assertIn('key.keyboard.j',text);self.assertIn('lang:en_us',text)
-        self.assertEqual(desktop_jobs.enabled_packs(text),['vanilla','file/personal.zip','file/Rarity Tooltips.zip',desktop_jobs.RESOURCE_PACK_ID])
+        self.assertEqual(desktop_jobs.enabled_packs(text),['vanilla','file/personal.zip',desktop_jobs.MOD_RESOURCES,
+                                                           'file/Rarity Tooltips.zip',desktop_jobs.RESOURCE_PACK_ID])
+        self.assertFalse(result['pack_enabled'])  # it was on already: the player's English is kept
         self.assertEqual(publish_checks.required_packs(folder),['file/Rarity Tooltips.zip'])
         again=full_pack.update(self.package,self.home,folder,session=self.server)
         self.assertEqual(again['written'],0)
